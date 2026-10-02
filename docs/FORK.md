@@ -5,7 +5,8 @@ This repository is a fork of [xintaofei/codeg-ios](https://github.com/xintaofei/
 **Codeg Plus**. Upstream is largely frozen, with several useful fixes waiting
 in open pull requests. The fork carries those fixes and its own app identity, so it
 installs next to the upstream app. Features for Jonathan's own codeg server,
-push notifications and on-device voice, are being added here.
+push notifications and on-device voice (read aloud and voice typing), are
+added here.
 
 `LICENSE` is kept as upstream ships it. `THIRD_PARTY_NOTICES.md` keeps
 upstream's entries and adds the fork's own dependencies at the end.
@@ -185,6 +186,176 @@ git subtree pull --prefix Packages/BlueTTSKit <path-or-url-of-codeg-voice/BlueTT
   public App Store release.
 - The BlueTTS 2.5 weights declare no licence; confirm with their author before
   a public release.
+
+## Voice typing (on-device whisper)
+
+The mic in the message bar transcribes speech on the iPhone. Nothing is sent
+to a server, and Apple's `SFSpeechRecognizer` is not used, so the app needs
+only `NSMicrophoneUsageDescription`.
+
+### Engine: whisper.cpp
+
+`Packages/WhisperCpp` is a binary target for the official whisper.cpp v1.9.1
+XCFramework (MIT), pinned by URL and checksum. It is a dynamic framework that
+the app binary loads, so `scripts/archive.sh` keeps it in the bundle. The app
+uses it with `import whisper`. Everything goes through the `SpeechToText`
+protocol (`Features/Dictation/SpeechToText.swift`), and `WhisperCppEngine` is
+the only implementation, so the engine can be replaced later.
+
+Why not WhisperKit: it needs ivrit.ai's model converted to Core ML with
+`whisperkittools` (PyTorch and coremltools on a large model). That is not
+practical on the 16 GB build box, which has no Xcode. whisper.cpp reads
+ivrit.ai's published ggml weights directly, and Speakly already uses the same
+model, VAD and settings on the Mac. The tradeoff is speed. WhisperKit runs
+large-v3-turbo on the Neural Engine at about 6–9× real time on an iPhone 16/17
+Pro. whisper.cpp runs on the GPU through Metal, and nobody has benchmarked it
+on an iPhone. The XCFramework is built with Core ML support
+(`WHISPER : COREML = 1`). A future `ggml-ivrit-large-v3-turbo-q8_0-encoder.mlmodelc`
+placed next to the weights would move the encoder to the Neural Engine without
+changing the engine code, but producing that file needs the same Python
+conversion as WhisperKit.
+
+Decode settings follow Speakly: greedy decoding (`best_of` 1), the language
+forced, `no_context`, `suppress_nst`, flash attention, up to 4 CPU threads,
+Metal on a device and the CPU in the simulator. Timestamp tokens stay on, as in
+Speakly and whisper-cli. With them off, English speech came out transliterated
+or translated into Hebrew. Speakly's scaled `audio_ctx` (encode only the length
+of the clip) was measured and rejected: it cut decode time by 28% but raised
+FLEURS WER from 23.7% to 40%.
+
+### Pipeline
+
+1. **Record.** `DictationRecorder` uses `AVAudioEngine` and converts the input
+   to 16 kHz mono Float32. The meter shows input level from -55 to 0 dBFS, and
+   a recording stops at 5 minutes.
+2. **Trim.** Silero VAD v5.1.2 (the ggml model, through whisper.cpp's VAD API,
+   on the CPU) gives one speech probability per 32 ms frame. `VADGate` is a
+   port of Speakly's gate (`crates/engine/src/vad/gate.rs`):
+   - a segment opens at p ≥ 0.6 held for 2 frames;
+   - it closes after 300 ms below 0.35;
+   - speech shorter than 250 ms is dropped;
+   - a segment is force-split at 25 s.
+
+   `DictationTrim.plan` keeps everything from the first to the last speech
+   with 150 ms of padding. A recording shorter than 0.4 s is a mis-tap. With
+   no speech, or less than 250 ms, nothing is decoded, which avoids whisper's
+   hallucinations on silence. If the VAD model fails to load, the whole
+   recording is decoded.
+3. **Decode.** There is one decode over the trimmed audio, as in Speakly's
+   dictation. Output that is only non-speech markers (`[BLANK_AUDIO]`,
+   `(מוזיקה)`) is dropped.
+4. **Insert.** `DictationText.insert` puts the text at the field's cursor, or
+   replaces the selection, using the iOS 18 `TextField(text:selection:)`
+   binding. It adds a space where the transcript would touch a word, and the
+   cursor ends after the inserted text. With "Send" on, the message is then
+   sent. While a turn runs, it is delivered at once when the turn is held only
+   for background work, and queued otherwise.
+
+The model starts loading when recording starts, so the load overlaps the
+speech. It is unloaded after 3 minutes idle, on a memory warning, and when the
+app goes to the background. A loaded q8_0 model takes about 1.1 GB. iOS doesn't
+let a background app use the GPU. If the app goes to the background during a
+recording, the recording ends and its decode waits until the app is active
+again. A decode that is already running is cancelled and run again then.
+
+### UX
+
+- **Mic button**, next to Send. Tap to start and tap again to stop, or hold to
+  talk and let go to stop (a press longer than 0.35 s counts as a hold).
+  VoiceOver activation toggles. While recording, the button turns into a red
+  stop button. While transcribing, it shows a spinner.
+- **Recording strip** above the field: a pulsing dot, the elapsed time, a live
+  level meter, a **Send** switch (send right after transcribing, remembered),
+  and cancel.
+- **Settings › Voice › Voice Typing**: the model download (download, pause,
+  resume, delete, progress), Language, "Send right after transcribing" and
+  "Use the session context".
+- **Without the model**, tapping the mic offers the download (875 MB) and
+  points to the mic key on the iOS keyboard, Apple's own dictation. During the
+  download, a notice shows the progress. If the microphone is denied, a notice
+  says where to allow it.
+- **Audio session.** The session is set to `.playAndRecord` only while
+  recording, and Bluetooth HFP is allowed so AirPods work as the microphone.
+  Any reply being read aloud is stopped first. On stop, the session is
+  deactivated with `.notifyOthersOnDeactivation`, and Read aloud sets
+  `.playback` again the next time it starts. A call or Siri interruption, or a
+  route change that stops the engine, ends the recording and transcribes it.
+
+### Language setting
+
+| Setting | Model | Notes |
+| ------- | ----- | ----- |
+| Hebrew (default) | ivrit.ai turbo q8_0, `he` forced | English terms come out as the model writes them, often transliterated (ריבייס, טייפ סקריפט); the prompt keeps more of them in Latin letters |
+| English | same model, `en` forced | WER 17.6% on the five English clips; the Hebrew-mode prompt keeps English speech English too (19.6%) |
+| Detect automatically | stock large-v3-turbo q5_0 (574 MB, separate download), `auto` | Detection works (25/25 Hebrew, 5/5 English). Hebrew is much weaker (FLEURS WER 33.6% vs 23.7%), and 3 of 8 Hebrew sentences full of code terms were detected as English and came out as English gibberish. Detection costs a second encoder pass (decode time ×1.9). Pure English is better (WER 7.8% vs 17.6%). |
+
+ivrit.ai's model card says its language detection was degraded by the
+fine-tune. Measured here, it called every English clip Hebrew (p ≈ 1.0), so
+Auto does not use it.
+
+### Prompt biasing
+
+whisper's `initial_prompt` is set to
+`"<folder> · <session title>. עדכנתי את ה-README ועשיתי push ל-main. The build passes."`
+(or the English sentence in English mode), capped at 240 characters. The
+prompt measured with the shipped q8_0 model:
+
+| Prompt | FLEURS | Hebrew+code (say) | BlueTTS mixed | English speech, Hebrew mode |
+| ------ | ------ | ----------------- | ------------- | --------------------------- |
+| none | 23.7% | 51.5% | 28.2% | 35.3% |
+| Hebrew-only style sentence | 23.3% | 45.4% | 31.8% | 43.1% (English translated into Hebrew) |
+| code-word list | 22.8% | 46.4% | 24.5% | 19.6% |
+| **Hebrew + English sentence (shipped)** | 23.5% | 45.4% | 23.6% | 19.6% |
+
+Settings › Voice can turn the prompt off.
+
+### Model, quantization and hosting
+
+| | f16 (source) | **q8_0 (shipped)** | q5_0 |
+| - | - | - | - |
+| Size | 1,625 MB | 874 MB | 574 MB |
+| FLEURS he WER / CER (25 clips) | 23.7% / 12.7% | 23.7% / 12.7% | 23.5% / 12.7% |
+| Hebrew + code, `say -v Carmit` (12) | 51.5% / 35.9% | 51.5% / 35.9% | 48.5% / 35.5% |
+| BlueTTS mixed Hebrew/English (10) | 27.3% / 15.8% | 28.2% / 15.9% | 28.2% / 13.7% |
+| Words that differ from f16 | — | 0–1.3% | 1.4–7.9% |
+| Encoder per 30 s window, M1 GPU | 1.76 s | 1.65 s | 1.81 s |
+
+q8_0 transcribes as f16 does, at about half the size, and has the fastest
+encoder of the three on the M1. q5_0 saves 300 MB but changes up to 8% of the
+words. The test clips are synthetic, except FLEURS, so the Carmit and BlueTTS
+WERs mostly measure how the voices pronounce English terms. Use them to
+compare models, not as absolute accuracy. Mac timings only rank the models.
+Speed on an iPhone has not been measured.
+
+- **Source**: `ivrit-ai/whisper-large-v3-turbo-ggml` `ggml-model.bin`, sha256
+  `c8090411…8641b1`, Apache-2.0 (checked on the model card and the base
+  model's card). It was quantized with `whisper-quantize … q8_0` from
+  whisper.cpp v1.9.1. As a check of the tool, the same command reproduced
+  ggerganov's published `ggml-large-v3-turbo-q5_0.bin` byte for byte.
+- **Hosting**: release
+  [`models-v1`](https://github.com/Jonathan-Asher/codeg-ios/releases/tag/models-v1)
+  of this repository, with the ivrit.ai model, the stock multilingual q5_0,
+  Silero VAD, `stt-models.json`, `SHA256SUMS`, `NOTICE.txt` (what was changed,
+  as Apache-2.0 §4(b) requires) and the Apache-2.0 text. GitHub serves byte
+  ranges with an ETag, so downloads resume.
+- **Manifest**: `CodegiOS/Resources/stt-models.json` is the same file as the
+  release's `stt-models.json`. The app trusts only its bundled copy, so a file
+  is moved into place only when its size and sha256 match.
+- **Download**: `ModelPackStore` (`Features/Voice/ModelPackStore.swift`) is
+  the BlueTTS downloader, now shared by both features. It uses a background
+  `URLSession` per model and resume data on disk, and checks each file's
+  sha256 before moving it into `Application Support/SpeechToText/<model id>`,
+  which is excluded from backups.
+- **New model version**: publish a `models-v2` release, update
+  `stt-models.json` in both places and bump nothing else. Files with a new name
+  or checksum download again.
+
+### Benchmark harness
+
+`scripts/stt-bench/` holds the macOS CLI and scorer used for the numbers above.
+The CLI runs the app's own `WhisperCppEngine`, `SileroVAD`, `DictationTrim`
+and `DictationText` code against the XCFramework's macOS slice. Usage is in the
+header of each file.
 
 ## Upstream pull requests carried by the fork
 

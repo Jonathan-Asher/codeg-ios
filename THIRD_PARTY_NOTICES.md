@@ -69,3 +69,24 @@ personal TestFlight build; see docs/FORK.md before any public release.
 - BlueTTS 2.5 ONNX (notmax123/BlueTTS2.5-onnx): no license declared.
 - RenikudPlus (notmax123/RenikudPlus): Apache-2.0.
 - Voices from Light-BlueTTS (maxmelichov/Light-BlueTTS): MIT.
+
+### whisper.cpp 1.9.1 (the `whisper` XCFramework, `Packages/WhisperCpp`)
+
+- Source: https://github.com/ggml-org/whisper.cpp, release v1.9.1
+  (`whisper-v1.9.1-xcframework.zip`), linked as a dynamic framework
+- License: MIT, Copyright (c) 2023-2026 The ggml authors. The full text is the
+  same MIT License text as SwiftTerm's above, with that copyright line.
+
+### Speech-to-text model files (downloaded at runtime, not bundled)
+
+Published in the `models-v1` release of this repository with a `NOTICE.txt`
+and the Apache-2.0 text.
+
+- `ggml-ivrit-large-v3-turbo-q8_0.bin`: ivrit.ai's
+  `ivrit-ai/whisper-large-v3-turbo-ggml`, Apache-2.0, quantized to q8_0 by this
+  fork (the only change). A fine-tune of OpenAI's whisper-large-v3-turbo
+  (MIT, Copyright (c) 2022 OpenAI).
+- `ggml-large-v3-turbo-q5_0.bin`: OpenAI whisper-large-v3-turbo in ggml form
+  from `ggerganov/whisper.cpp` on Hugging Face, MIT.
+- `ggml-silero-v5.1.2.bin`: Silero VAD v5.1.2 (MIT, Copyright (c)
+  2020-present Silero Team), ggml conversion from `ggml-org/whisper-vad`, MIT.

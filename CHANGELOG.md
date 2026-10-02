@@ -12,6 +12,14 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Voice typing: a mic in the message bar (tap to start and stop, or hold to
+  talk) with a live level meter and timer. Speech is transcribed on the iPhone
+  with whisper.cpp and ivrit.ai's Hebrew large-v3-turbo (q8_0), trimmed with
+  Silero VAD, and inserted at the cursor; an optional switch sends the message
+  right after. Hebrew (default), English, or detect automatically with the
+  stock multilingual model. The session's folder and title bias the spelling.
+  The models download on demand from Settings › Voice (875 MB, resumable,
+  checksummed) from this repository's `models-v1` release.
 - Push notifications from every saved codeg server: permission asked after a
   server is added (or from Settings), the device token registered with each
   server, Acknowledge / Snooze / Approve / Open actions, taps that open the
