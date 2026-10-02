@@ -66,6 +66,20 @@ struct RootView: View {
         .sheet(isPresented: $model.serversSheetPresented) {
             ManageServersSheet(store: model.serverStore, selectedServerID: $model.selectedServerID)
         }
+        // A notification was tapped (also on a cold launch from it).
+        .onAppear { openPendingPush() }
+        .onChange(of: PushRouter.shared.pending) { _, _ in openPendingPush() }
+        // Notice a permission change made in iOS Settings while away.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { PushRegistration.shared.refreshOnForeground() }
+        }
+    }
+
+    private func openPendingPush() {
+        guard PushRouter.shared.pending != nil, !model.serverStore.servers.isEmpty,
+              let request = PushRouter.shared.take() else { return }
+        model.isCompact = horizontalSizeClass == .compact
+        model.openFromPush(serverID: request.serverProfileID, conversationID: request.conversationID)
     }
 
     /// Identity for the activity poller's `.task` — composes everything that

@@ -28,6 +28,8 @@ struct SessionDetailView: View {
     @State private var renameText = ""
     @State private var showDetails = false
     @State private var showDeleteConfirm = false
+    /// Between `onAppear` and `onDisappear`: drives the presence report.
+    @State private var isVisible = false
 
     init(server: ServerProfile, client: CodegClient, conversationID: Int,
          onOpenSession: ((NewSessionRequest) -> Void)? = nil) {
@@ -144,7 +146,16 @@ struct SessionDetailView: View {
             }
         }
         .task { await model.load() }
-        .onDisappear { model.teardown() }
+        .onAppear {
+            isVisible = true
+            updateLooking()
+        }
+        .onDisappear {
+            isVisible = false
+            PresenceTracker.shared.hide(serverProfileID: server.id, conversationID: model.conversationID)
+            model.teardown()
+        }
+        .onChange(of: model.conversationID) { _, _ in updateLooking() }
         // The live WebSocket is suspended (and often killed outright) while
         // backgrounded, so returning here otherwise leaves a frozen transcript
         // until the user backs all the way out and re-enters. Returning from the
@@ -156,6 +167,7 @@ struct SessionDetailView: View {
         // A sheet/alert/control-center pull's `.active` -> `.inactive` -> `.active`
         // blip never sets the flag, so it still won't trigger a spurious refresh.
         .onChange(of: scenePhase) { _, new in
+            updateLooking()
             switch new {
             case .background:
                 wasBackgrounded = true
@@ -186,6 +198,18 @@ struct SessionDetailView: View {
             new != nil ? .warning : nil
         }
         .sensoryFeedback(.selection, trigger: model.userToggleTick)
+    }
+
+    /// Tell the server (and the app's banner logic) whether this session is
+    /// being looked at: on screen with the app in the foreground.
+    private func updateLooking() {
+        let looking = isVisible && scenePhase == .active
+        model.setOnScreen(looking)
+        if looking {
+            PresenceTracker.shared.show(serverProfileID: server.id, conversationID: model.conversationID)
+        } else {
+            PresenceTracker.shared.hide(serverProfileID: server.id, conversationID: model.conversationID)
+        }
     }
 
     private var content: some View {

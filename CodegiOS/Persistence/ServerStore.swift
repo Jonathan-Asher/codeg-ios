@@ -10,11 +10,25 @@ final class ServerStore {
     private(set) var servers: [ServerProfile]
 
     private let defaults: UserDefaults
-    private let storageKey = "codeg.servers.v1"
+    private let storageKey = ServerStore.storageKey
+    static let storageKey = "codeg.servers.v1"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.servers = ServerStore.load(from: defaults, key: storageKey)
+    }
+
+    /// The saved servers as persisted right now, without an instance. Push
+    /// registration reads these so it always sees the latest list, whichever
+    /// window's store last saved it.
+    static func persistedServers(defaults: UserDefaults = .standard) -> [ServerProfile] {
+        load(from: defaults, key: storageKey)
+    }
+
+    /// A client for `profile` from its persisted token (see `client(for:)`).
+    static func makeClient(for profile: ServerProfile) -> CodegClient? {
+        guard let baseURL = profile.baseURL, let token = Keychain.token(for: profile.id) else { return nil }
+        return CodegClient(baseURL: baseURL, token: token)
     }
 
     // MARK: - Mutations
@@ -28,6 +42,9 @@ final class ServerStore {
         guard Keychain.setToken(token, for: profile.id) else { return nil }
         servers.append(profile)
         persist()
+        // A server was just added: the moment to ask for notification
+        // permission, and to hand this phone's push token to the server.
+        PushRegistration.shared.serverAdded(profile)
         return profile
     }
 
@@ -45,12 +62,17 @@ final class ServerStore {
             // Store the new secret first; abort the whole update if it fails.
             guard Keychain.setToken(token, for: profile.id) else { return false }
         }
+        let endpointChanged = servers[index].urlString != profile.urlString || !(token ?? "").isEmpty
         servers[index] = profile
         persist()
+        if endpointChanged { PushRegistration.shared.serverEndpointChanged(profile) }
         return true
     }
 
     func delete(_ profile: ServerProfile) {
+        // Take the client before the token is gone: the server must forget
+        // this phone's push token.
+        PushRegistration.shared.serverRemoved(profile, client: client(for: profile))
         servers.removeAll { $0.id == profile.id }
         Keychain.deleteToken(for: profile.id)
         persist()
@@ -58,7 +80,9 @@ final class ServerStore {
 
     func delete(at offsets: IndexSet) {
         for index in offsets {
-            Keychain.deleteToken(for: servers[index].id)
+            let profile = servers[index]
+            PushRegistration.shared.serverRemoved(profile, client: client(for: profile))
+            Keychain.deleteToken(for: profile.id)
         }
         servers.remove(atOffsets: offsets)
         persist()

@@ -9,12 +9,18 @@ enum WSClientMessage: Encodable, Sendable {
     case attach(subscriptionId: String, connectionId: String, sinceSeq: UInt64?)
     case detach(subscriptionId: String)
     case ping
+    /// Who is looking (codeg fork `crate::presence`): this client is visible,
+    /// focused, how long since the user touched it, and which sessions it shows.
+    case presence(visible: Bool, focused: Bool, idleSecs: UInt64, conversationIds: [Int])
 
     private enum CodingKeys: String, CodingKey {
         case action
         case subscriptionId = "subscription_id"
         case connectionId = "connection_id"
         case sinceSeq = "since_seq"
+        case visible, focused
+        case idleSecs = "idle_secs"
+        case conversationIds = "conversation_ids"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -30,6 +36,12 @@ enum WSClientMessage: Encodable, Sendable {
             try c.encode(sub, forKey: .subscriptionId)
         case .ping:
             try c.encode("ping", forKey: .action)
+        case .presence(let visible, let focused, let idleSecs, let conversationIds):
+            try c.encode("presence", forKey: .action)
+            try c.encode(visible, forKey: .visible)
+            try c.encode(focused, forKey: .focused)
+            try c.encode(idleSecs, forKey: .idleSecs)
+            try c.encode(conversationIds, forKey: .conversationIds)
         }
     }
 }
@@ -125,8 +137,14 @@ final class EventStream: @unchecked Sendable {
         self.continuation = captured
     }
 
+    /// Extra subprotocol that declares this socket an iOS client (codeg fork
+    /// presence: a phone never counts as someone at the desk, but does count
+    /// as looking at the session it shows). The server still selects only
+    /// `codeg-events`, so servers without presence ignore it.
+    static let iosClientProtocol = "codeg-client.ios"
+
     func start() {
-        let protocols = ["codeg-events", "codeg-token.\(EventStream.base64URLNoPad(token))"]
+        let protocols = ["codeg-events", "codeg-token.\(EventStream.base64URLNoPad(token))", Self.iosClientProtocol]
         let newTask = session.webSocketTask(with: url, protocols: protocols)
         lock.lock(); task = newTask; lock.unlock()
         newTask.resume()
@@ -143,6 +161,11 @@ final class EventStream: @unchecked Sendable {
     func detach(subscriptionId: String) { send(.detach(subscriptionId: subscriptionId)) }
 
     func ping() { send(.ping) }
+
+    /// Report this client's presence (see ``WSClientMessage/presence``).
+    func reportPresence(visible: Bool, focused: Bool, idleSecs: UInt64 = 0, conversationIds: [Int]) {
+        send(.presence(visible: visible, focused: focused, idleSecs: idleSecs, conversationIds: conversationIds))
+    }
 
     func close() {
         lock.lock()

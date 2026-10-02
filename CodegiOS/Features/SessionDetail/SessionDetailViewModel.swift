@@ -229,6 +229,10 @@ final class SessionDetailViewModel {
     /// Pending silent reconnect after a transient socket drop (see
     /// `scheduleReconnect`). Cancelled by `closeStream`.
     private var reconnectTask: Task<Void, Never>?
+    /// Tells the server this phone is looking at the session while it is on
+    /// screen, so it doesn't push about it (see `SessionPresenceReporter`).
+    private let presenceReporter: SessionPresenceReporter
+    @ObservationIgnored private var isOnScreen = false
     /// Consecutive reconnect attempts with no frames since the last good one.
     /// Reset whenever the server confirms a fresh attach (a snapshot/replay
     /// frame). Past `maxStreamReconnects`, recovery gives up and reconciles.
@@ -252,6 +256,7 @@ final class SessionDetailViewModel {
         // is initialized.
         self.agentOptions = AgentOptionsModel(client: client)
         self.insertModel = ComposeInsertModel(client: client)
+        self.presenceReporter = SessionPresenceReporter(baseURL: client.baseURL, token: client.token)
         // Apply actions resolve (and cache) the same chat connection the send
         // flow uses, so a mode/config change targets the agent the next prompt
         // will reuse — and never spawns a second one.
@@ -963,6 +968,7 @@ final class SessionDetailViewModel {
         )
         conversationID = id
         draftCreatedConversationID = id
+        presenceReporter.update(conversationID: id, looking: isOnScreen)
         currentBranch = folder?.gitBranch
         // Refresh this app's own session list so the new row shows there too.
         notifyConversationsChanged()
@@ -1519,6 +1525,7 @@ final class SessionDetailViewModel {
     private func adoptLinkedConversation(_ id: Int) {
         guard conversationID == nil else { return }
         conversationID = id
+        presenceReporter.update(conversationID: id, looking: isOnScreen)
         Task { [weak self] in
             guard let self else { return }
             guard let detail = try? await self.client.conversationDetail(id: id),
@@ -2202,8 +2209,17 @@ final class SessionDetailViewModel {
         stream = nil
     }
 
+    /// The screen became visible / hidden, or the app moved between the
+    /// foreground and the background.
+    func setOnScreen(_ onScreen: Bool) {
+        isOnScreen = onScreen
+        presenceReporter.update(conversationID: conversationID, looking: onScreen)
+    }
+
     /// Tear down all live work — call from `.onDisappear` / deinit paths.
     func teardown() {
+        isOnScreen = false
+        presenceReporter.stop()
         sendTask?.cancel()
         sendTask = nil
         consumerTask?.cancel()

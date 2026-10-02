@@ -164,6 +164,24 @@ final class AppModel {
         }
     }
 
+    /// Open a session a notification pointed at: switch to its server if
+    /// needed, then land on it with a fresh, predictable stack (like a deep
+    /// link), so Back returns to the session list.
+    func openFromPush(serverID: ServerProfile.ID, conversationID: Int) {
+        guard serverStore.servers.contains(where: { $0.id == serverID }) else { return }
+        if selectedServerID != serverID { selectedServerID = serverID }
+        serversSheetPresented = false
+        settingsSheetPresented = false
+        let route = Route.conversation(conversationID)
+        if isCompact {
+            selectedTab = .chats
+            paths[.chats] = [route]
+        } else {
+            sidebarSection = .chats
+            open(route)
+        }
+    }
+
     // MARK: - Server-scoped resets
 
     /// Conversation, folder, and route identities are all endpoint-local.

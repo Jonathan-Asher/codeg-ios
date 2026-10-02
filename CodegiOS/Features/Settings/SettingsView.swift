@@ -30,6 +30,7 @@ struct SettingsView: View {
             ScrollView {
                 VStack(spacing: 22) {
                     personalizationSection
+                    iPhoneSection
                     aiSection
                     integrationsSection
                     systemSection
@@ -61,6 +62,13 @@ struct SettingsView: View {
             leafRow(.general)
             SettingsRowDivider()
             leafRow(.quickMessages)
+        }
+    }
+
+    /// Settings of this iPhone itself: push notifications.
+    private var iPhoneSection: some View {
+        EditorSection(title: "On This iPhone") {
+            leafRows([.notifications])
         }
     }
 
