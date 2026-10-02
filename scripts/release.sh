@@ -22,7 +22,6 @@ cd "$ROOT"
 
 PROJECT_YML="$ROOT/project.yml"
 CHANGELOG="$ROOT/CHANGELOG.md"
-EXPORT_OPTS="$SCRIPT_DIR/ExportOptions.plist"
 
 # ---- pretty output -----------------------------------------------------------
 if [[ -t 1 ]]; then
@@ -259,47 +258,9 @@ if [[ "$ARCHIVE" == 1 ]]; then
   info "Archiving for App Store Connect (before publishing)"
   run mkdir -p build
   run cp "$NOTES_FILE" "build/release-notes-$TAG.txt"
-  ARCHIVE_PATH="build/CodegiOS-$TAG.xcarchive"
-  EXPORT_PATH="build/export-$TAG"
-
-  AUTH_ARGS=()
-  if [[ -n "${ASC_KEY_ID:-}" && -n "${ASC_ISSUER_ID:-}" && -n "${ASC_KEY_PATH:-}" ]]; then
-    if [[ "$DRY_RUN" != 1 && ! -f "$ASC_KEY_PATH" ]]; then die "ASC_KEY_PATH not found: $ASC_KEY_PATH"; fi
-    AUTH_ARGS=(-authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
-  fi
-
-  SIGNING_ARGS=()
-  if [[ -n "${CODEG_DEVELOPMENT_TEAM:-}" ]]; then
-    SIGNING_ARGS=(CODEG_DEVELOPMENT_TEAM="$CODEG_DEVELOPMENT_TEAM")
-  fi
-
-  run xcodebuild -project CodegiOS.xcodeproj -scheme CodegiOS -configuration Release \
-      -destination 'generic/platform=iOS' -archivePath "$ARCHIVE_PATH" \
-      ${SIGNING_ARGS[@]+"${SIGNING_ARGS[@]}"} \
-      ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
-      -skipMacroValidation -allowProvisioningUpdates clean archive
-  run xcodebuild -exportArchive -archivePath "$ARCHIVE_PATH" \
-      -exportPath "$EXPORT_PATH" -exportOptionsPlist "$EXPORT_OPTS" \
-      ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} -allowProvisioningUpdates
-
-  if [[ ${#AUTH_ARGS[@]} -gt 0 ]]; then
-    # altool locates the key by id under ~/.appstoreconnect/private_keys/AuthKey_<ID>.p8
-    KEYDIR="$HOME/.appstoreconnect/private_keys"
-    run mkdir -p "$KEYDIR"
-    run cp "$ASC_KEY_PATH" "$KEYDIR/AuthKey_${ASC_KEY_ID}.p8"
-    if [[ "$DRY_RUN" == 1 ]]; then
-      printf '%s[dry-run]%s xcrun altool --upload-app -f %s/*.ipa -t ios --apiKey %s --apiIssuer %s\n' \
-        "$DIM" "$RST" "$EXPORT_PATH" "$ASC_KEY_ID" "$ASC_ISSUER_ID"
-    else
-      IPA="$(ls "$EXPORT_PATH"/*.ipa 2>/dev/null | head -1 || true)"
-      [[ -n "$IPA" ]] || die "no .ipa produced in $EXPORT_PATH"
-      xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
-      info "Uploaded to App Store Connect."
-    fi
-  else
-    warn "ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_PATH not all set — skipping upload."
-    warn "The exported .ipa is in $EXPORT_PATH; upload it via Transporter.app or set those vars and re-run."
-  fi
+  # Archive + export + optional upload live in scripts/archive.sh, shared with
+  # the CI testflight job. It honors DRY_RUN and the ASC_* / team env vars.
+  DRY_RUN="$DRY_RUN" "$SCRIPT_DIR/archive.sh" --tag "$TAG"
 fi
 
 # ---- commit, tag, push, release ---------------------------------------------

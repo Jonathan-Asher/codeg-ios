@@ -1,0 +1,149 @@
+name: iOS
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      testflight:
+        description: Archive and upload to TestFlight (needs the TESTFLIGHT_ENABLED variable and the ASC_* secrets)
+        type: boolean
+        default: false
+      build_number:
+        description: Build number (CURRENT_PROJECT_VERSION) for the upload; defaults to the run number
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Simulator build
+    runs-on: macos-26
+    timeout-minutes: 45
+    concurrency:
+      group: ios-build-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # SwiftTerm ships a Metal shader; Xcode 26+ installs the Metal compiler
+      # as a separate component.
+      - name: Ensure the Metal toolchain
+        run: |
+          if ! xcrun metal --version >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Build for the iOS Simulator
+        run: |
+          set -o pipefail
+          fmt=cat
+          if command -v xcbeautify >/dev/null 2>&1; then fmt="xcbeautify --renderer github-actions"; fi
+          xcodebuild build \
+            -project CodegiOS.xcodeproj \
+            -scheme CodegiOS \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedData \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild.log" | $fmt
+
+      - name: Check the app identity
+        run: |
+          plist="$(ls -d build/DerivedData/Build/Products/Debug-iphonesimulator/*.app | head -1)/Info.plist"
+          plutil -p "$plist" | grep -E 'CFBundleIdentifier|CFBundleDisplayName|CFBundleURLSchemes|CodegURLScheme|ITSAppUsesNonExemptEncryption' -A2
+          check() {
+            local got
+            got="$(/usr/libexec/PlistBuddy -c "Print :$1" "$plist")"
+            if [[ "$got" != "$2" ]]; then echo "::error::$1 is '$got', expected '$2'"; exit 1; fi
+          }
+          check CFBundleIdentifier io.ashurov.codeg
+          check CFBundleDisplayName "Codeg Plus"
+          check CFBundleURLTypes:0:CFBundleURLSchemes:0 codegplus
+          check CodegURLScheme codegplus
+          check ITSAppUsesNonExemptEncryption false
+
+      - name: Upload the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ${{ runner.temp }}/xcodebuild.log
+          retention-days: 7
+
+  # Manual only. Disabled until the repository variable TESTFLIGHT_ENABLED is
+  # set to "true", which should happen once the ASC_KEY_ID, ASC_ISSUER_ID and
+  # ASC_KEY_P8 secrets exist (see docs/FORK.md).
+  testflight:
+    name: TestFlight upload
+    if: github.event_name == 'workflow_dispatch' && inputs.testflight && vars.TESTFLIGHT_ENABLED == 'true'
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 60
+    concurrency:
+      group: ios-testflight
+      cancel-in-progress: false
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the App Store Connect API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          missing=""
+          [[ -n "$ASC_KEY_ID" ]] || missing+=" ASC_KEY_ID"
+          [[ -n "$ASC_ISSUER_ID" ]] || missing+=" ASC_ISSUER_ID"
+          [[ -n "$ASC_KEY_P8" ]] || missing+=" ASC_KEY_P8"
+          if [[ -n "$missing" ]]; then echo "::error::missing secrets:$missing"; exit 1; fi
+          keydir="$HOME/.appstoreconnect/private_keys"
+          key="$keydir/AuthKey_${ASC_KEY_ID}.p8"
+          mkdir -p "$keydir"
+          # Accept the .p8 contents as-is, or base64-encoded.
+          if grep -q 'BEGIN PRIVATE KEY' <<<"$ASC_KEY_P8"; then
+            printf '%s\n' "$ASC_KEY_P8" >"$key"
+          else
+            printf '%s' "$ASC_KEY_P8" | base64 --decode >"$key"
+          fi
+          chmod 600 "$key"
+          echo "ASC_KEY_PATH=$key" >>"$GITHUB_ENV"
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Ensure the Metal toolchain
+        run: |
+          if ! xcrun metal --version >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Archive, export and upload
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number || github.run_number }}
+        run: scripts/archive.sh --tag "ci-${{ github.run_number }}" --build-number "$BUILD_NUMBER"
+
+      - name: Remove the API key
+        if: always()
+        run: rm -rf "$HOME/.appstoreconnect/private_keys"
