@@ -4,6 +4,11 @@ Copyright 2026 xintaofei
 This product includes software developed by the Codeg project
 (https://github.com/xintaofei/codeg).
 
+Codeg Plus is a modified version of Codeg for iOS
+(https://github.com/xintaofei/codeg-ios), maintained at
+https://github.com/Jonathan-Asher/codeg-ios. Modifications Copyright 2026
+Jonathan Ashurov; see docs/FORK.md for what changed.
+
 Product and service names used by this application identify compatible
 integrations. All related trademarks are the property of their respective
 owners. Their use does not imply endorsement or affiliation.

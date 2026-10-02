@@ -12,11 +12,29 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Codeg Plus fork identity: bundle id `io.ashurov.codeg`, display name
+  "Codeg Plus", URL scheme `codegplus`, all set in `Config/Identity.xcconfig`.
+- Push notification entitlements (`aps-environment`, time-sensitive) and an
+  APNs device-token registration stub.
+- CI: a simulator build on every push and pull request, plus a manual
+  TestFlight upload job (off until its secrets exist).
+
 ### Changed
 
-- Apple signing now uses an ignored local configuration instead of a committed
-  development team identifier.
+- The fork's Apple Developer team is committed in `Config/Signing.xcconfig`;
+  `Config/Signing.local.xcconfig` can still override it.
+- Archive, export and upload moved into `scripts/archive.sh`, shared by
+  `scripts/release.sh --archive` and CI.
+
 ### Fixed
+
+- Unknown and custom agent types no longer decode as Claude (upstream #4).
+- The live stream recovers after a drop or backgrounding, and the session
+  resyncs when the app returns to the foreground (upstream #10, #17).
+- Expert Skills use endpoints that exist on codeg-server (upstream #15).
+- The transcript keeps its bottom pin across keyboard and layout changes
+  (upstream #16).
+- The event WebSocket keeps the server URL's base path (upstream #19).
 
 ## [1.0.1] - 2026-07-07
 

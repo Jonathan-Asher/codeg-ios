@@ -1,4 +1,20 @@
-# Codeg for iOS
+# Codeg Plus
+
+[![iOS](https://github.com/Jonathan-Asher/codeg-ios/actions/workflows/ios.yml/badge.svg?branch=main)](https://github.com/Jonathan-Asher/codeg-ios/actions/workflows/ios.yml)
+
+> **This is a fork** of [xintaofei/codeg-ios](https://github.com/xintaofei/codeg-ios),
+> the iOS client for [codeg](https://github.com/xintaofei/codeg), shipped to
+> TestFlight as **Codeg Plus** (`io.ashurov.codeg`, URL scheme `codegplus://`).
+> Upstream is largely frozen and has useful fixes waiting in open pull requests.
+> The fork carries those fixes (upstream PRs #4, #10, #15, #16, #17 and #19)
+> and its own app identity, so it installs next to the upstream app. Features
+> for a self-hosted codeg server, push notifications and on-device voice, will
+> be added here.
+> [docs/FORK.md](docs/FORK.md) lists the fork's changes, the upstream PRs it
+> carries, and how CI and TestFlight work. The upstream README follows, with
+> build notes updated for the fork.
+
+## Codeg for iOS
 
 A native, universal (iPhone + iPad) SwiftUI client for the [codeg](https://github.com/xintaofei/codeg)
 multi-agent coding server. Manage your codeg servers, browse their sessions, read
@@ -35,14 +51,17 @@ xcodegen generate            # regenerate CodegiOS.xcodeproj from project.yml
 open CodegiOS.xcodeproj
 ```
 
-For a physical device or archive, create the ignored local signing override
-before generating the project:
+Device builds and archives sign with the fork's team (`3L92BZK46V`, committed
+in `Config/Signing.xcconfig`). To use a different team, create the ignored
+local override before generating the project:
 
 ```bash
 cp Config/Signing.local.xcconfig.example Config/Signing.local.xcconfig
 # Edit Signing.local.xcconfig and replace YOUR_TEAM_ID.
 xcodegen generate
 ```
+
+The app's name, bundle id and URL scheme live in `Config/Identity.xcconfig`.
 
 Or from the command line (simulator):
 
@@ -85,7 +104,8 @@ scripts/release.sh patch --yes       # skip the confirmation prompt
 scripts/release.sh minor --archive   # also archive + upload to App Store Connect
 ```
 
-`--archive` runs `xcodebuild archive`/`-exportArchive` (via
+`--archive` runs [`scripts/archive.sh`](scripts/archive.sh) (also used by the CI
+`testflight` job): `xcodebuild archive`/`-exportArchive` (via
 [`scripts/ExportOptions.plist`](scripts/ExportOptions.plist)) and, when an App
 Store Connect API key is present, uploads the `.ipa`. This happens **before** the
 tag and GitHub Release are published, so a signing/export/upload failure aborts
