@@ -49,6 +49,8 @@
 	<string>$(CODEG_DISPLAY_NAME) uses the camera to take photos for your messages and to scan a server's QR code.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>$(CODEG_DISPLAY_NAME) connects to your codeg server, which may run on your local network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>$(CODEG_DISPLAY_NAME) records your voice while you hold or tap the mic, and transcribes it on this iPhone into your message.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>$(CODEG_DISPLAY_NAME) attaches photos you pick to your message to the agent.</string>
 	<key>UIApplicationSceneManifest</key>

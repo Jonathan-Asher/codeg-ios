@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "release": "models-v1",
+  "models": [
+    {
+      "id": "he-turbo",
+      "title": "ivrit.ai Hebrew whisper",
+      "summary": "Hebrew with English terms, or English. large-v3-turbo fine-tuned by ivrit.ai, q8_0.",
+      "languages": [
+        "he",
+        "en"
+      ],
+      "detectsLanguage": false,
+      "license": "Apache-2.0",
+      "source": "ivrit-ai/whisper-large-v3-turbo-ggml ggml-model.bin (sha256 c8090411113357097bfafc2b8e228ec1639fa7f5fe4ecb5d054ac0ccef8641b1), quantized to q8_0 with whisper.cpp v1.9.1 whisper-quantize. VAD: ggml-org/whisper-vad ggml-silero-v5.1.2.bin (MIT).",
+      "weights": "ggml-ivrit-large-v3-turbo-q8_0.bin",
+      "vad": "ggml-silero-v5.1.2.bin",
+      "files": [
+        {
+          "path": "ggml-ivrit-large-v3-turbo-q8_0.bin",
+          "url": "https://github.com/Jonathan-Asher/codeg-ios/releases/download/models-v1/ggml-ivrit-large-v3-turbo-q8_0.bin",
+          "size": 874188075,
+          "sha256": "123a936e686b06d45b52dc1790251a1418841352ca94079ae643d57893ffc9a6"
+        },
+        {
+          "path": "ggml-silero-v5.1.2.bin",
+          "url": "https://github.com/Jonathan-Asher/codeg-ios/releases/download/models-v1/ggml-silero-v5.1.2.bin",
+          "size": 885098,
+          "sha256": "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf"
+        }
+      ]
+    },
+    {
+      "id": "multi-turbo",
+      "title": "Multilingual whisper",
+      "summary": "OpenAI large-v3-turbo, q5_0. Detects the language; weaker Hebrew.",
+      "languages": [
+        "auto"
+      ],
+      "detectsLanguage": true,
+      "license": "MIT",
+      "source": "ggerganov/whisper.cpp ggml-large-v3-turbo-q5_0.bin (byte-identical; reproduced with whisper-quantize q5_0 from ggml-large-v3-turbo.bin). VAD: ggml-org/whisper-vad ggml-silero-v5.1.2.bin (MIT).",
+      "weights": "ggml-large-v3-turbo-q5_0.bin",
+      "vad": "ggml-silero-v5.1.2.bin",
+      "files": [
+        {
+          "path": "ggml-large-v3-turbo-q5_0.bin",
+          "url": "https://github.com/Jonathan-Asher/codeg-ios/releases/download/models-v1/ggml-large-v3-turbo-q5_0.bin",
+          "size": 574041195,
+          "sha256": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+        },
+        {
+          "path": "ggml-silero-v5.1.2.bin",
+          "url": "https://github.com/Jonathan-Asher/codeg-ios/releases/download/models-v1/ggml-silero-v5.1.2.bin",
+          "size": 885098,
+          "sha256": "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf"
+        }
+      ]
+    }
+  ]
+}

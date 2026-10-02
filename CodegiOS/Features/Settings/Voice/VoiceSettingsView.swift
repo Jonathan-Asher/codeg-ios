@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Settings › Voice: the on-device read-aloud voice (BlueTTS 2.5, Hebrew and
-/// English) — its 575 MB model download — plus the voice, the speed and what
-/// gets read.
+/// Settings › Voice: voice typing (on-device whisper, see
+/// ``VoiceTypingSection``), then the on-device read-aloud voice (BlueTTS 2.5,
+/// Hebrew and English) — its 575 MB model download — plus the voice, the speed
+/// and what gets read.
 struct VoiceSettingsView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var confirmDownload = false
@@ -12,7 +13,7 @@ struct VoiceSettingsView: View {
     @State private var readCode = VoicePrefs.readCode
     @State private var readToolOutput = VoicePrefs.readToolOutput
 
-    private var models: VoiceModelStore { VoiceModelStore.shared }
+    private var models: ModelPackStore { VoiceModelStore.shared }
     private var player: ReadAloudPlayer { ReadAloudPlayer.shared }
 
     private static let sampleID = "voice-settings-sample"
@@ -23,6 +24,7 @@ struct VoiceSettingsView: View {
             CodegBackground()
             ScrollView {
                 VStack(spacing: 22) {
+                    VoiceTypingSection()
                     modelSection
                     voiceSection
                     readingSection

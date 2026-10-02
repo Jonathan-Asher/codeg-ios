@@ -9,7 +9,7 @@ struct ReadAloudButton: View {
 
     @State private var askDownload = false
     private var player: ReadAloudPlayer { ReadAloudPlayer.shared }
-    private var models: VoiceModelStore { VoiceModelStore.shared }
+    private var models: ModelPackStore { VoiceModelStore.shared }
 
     private var isReading: Bool { player.isReading(id) }
 

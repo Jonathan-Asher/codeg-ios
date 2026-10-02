@@ -30,6 +30,8 @@ struct ComposeBar: View {
     let onDismissNotice: () -> Void
     /// Backs the "+" menu's text-insert pickers (quick messages / experts / commands).
     let insertModel: ComposeInsertModel
+    /// Folder and session title, passed to whisper to bias voice typing.
+    var dictationContext = DictationContext()
 
     @FocusState private var focused: Bool
     /// Bumped on each send tap to fire a light "sent" impact immediately (rather
@@ -40,6 +42,15 @@ struct ComposeBar: View {
     @State private var showFileImporter = false
     @State private var showCamera = false
     @State private var presentedInsert: ComposeInsertModel.Source?
+    /// The field's cursor / selection, so dictated text lands at the cursor.
+    @State private var selection: TextSelection?
+    /// Identifies this composer's dictation to the shared controller.
+    @State private var dictationOwner = UUID()
+    /// The speech model the download alert offers.
+    @State private var modelToDownload: SpeechModelManifest.Model?
+
+    private var dictation: DictationController { DictationController.shared }
+    private var isMyDictation: Bool { dictation.owner == dictationOwner && dictation.isBusy }
 
     private var hasText: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -66,10 +77,20 @@ struct ComposeBar: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
+            if isMyDictation {
+                DictationStrip(
+                    phase: dictation.phase,
+                    levels: dictation.levels,
+                    elapsed: dictation.elapsed,
+                    autoSend: Binding(get: { dictation.autoSend }, set: { dictation.autoSend = $0 }),
+                    onCancel: { dictation.cancel() }
+                )
+            }
+
             GlassEffectContainer(spacing: 8) {
                 HStack(alignment: .bottom, spacing: 8) {
                     addButton
-                    TextField("Message", text: $text, axis: .vertical)
+                    TextField("Message", text: $text, selection: $selection, axis: .vertical)
                         .textInputAutocapitalization(.sentences)
                         .lineLimit(1...6)
                         // Match the transcript body so the text you type reads at
@@ -86,6 +107,15 @@ struct ComposeBar: View {
                         // to a rounded rect as it grows — no hard switch needed.
                         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.xl, style: .continuous))
                         .hairlineBorder(Theme.Radius.xl)
+
+                    DictationMicButton(
+                        owner: dictationOwner,
+                        isRecording: isMyDictation && dictation.phase == .recording,
+                        isTranscribing: isMyDictation && dictation.phase == .transcribing,
+                        isDisabled: dictation.isBusy && !isMyDictation,
+                        onStart: startDictation,
+                        onStop: { dictation.stop() }
+                    )
 
                     actionButton
                 }
@@ -129,6 +159,19 @@ struct ComposeBar: View {
         .animation(Theme.Motion.expand, value: isInFlight)
         .animation(Theme.Motion.expand, value: notice)
         .animation(Theme.Motion.expand, value: attachments)
+        .animation(Theme.Motion.expand, value: isMyDictation)
+        .alert(
+            "Download the speech model?",
+            isPresented: Binding(get: { modelToDownload != nil }, set: { if !$0 { modelToDownload = nil } }),
+            presenting: modelToDownload
+        ) { model in
+            Button("Download \(Self.megabytes(model.totalBytes))") {
+                SpeechModelStores.store(for: model).start()
+            }
+            Button("Not Now", role: .cancel) {}
+        } message: { model in
+            Text("Voice typing runs on this iPhone with \(model.title), a one-time \(Self.megabytes(model.totalBytes)) download that continues in the background. Until it is ready, use the mic key on the iOS keyboard. You can manage it in Settings › Voice.")
+        }
         // Width + keyboard-gap shift on focus change, kept just slightly slower
         // than the keyboard's own animation so the bar settles into place.
         .animation(.snappy(duration: 0.26), value: focused)
@@ -273,6 +316,60 @@ struct ComposeBar: View {
             .transition(.scale.combined(with: .opacity))
             .accessibilityLabel("Send when this turn ends")
         }
+    }
+
+    // MARK: - Dictation
+
+    private func startDictation() {
+        switch dictation.availability() {
+        case .needsModel(let id):
+            guard let model = SpeechModelCatalog.model(id: id) else {
+                onNotice("Voice typing isn't available in this build.")
+                return
+            }
+            let store = SpeechModelStores.store(for: model)
+            switch store.state {
+            case .downloading, .verifying:
+                onNotice("The speech model is downloading (\(Int(store.progress * 100))%). Until it is ready, use the mic key on the iOS keyboard.")
+            default:
+                modelToDownload = model
+            }
+        case .microphoneDenied:
+            onNotice("Microphone access is off for \(AppIdentity.displayName). Turn it on in the Settings app, or use the mic key on the iOS keyboard.")
+        case .ready:
+            let owner = dictationOwner
+            Task {
+                await dictation.start(owner: owner, context: dictationContext) { outcome in
+                    applyDictation(outcome)
+                }
+            }
+        }
+    }
+
+    private func applyDictation(_ outcome: DictationOutcome) {
+        switch outcome {
+        case .text(let words, let sendNow):
+            let result = DictationText.insert(words, into: text, selection: DictationText.utf16Range(of: selection, in: text))
+            text = result.text
+            selection = TextSelection(insertionPoint: String.Index(utf16Offset: result.cursor, in: result.text))
+            if sendNow { sendAfterDictation() }
+        case .nothing(let reason), .failed(let reason):
+            onNotice(reason)
+        }
+    }
+
+    /// "Send right after transcribing": what the send button would do.
+    private func sendAfterDictation() {
+        if isInFlight {
+            sendHaptic &+= 1
+            if steering.deliverNow { onInsert() } else { onQueue() }
+        } else {
+            send()
+        }
+    }
+
+    private static func megabytes(_ bytes: Int64) -> String {
+        "\(Int((Double(bytes) / 1_000_000).rounded())) MB"
     }
 
     // MARK: - Attachment intake

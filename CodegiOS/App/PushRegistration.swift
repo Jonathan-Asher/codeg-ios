@@ -438,6 +438,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         PushRegistration.shared.appDidLaunch()
+        // Reconnect speech-model downloads that were running at the last quit.
+        SpeechModelStores.resumeActiveDownloads()
         return true
     }
 
@@ -453,6 +455,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// app to deliver their events.
     func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
                      completionHandler: @escaping () -> Void) {
-        VoiceModelStore.shared.handleBackgroundEvents(identifier: identifier, completion: completionHandler)
+        if identifier == VoiceModelCatalog.pack.sessionIdentifier {
+            VoiceModelStore.shared.handleBackgroundEvents(completion: completionHandler)
+        } else if let store = SpeechModelStores.store(forSessionIdentifier: identifier) {
+            store.handleBackgroundEvents(completion: completionHandler)
+        } else {
+            completionHandler()
+        }
     }
 }
