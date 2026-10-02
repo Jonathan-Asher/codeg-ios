@@ -7,9 +7,9 @@
 > TestFlight as **Codeg Plus** (`io.ashurov.codeg`, URL scheme `codegplus://`).
 > Upstream is largely frozen and has useful fixes waiting in open pull requests.
 > The fork carries those fixes (upstream PRs #4, #10, #15, #16, #17 and #19)
-> and its own app identity, so it installs next to the upstream app. Features
-> for a self-hosted codeg server, push notifications and on-device voice, will
-> be added here.
+> and its own app identity, so it installs next to the upstream app. It adds
+> push notifications, the session features of Jonathan's codeg fork (activity,
+> steering, Continue) and on-device read-aloud (BlueTTS).
 > [docs/FORK.md](docs/FORK.md) lists the fork's changes, the upstream PRs it
 > carries, and how CI and TestFlight work. The upstream README follows, with
 > build notes updated for the fork.

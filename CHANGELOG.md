@@ -12,10 +12,30 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Push notifications from every saved codeg server: permission asked after a
+  server is added (or from Settings), the device token registered with each
+  server, Acknowledge / Snooze / Approve / Open actions, taps that open the
+  session, no banner for the session on screen, and phone presence reported to
+  the server while a session is open.
+- Settings › Notifications: this iPhone's preferences on each server (turn
+  finished, needs you, critical alerts, errors) and "Send test push".
+- What each session is doing — Working, Needs you, Idle, Interrupted, idle with
+  background tasks, paused on the usage limit — on session rows and in the
+  session title.
+- Insert a message into the running turn (native steering), queue messages for
+  when the turn ends, and deliver at once while only background work holds the
+  turn.
+- A Continue chip after an agent reply, and "Continued" dividers for continue,
+  resume-after-restart and limit-reset turns.
+- Session Details shows the session's model, effort and mode.
+- Read aloud: agent replies read on device with BlueTTS (Hebrew + English),
+  a one-time 575 MB model download in the background, playback with the screen
+  locked and Now Playing controls; the system voice reads until the model is
+  there. Settings › Voice manages the model, voice, speed and what is read.
+- Unit tests (`CodegiOSTests`) and a CI job that runs them.
 - Codeg Plus fork identity: bundle id `io.ashurov.codeg`, display name
   "Codeg Plus", URL scheme `codegplus`, all set in `Config/Identity.xcconfig`.
-- Push notification entitlements (`aps-environment`, time-sensitive) and an
-  APNs device-token registration stub.
+- Push notification entitlements (`aps-environment`, time-sensitive).
 - CI: a simulator build on every push and pull request, plus a manual
   TestFlight upload job (off until its secrets exist).
 
