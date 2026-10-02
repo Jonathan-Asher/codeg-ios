@@ -292,46 +292,7 @@ final class SessionDetailViewModel {
         switch mode {
         case .existing(let id):
             phase = .loading
-            do {
-                async let detailReq = client.conversationDetail(id: id)
-                async let foldersReq = client.listFolders()
-                let detail = try await detailReq
-                let folders = try await foldersReq
-
-                summary = detail.summary
-                turns = detail.turns
-                sessionStats = detail.sessionStats
-                allFolders = folders
-                folder = folders.first { $0.id == detail.summary.folderId }
-                currentBranch = detail.summary.gitBranch ?? folder?.gitBranch
-                insertModel.agentType = detail.summary.agentType
-                phase = .loaded
-                // Initial load lands at the latest message.
-                requestStickToBottom()
-                // If a turn is still running on this session (started here earlier,
-                // from codeg web, or before an app relaunch), attach so it streams
-                // live and any pending permission/question card surfaces.
-                //
-                // Two signals say "a turn is in flight", and we trust EITHER:
-                //   • `in_flight_user_turn_id` — precise, but the server only stamps
-                //     it when the persisted tail is `[…, User]` or `[…, User,
-                //     Assistant]` (see `apply_in_flight_message_id`); it goes nil the
-                //     moment the agent persists a second trailing assistant turn
-                //     mid-stream — which is exactly what plan mode does (a plan/
-                //     reasoning turn, then the partial reply). That nil would strand a
-                //     genuinely-streaming session on a static transcript.
-                //   • row `status == .inProgress` — coarser but RELIABLE: set
-                //     unconditionally when the turn starts and cleared only on
-                //     `TurnComplete`, so it stays true for the whole turn (including
-                //     while blocked on an ExitPlanMode confirmation).
-                // Treating either as live makes reattach retry through a transient
-                // discovery miss; the snapshot then decides what's actually running.
-                let serverSaysLive = detail.inFlightUserTurnId != nil
-                    || detail.summary.status == .inProgress
-                await reattachIfLive(serverSaysLive: serverSaysLive)
-            } catch {
-                phase = .failed(Self.describe(error))
-            }
+            await syncExisting(id: id, stickToBottom: true)
 
         case .new(let request):
             // A blank draft: show the composer immediately, then populate the
@@ -342,6 +303,97 @@ final class SessionDetailViewModel {
             didLoadDraftOptions = true
             await loadDraftOptions(preselectedFolderID: request.preselectedFolderID)
         }
+    }
+
+    /// Re-sync an already-loaded, server-linked conversation: re-fetch its detail
+    /// and reattach if a turn is live. Shared by the initial `load()` (which shows
+    /// the loading spinner first) and `refreshOnForeground()` (which does not, so
+    /// resuming the app doesn't flash the transcript away and back).
+    private func syncExisting(id: Int, stickToBottom: Bool) async {
+        do {
+            async let detailReq = client.conversationDetail(id: id)
+            async let foldersReq = client.listFolders()
+            let detail = try await detailReq
+            let folders = try await foldersReq
+
+            summary = detail.summary
+            turns = detail.turns
+            sessionStats = detail.sessionStats
+            allFolders = folders
+            folder = folders.first { $0.id == detail.summary.folderId }
+            currentBranch = detail.summary.gitBranch ?? folder?.gitBranch
+            insertModel.agentType = detail.summary.agentType
+            phase = .loaded
+            if stickToBottom { requestStickToBottom() }
+            // If a turn is still running on this session (started here earlier,
+            // from codeg web, or before an app relaunch), attach so it streams
+            // live and any pending permission/question card surfaces.
+            //
+            // Two signals say "a turn is in flight", and we trust EITHER:
+            //   • `in_flight_user_turn_id` — precise, but the server only stamps
+            //     it when the persisted tail is `[…, User]` or `[…, User,
+            //     Assistant]` (see `apply_in_flight_message_id`); it goes nil the
+            //     moment the agent persists a second trailing assistant turn
+            //     mid-stream — which is exactly what plan mode does (a plan/
+            //     reasoning turn, then the partial reply). That nil would strand a
+            //     genuinely-streaming session on a static transcript.
+            //   • row `status == .inProgress` — coarser but RELIABLE: set
+            //     unconditionally when the turn starts and cleared only on
+            //     `TurnComplete`, so it stays true for the whole turn (including
+            //     while blocked on an ExitPlanMode confirmation).
+            // Treating either as live makes reattach retry through a transient
+            // discovery miss; the snapshot then decides what's actually running.
+            let serverSaysLive = detail.inFlightUserTurnId != nil
+                || detail.summary.status == .inProgress
+            await reattachIfLive(serverSaysLive: serverSaysLive)
+        } catch {
+            // A foreground refresh failing silently leaves the existing transcript
+            // on screen (better than replacing a working view with an error for a
+            // transient network blip); the initial `load()` path, which has nothing
+            // to fall back to, is the one that needs `phase = .failed`.
+            if phase != .loaded {
+                phase = .failed(Self.describe(error))
+            }
+        }
+    }
+
+    /// Re-sync when the app returns to the foreground: iOS suspends the live
+    /// WebSocket while backgrounded, so without this the transcript sits frozen
+    /// until the user backs all the way out and re-enters (which tears down and
+    /// rebuilds this whole model via `RootView`'s `.id(...)`). No-op for a draft
+    /// `.new` session — there's nothing server-linked yet to resync.
+    /// Two different recoveries, picked by whether a turn was actually live:
+    /// a turn that was streaming is reconnected IN PLACE by
+    /// `resumeStreamAfterForeground()` (the same `liveTurn`/connection, so
+    /// nothing it already streamed is lost or duplicated); an idle session
+    /// instead gets a full re-fetch, since nothing here would otherwise notice
+    /// e.g. a rename or a message sent from another client while we were away.
+    func refreshOnForeground() async {
+        guard case .existing(let id) = mode, phase == .loaded else { return }
+        if isInFlight, isTurnActive, liveTurn != nil {
+            resumeStreamAfterForeground()
+            return
+        }
+        // No turn was in flight. Discard any (now-unverifiable) stale live
+        // tracking defensively before resyncing — see `discardStaleLiveState`.
+        discardStaleLiveState()
+        await syncExisting(id: id, stickToBottom: false)
+    }
+
+    /// Drop local tracking of a live turn WITHOUT telling the server to cancel it
+    /// (unlike `cancel()`) — the turn may genuinely still be running; only our
+    /// view of it (built from a socket iOS suspended while backgrounded) is
+    /// stale. `reattachIfLive`, called right after, re-discovers the true state:
+    /// a fresh stream if it's still going, or nothing further if the server-
+    /// fetched `turns` already carry its finished reply.
+    private func discardStaleLiveState() {
+        guard liveTurn != nil else { return }
+        isTurnActive = false
+        sendTask?.cancel()
+        consumerTask?.cancel()
+        closeStream()
+        liveTurn = nil
+        sendState = .idle
     }
 
     /// Populate the draft's folder/agent lists and pick sensible defaults

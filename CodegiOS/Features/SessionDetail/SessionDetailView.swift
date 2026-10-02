@@ -21,14 +21,13 @@ struct SessionDetailView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    /// Set on any `.background` frame, consumed on the next `.active` — see the
+    /// `onChange(of: scenePhase)` below for why this beats comparing adjacent phases.
+    @State private var wasBackgrounded = false
     @State private var showRename = false
     @State private var renameText = ""
     @State private var showDetails = false
     @State private var showDeleteConfirm = false
-    /// Latched when the app is suspended, so returning to the foreground can
-    /// re-attach a stream iOS killed while we were away (see the `scenePhase`
-    /// handler below).
-    @State private var wasBackgrounded = false
 
     init(server: ServerProfile, client: CodegClient, conversationID: Int,
          onOpenSession: ((NewSessionRequest) -> Void)? = nil) {
@@ -136,25 +135,23 @@ struct SessionDetailView: View {
         }
         .task { await model.load() }
         .onDisappear { model.teardown() }
-        // iOS suspends the app on screen lock / app switch, which kills the event
-        // socket while a reply is still streaming. Nothing else re-attaches, so the
-        // transcript would sit on a frozen shimmer until the session is reopened.
-        //
-        // Only a real background round-trip counts: a trip through `.inactive`
-        // alone (control center, the app-switcher peek, an alert) never suspends
-        // us, and reconnecting there would churn a perfectly healthy socket. The
-        // latch is why this doesn't just compare against the previous phase —
-        // returning to the foreground can report `.background` → `.inactive` →
-        // `.active`, so the phase we come back from is not reliably `.background`.
-        .onChange(of: scenePhase) { _, phase in
-            switch phase {
+        // The live WebSocket is suspended (and often killed outright) while
+        // backgrounded, so returning here otherwise leaves a frozen transcript
+        // until the user backs all the way out and re-enters. Returning from the
+        // background almost always lands on `.active` via an intermediate
+        // `.inactive` frame first (`.background` -> `.inactive` -> `.active`), so
+        // comparing only the immediately-prior phase misses most real resumes —
+        // `wasBackgrounded` instead remembers that a `.background` frame happened
+        // at all since the last refresh, however many `.inactive` frames follow it.
+        // A sheet/alert/control-center pull's `.active` -> `.inactive` -> `.active`
+        // blip never sets the flag, so it still won't trigger a spurious refresh.
+        .onChange(of: scenePhase) { _, new in
+            switch new {
             case .background:
                 wasBackgrounded = true
-            case .active:
-                if wasBackgrounded {
-                    wasBackgrounded = false
-                    model.resumeStreamAfterForeground()
-                }
+            case .active where wasBackgrounded:
+                wasBackgrounded = false
+                Task { await model.refreshOnForeground() }
             default:
                 break
             }
