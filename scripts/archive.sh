@@ -88,16 +88,16 @@ run xcodebuild -project CodegiOS.xcodeproj -scheme CodegiOS -configuration Relea
 
 # Static frameworks (ONNX Runtime ships its iOS binary as a static archive) are
 # linked into the app binary, but Xcode still copies the .framework into
-# Codeg.app/Frameworks. App Store Connect rejects such a bundle (ITMS-90208), so
-# drop every embedded framework whose binary is a static archive before export
-# re-signs the app.
-APP_FRAMEWORKS="$ARCHIVE_PATH/Products/Applications/Codeg.app/Frameworks"
-if [[ -d "$APP_FRAMEWORKS" ]]; then
-  for fw in "$APP_FRAMEWORKS"/*.framework; do
+# Codeg.app/Frameworks (with or without its binary). App Store Connect rejects
+# such a bundle (ITMS-90208), so drop every embedded framework the app binary
+# does not load before export re-signs the app.
+APP_DIR="$ARCHIVE_PATH/Products/Applications/Codeg.app"
+if [[ "$DRY_RUN" != 1 ]]; then
+  for fw in "$APP_DIR"/Frameworks/*.framework; do
     [[ -e "$fw" ]] || continue
-    bin="$fw/$(basename "$fw" .framework)"
-    if [[ -f "$bin" ]] && file "$bin" | grep -q "ar archive"; then
-      info "Removing static framework from the bundle: $(basename "$fw")"
+    name="$(basename "$fw")"
+    if ! otool -L "$APP_DIR/Codeg" | grep -qF "@rpath/$name/"; then
+      info "Removing unused framework from the bundle: $name"
       rm -rf "$fw"
     fi
   done
@@ -122,13 +122,14 @@ if [[ ${#AUTH_ARGS[@]} -gt 0 ]]; then
     IPA="$(ls "$EXPORT_PATH"/*.ipa 2>/dev/null | head -1 || true)"
     [[ -n "$IPA" ]] || die "no .ipa produced in $EXPORT_PATH"
     # Refuse to upload a bundle App Store Connect would reject for an embedded
-    # static framework.
+    # framework the app never loads.
     CHECK_DIR="$(mktemp -d)"
-    unzip -q "$IPA" 'Payload/*/Frameworks/*' -d "$CHECK_DIR" 2>/dev/null || true
-    for bin in "$CHECK_DIR"/Payload/*.app/Frameworks/*.framework/*; do
-      [[ -f "$bin" ]] || continue
-      if file "$bin" | grep -q "ar archive"; then
-        die "the .ipa still embeds a static framework: ${bin#"$CHECK_DIR"/}"
+    unzip -q "$IPA" -d "$CHECK_DIR"
+    for fw in "$CHECK_DIR"/Payload/*.app/Frameworks/*.framework; do
+      [[ -e "$fw" ]] || continue
+      name="$(basename "$fw")"
+      if ! otool -L "$CHECK_DIR"/Payload/*.app/Codeg | grep -qF "@rpath/$name/"; then
+        die "the .ipa embeds a framework the app does not load: $name"
       fi
     done
     rm -rf "$CHECK_DIR"
