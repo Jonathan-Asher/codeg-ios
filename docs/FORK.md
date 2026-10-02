@@ -350,9 +350,50 @@ Speed on an iPhone has not been measured.
   `stt-models.json` in both places and bump nothing else. Files with a new name
   or checksum download again.
 
+### Smaller models measured (not shipped)
+
+These were run on the same clips and the same Mac (M4 Max). The Hebrew rows
+compare against the shipped setup (ivrit.ai turbo q8_0 with the prompt).
+"Recognizable" code terms counts the 51 English or code terms in the mixed
+clips that are either written in Latin letters or still recognizable in
+Hebrew letters (`scripts/stt-bench/terms.py`).
+
+| Hebrew | FLEURS WER | Hebrew + code (say) | BlueTTS mixed | Terms written / recognizable | Decode, 12 short clips |
+| ------ | ---------- | ------------------- | ------------- | ---------------------------- | ---------------------- |
+| **ivrit.ai turbo q8_0 (shipped), Metal** | **23.5%** | **45.4%** | **23.6%** | 24% / 67% | 4.5 s |
+| GigaAM-He 220M CTC, ONNX int8 (320 MB), CPU | 34.5% | 49.5% | 55.0% | 2% / 29% | 0.57 s |
+| GigaAM-He, PyTorch on the Mac GPU (MPS) | 34.5% | 49.5% | 54.1% | 2% / 27% | 0.44 s |
+| Apple `DictationTranscriber` he-IL (on device, no app download) | 41.8% | 51.5% | 53.2% | 0% / 6% | 1.9 s |
+
+| English (7 clips) | WER | Decode |
+| ----------------- | --- | ------ |
+| ivrit.ai turbo, English mode | 15.0% | 2.1 s |
+| stock turbo, Auto | 13.0% | — |
+| Apple `SpeechTranscriber` en-US | 17.0% | 0.9 s |
+| Moonshine streaming tiny, CPU | 12.0% | 0.35 s |
+| Moonshine streaming small, CPU | 13.0% | 0.82 s |
+
+- **GigaAM-He** (asfberlin/fast-hebrew-asr, MIT) is 6–8× faster on short
+  utterances. Its Hebrew is clearly worse (+11 WER points on FLEURS, about
+  twice the errors on the mixed clips), and it mangles code terms. Its
+  character CTC switches script mid-word ("הדוקרr", "mרג"). It exports to
+  ONNX: 885 MB fp32, or 320 MB with int8 MatMul/Gemm weights, and the app
+  already ships ONNX Runtime. A full int8 export, which also quantizes the
+  convolutions, has no ONNX Runtime CPU kernel (`ConvInteger`). Core ML
+  conversion with coremltools 9.0 fails at the conformer's relative positional
+  encoding.
+- **Apple `DictationTranscriber`** runs Hebrew on device in iOS 26
+  (`SpeechTranscriber` has no Hebrew), but it is the weakest on code terms.
+- **Moonshine** and Apple's English transcriber are within noise of whisper on
+  English, and they don't help mixed Hebrew.
+
+Verdict: keep ivrit.ai turbo. Revisit GigaAM-He only if turbo is too slow on
+the phone, and try whisper's Core ML encoder first.
+
 ### Benchmark harness
 
-`scripts/stt-bench/` holds the macOS CLI and scorer used for the numbers above.
+`scripts/stt-bench/` holds the macOS CLI, the WER scorer and the code-term
+scorer used for the numbers above.
 The CLI runs the app's own `WhisperCppEngine`, `SileroVAD`, `DictationTrim`
 and `DictationText` code against the XCFramework's macOS slice. Usage is in the
 header of each file.
