@@ -85,6 +85,68 @@ jobs:
           path: ${{ runner.temp }}/xcodebuild.log
           retention-days: 7
 
+  test:
+    name: Unit tests
+    runs-on: macos-26
+    timeout-minutes: 45
+    concurrency:
+      group: ios-test-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Ensure the Metal toolchain
+        run: |
+          if ! xcrun metal --version >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Pick an iPhone simulator
+        run: |
+          udid="$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          devices = json.load(sys.stdin)["devices"]
+          def version(key):
+              m = re.search(r"iOS-(\d+)-(\d+)", key)
+              return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+          for key in sorted((k for k in devices if "iOS" in k), key=version, reverse=True):
+              phones = [d for d in devices[key] if d["name"].startswith("iPhone")]
+              if phones:
+                  print(phones[0]["udid"]); break
+          ')"
+          if [[ -z "$udid" ]]; then echo "::error::no iPhone simulator available"; exit 1; fi
+          echo "SIM_UDID=$udid" >>"$GITHUB_ENV"
+          xcrun simctl list devices available | grep "$udid"
+
+      - name: Run the unit tests
+        run: |
+          set -o pipefail
+          fmt=cat
+          if command -v xcbeautify >/dev/null 2>&1; then fmt="xcbeautify --renderer github-actions"; fi
+          xcodebuild test \
+            -project CodegiOS.xcodeproj \
+            -scheme CodegiOS \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build/DerivedData \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log" | $fmt
+
+      - name: Upload the test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-test-log
+          path: ${{ runner.temp }}/xcodebuild-test.log
+          retention-days: 7
+
   # Manual only. Disabled until the repository variable TESTFLIGHT_ENABLED is
   # set to "true", which should happen once the ASC_KEY_ID, ASC_ISSUER_ID and
   # ASC_KEY_P8 secrets exist (see docs/FORK.md).
