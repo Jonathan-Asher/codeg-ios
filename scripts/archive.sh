@@ -86,6 +86,23 @@ run xcodebuild -project CodegiOS.xcodeproj -scheme CodegiOS -configuration Relea
     ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
     -skipMacroValidation -allowProvisioningUpdates clean archive
 
+# Static frameworks (ONNX Runtime ships its iOS binary as a static archive) are
+# linked into the app binary, but Xcode still copies the .framework into
+# Codeg.app/Frameworks. App Store Connect rejects such a bundle (ITMS-90208), so
+# drop every embedded framework whose binary is a static archive before export
+# re-signs the app.
+APP_FRAMEWORKS="$ARCHIVE_PATH/Products/Applications/Codeg.app/Frameworks"
+if [[ -d "$APP_FRAMEWORKS" ]]; then
+  for fw in "$APP_FRAMEWORKS"/*.framework; do
+    [[ -e "$fw" ]] || continue
+    bin="$fw/$(basename "$fw" .framework)"
+    if [[ -f "$bin" ]] && file "$bin" | grep -q "ar archive"; then
+      info "Removing static framework from the bundle: $(basename "$fw")"
+      rm -rf "$fw"
+    fi
+  done
+fi
+
 info "Exporting to $EXPORT_PATH"
 run xcodebuild -exportArchive -archivePath "$ARCHIVE_PATH" \
     -exportPath "$EXPORT_PATH" -exportOptionsPlist "$EXPORT_OPTS" \
@@ -104,6 +121,17 @@ if [[ ${#AUTH_ARGS[@]} -gt 0 ]]; then
   else
     IPA="$(ls "$EXPORT_PATH"/*.ipa 2>/dev/null | head -1 || true)"
     [[ -n "$IPA" ]] || die "no .ipa produced in $EXPORT_PATH"
+    # Refuse to upload a bundle App Store Connect would reject for an embedded
+    # static framework.
+    CHECK_DIR="$(mktemp -d)"
+    unzip -q "$IPA" 'Payload/*/Frameworks/*' -d "$CHECK_DIR" 2>/dev/null || true
+    for bin in "$CHECK_DIR"/Payload/*.app/Frameworks/*.framework/*; do
+      [[ -f "$bin" ]] || continue
+      if file "$bin" | grep -q "ar archive"; then
+        die "the .ipa still embeds a static framework: ${bin#"$CHECK_DIR"/}"
+      fi
+    done
+    rm -rf "$CHECK_DIR"
     xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
     info "Uploaded $IPA to App Store Connect."
   fi
