@@ -1,0 +1,17 @@
+// App identity of the Codeg Plus fork — the single place to change it.
+//
+// project.yml feeds these into PRODUCT_BUNDLE_IDENTIFIER, CFBundleDisplayName,
+// the registered URL scheme and the usage strings; the app reads the scheme
+// and display name back from Info.plist at runtime (see App/AppIdentity.swift).
+// After editing, run `xcodegen generate`.
+
+// Home-screen / App Store name. If App Store Connect rejects the name, change
+// it here (and the matching app record in App Store Connect).
+CODEG_DISPLAY_NAME = Codeg Plus
+
+// Must match the explicit App ID registered for team 3L92BZK46V.
+CODEG_BUNDLE_ID = io.ashurov.codeg
+
+// Deep-link scheme (`codegplus://conversation/<id>`). Distinct from the
+// upstream app's `codeg://` so both can be installed side by side.
+CODEG_URL_SCHEME = codegplus

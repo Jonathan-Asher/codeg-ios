@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Codeg</string>
+	<string>$(CODEG_DISPLAY_NAME)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -27,26 +27,30 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>app.codeg.ios</string>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>codeg</string>
+				<string>$(CODEG_URL_SCHEME)</string>
 			</array>
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CodegURLScheme</key>
+	<string>$(CODEG_URL_SCHEME)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Codeg uses the camera to take photos for your messages and to scan a server's QR code.</string>
+	<string>$(CODEG_DISPLAY_NAME) uses the camera to take photos for your messages and to scan a server's QR code.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Codeg connects to your codeg server, which may run on your local network.</string>
+	<string>$(CODEG_DISPLAY_NAME) connects to your codeg server, which may run on your local network.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Codeg attaches photos you pick to your message to the agent.</string>
+	<string>$(CODEG_DISPLAY_NAME) attaches photos you pick to your message to the agent.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

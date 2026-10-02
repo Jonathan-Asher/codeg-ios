@@ -24,7 +24,7 @@ struct OnboardingView: View {
                     .hairlineBorder(Theme.Radius.xl, color: Theme.accent.opacity(0.3))
                     .padding(.bottom, 24)
 
-                Text("Codeg")
+                Text(AppIdentity.displayName)
                     .font(.largeTitle.weight(.bold))
                     .foregroundStyle(Theme.textPrimary)
                 Text("Your coding agents, in your pocket.")

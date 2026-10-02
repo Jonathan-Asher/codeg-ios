@@ -1,15 +1,17 @@
 name: CodegiOS
 options:
-  bundleIdPrefix: com.codeg
+  bundleIdPrefix: io.ashurov
   deploymentTarget:
     iOS: "26.0"
   createIntermediateGroups: true
   groupSortPosition: top
   developmentLanguage: en
 
+# Base.xcconfig pulls in Identity.xcconfig (bundle id, display name, URL
+# scheme — the one place to rename the app) and Signing.xcconfig (team).
 configFiles:
-  Debug: Config/Signing.xcconfig
-  Release: Config/Signing.xcconfig
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
 
 packages:
   # Native VT100/xterm terminal emulator (the equivalent of the web client's
@@ -26,8 +28,9 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "1,2"
-    # Device installs require a team supplied by Config/Signing.local.xcconfig
-    # or the CODEG_DEVELOPMENT_TEAM xcodebuild setting. Simulators need neither.
+    # The team comes from Config/Signing.xcconfig (overridable through
+    # Config/Signing.local.xcconfig or the CODEG_DEVELOPMENT_TEAM xcodebuild
+    # setting). Simulator builds need no signing at all.
     CODE_SIGNING_ALLOWED: "YES"
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: minimal
@@ -44,7 +47,7 @@ targets:
       - package: SwiftTerm
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.codeg.ios
+        PRODUCT_BUNDLE_IDENTIFIER: $(CODEG_BUNDLE_ID)
         PRODUCT_NAME: Codeg
         MARKETING_VERSION: "1.0.1"
         CURRENT_PROJECT_VERSION: "2"
@@ -56,7 +59,14 @@ targets:
     info:
       path: CodegiOS/Info.plist
       properties:
-        CFBundleDisplayName: Codeg
+        # Name and URL scheme come from Config/Identity.xcconfig.
+        CFBundleDisplayName: "$(CODEG_DISPLAY_NAME)"
+        # Read by AppIdentity.urlScheme so deep-link parsing follows the
+        # registered scheme.
+        CodegURLScheme: "$(CODEG_URL_SCHEME)"
+        # Only standard HTTPS/TLS from the OS is used, so no export-compliance
+        # documentation is needed for each upload.
+        ITSAppUsesNonExemptEncryption: false
         # Version is single-sourced from the MARKETING_VERSION / CURRENT_PROJECT_VERSION
         # build settings above so `scripts/release.sh` only has to bump those two lines.
         # These MUST stay as $(...) references, not literals — a literal here overrides
@@ -71,18 +81,18 @@ targets:
           - en
           - zh-Hans
         CFBundleURLTypes:
-          - CFBundleURLName: app.codeg.ios
+          - CFBundleURLName: "$(PRODUCT_BUNDLE_IDENTIFIER)"
             CFBundleURLSchemes:
-              - codeg
+              - "$(CODEG_URL_SCHEME)"
         UILaunchScreen: {}
         UIUserInterfaceStyleSupportsDark: true
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-        NSLocalNetworkUsageDescription: "Codeg connects to your codeg server, which may run on your local network."
-        NSPhotoLibraryUsageDescription: "Codeg attaches photos you pick to your message to the agent."
-        NSCameraUsageDescription: "Codeg uses the camera to take photos for your messages and to scan a server's QR code."
+        NSLocalNetworkUsageDescription: "$(CODEG_DISPLAY_NAME) connects to your codeg server, which may run on your local network."
+        NSPhotoLibraryUsageDescription: "$(CODEG_DISPLAY_NAME) attaches photos you pick to your message to the agent."
+        NSCameraUsageDescription: "$(CODEG_DISPLAY_NAME) uses the camera to take photos for your messages and to scan a server's QR code."
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

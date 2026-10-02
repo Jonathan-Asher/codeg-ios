@@ -1,7 +1,9 @@
-// Shared signing defaults. Keep personal team identifiers out of source control.
-CODEG_DEVELOPMENT_TEAM =
+// Shared signing defaults. The Apple Developer Team ID is not a secret, so the
+// fork's team is committed here; certificates, profiles and API keys are not.
+CODEG_DEVELOPMENT_TEAM = 3L92BZK46V
 
-// Optional developer-local override (ignored by Git).
+// Optional developer-local override (ignored by Git), e.g. to build with a
+// different team.
 #include? "Signing.local.xcconfig"
 
 DEVELOPMENT_TEAM = $(CODEG_DEVELOPMENT_TEAM)

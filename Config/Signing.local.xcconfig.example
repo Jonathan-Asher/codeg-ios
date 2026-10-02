@@ -1,2 +1,3 @@
-// Copy this file to Signing.local.xcconfig and replace the placeholder.
+// Optional: copy this file to Signing.local.xcconfig to build with a team
+// other than the one committed in Signing.xcconfig.
 CODEG_DEVELOPMENT_TEAM = YOUR_TEAM_ID

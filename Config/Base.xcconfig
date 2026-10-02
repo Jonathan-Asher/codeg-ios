@@ -1,0 +1,3 @@
+// Project-level build settings for every configuration (wired in project.yml).
+#include "Identity.xcconfig"
+#include "Signing.xcconfig"
