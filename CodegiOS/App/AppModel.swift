@@ -175,6 +175,7 @@ final class AppModel {
         settingsPath = []
         contentPath = []
         activity.reset()
+        AttentionStore.shared.clear()
     }
 
     /// …and when the selected server is edited in place (same UUID, new

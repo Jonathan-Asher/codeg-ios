@@ -21,6 +21,12 @@ struct ComposeBar: View {
     let onNotice: (String) -> Void
     let onSend: () -> Void
     let onStop: () -> Void
+    /// What a send can do while a turn runs (codeg fork native steering).
+    var steering = ComposeSteering()
+    /// Deliver the draft into the running turn ("Insert into current turn").
+    var onInsert: () -> Void = {}
+    /// Park the draft until the running turn ends.
+    var onQueue: () -> Void = {}
     let onDismissNotice: () -> Void
     /// Backs the "+" menu's text-insert pickers (quick messages / experts / commands).
     let insertModel: ComposeInsertModel
@@ -40,6 +46,10 @@ struct ComposeBar: View {
     }
     private var canSend: Bool {
         (hasText || !attachments.isEmpty) && !isInFlight
+    }
+    /// Something typed while a turn runs: it can be queued or inserted.
+    private var hasDraftWhileBusy: Bool {
+        (hasText || !attachments.isEmpty) && isInFlight
     }
     private var remainingSlots: Int {
         max(0, AttachmentPrep.maxCount - attachments.count)
@@ -169,6 +179,9 @@ struct ComposeBar: View {
 
     @ViewBuilder
     private var actionButton: some View {
+        if hasDraftWhileBusy {
+            busySendButton
+        }
         if isInFlight {
             Button(action: onStop) {
                 Image(systemName: "stop.fill")
@@ -200,6 +213,66 @@ struct ComposeBar: View {
         guard canSend else { return }
         sendHaptic &+= 1
         onSend()
+    }
+
+    /// The send control while a turn runs. Held for background work: send
+    /// delivers at once. With native steering: a menu to insert into the
+    /// current turn or queue for its end. Otherwise: queue.
+    @ViewBuilder
+    private var busySendButton: some View {
+        if steering.deliverNow {
+            Button {
+                sendHaptic &+= 1
+                onInsert()
+            } label: {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 16, weight: .bold))
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.glassProminent)
+            .tint(Theme.accent)
+            .clipShape(Circle())
+            .transition(.scale.combined(with: .opacity))
+            .accessibilityLabel("Send now")
+        } else if steering.canInsert {
+            Menu {
+                Button {
+                    sendHaptic &+= 1
+                    onInsert()
+                } label: {
+                    Label("Insert into current turn", systemImage: "arrow.turn.down.right")
+                }
+                Button {
+                    sendHaptic &+= 1
+                    onQueue()
+                } label: {
+                    Label("Send when this turn ends", systemImage: "clock")
+                }
+            } label: {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 16, weight: .bold))
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.glassProminent)
+            .tint(Theme.accent)
+            .clipShape(Circle())
+            .transition(.scale.combined(with: .opacity))
+            .accessibilityLabel("Send options")
+        } else {
+            Button {
+                sendHaptic &+= 1
+                onQueue()
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 15, weight: .bold))
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.glassProminent)
+            .tint(Theme.accent)
+            .clipShape(Circle())
+            .transition(.scale.combined(with: .opacity))
+            .accessibilityLabel("Send when this turn ends")
+        }
     }
 
     // MARK: - Attachment intake

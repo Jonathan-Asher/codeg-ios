@@ -81,11 +81,17 @@ final class SessionDetailViewModel {
 
     /// A pending permission request — or ExitPlanMode — awaiting the user's
     /// choice. Rendered as a card above the compose bar; nil when none is pending.
-    private(set) var pendingPermission: PendingPermission?
+    private(set) var pendingPermission: PendingPermission? {
+        didSet { syncAttention() }
+    }
     /// A pending `ask_user_question` awaiting the user's answers.
-    private(set) var pendingQuestion: PendingQuestion?
+    private(set) var pendingQuestion: PendingQuestion? {
+        didSet { syncAttention() }
+    }
     /// A pending Grok `exit_plan_mode` awaiting approve / request-changes / abandon.
-    private(set) var pendingPlanApproval: PendingPlanApproval?
+    private(set) var pendingPlanApproval: PendingPlanApproval? {
+        didSet { syncAttention() }
+    }
     /// Revision notes waiting to be sent as a follow-up prompt after a
     /// "request changes" decision (see ``answerPlanApproval(decision:feedback:)``).
     private var pendingPlanFollowUp: String?
@@ -162,6 +168,43 @@ final class SessionDetailViewModel {
     /// derived `isPinned` / `currentStatus` instead mis-fires on the async `summary`
     /// load (nil → value), buzzing on every session open.
     private(set) var userToggleTick: Int = 0
+
+    // MARK: - Live session signals (codeg fork)
+
+    /// The live connection can take a message into the running turn through
+    /// the native `_session/steering` channel (snapshot
+    /// `native_steering_available`, or an `awaiting_background` event).
+    private(set) var nativeSteeringAvailable = false
+    /// The prompting turn is held open only for background work: the agent
+    /// answered and is idle, and a message is delivered at once.
+    private(set) var awaitingBackground = false
+    /// Background tasks still running (0 = none or count unknown).
+    private(set) var backgroundOutstanding = 0
+    /// The latest `attach_progress` phase while the session is being opened.
+    private(set) var attachPhase: String?
+
+    /// A message waiting for the running turn to end (or, while the turn is
+    /// held for background work, for the agent to go idle).
+    struct QueuedMessage: Identifiable, Hashable {
+        let id: UUID
+        let text: String
+        let attachments: [Attachment]
+        /// Queued explicitly for the END of the turn: never delivered into a
+        /// held turn, only sent once the turn finishes.
+        let holdUntilTurnEnd: Bool
+    }
+    private(set) var queuedMessages: [QueuedMessage] = []
+    /// A message delivered into the running turn, shown above the composer
+    /// until the turn ends.
+    struct InsertedNote: Identifiable, Hashable {
+        let id: UUID
+        let text: String
+        var serverID: String?
+        var delivered: Bool
+    }
+    private(set) var insertedNotes: [InsertedNote] = []
+    /// A queued message is being delivered into the held turn.
+    private var deliveringQueued = false
 
     // MARK: - Streaming internals
 
@@ -673,8 +716,17 @@ final class SessionDetailViewModel {
     /// composer's draft or attachments, so a message the user was typing survives;
     /// a rejected send still restores the text into the composer so it isn't lost.
     func send(overrideText: String? = nil) {
-        let text = (overrideText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
-        let sending = overrideText == nil ? attachments : []
+        if let overrideText {
+            startSend(text: overrideText, attachments: [], fromComposer: false)
+        } else {
+            startSend(text: draft, attachments: attachments, fromComposer: true)
+        }
+    }
+
+    /// Start a turn with `rawText` + `sending`. `fromComposer` clears the
+    /// composer once the optimistic turn is posted.
+    private func startSend(text rawText: String, attachments sending: [Attachment], fromComposer: Bool) {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (!text.isEmpty || !sending.isEmpty), !isInFlight else { return }
         // Identity comes from the loaded summary (existing conversation) or the
         // new-task request; without either the screen isn't ready to send.
@@ -708,7 +760,7 @@ final class SessionDetailViewModel {
             timestamp: Date()
         )
         pendingUserTurns.append(userTurn)
-        if overrideText == nil {
+        if fromComposer {
             draft = ""
             attachments = []
         }
@@ -722,6 +774,10 @@ final class SessionDetailViewModel {
         // un-sticks a stale reattach flag once the user sends again.
         liveTurnFromReattach = false
         sendState = .connecting
+        attachPhase = nil
+        awaitingBackground = false
+        backgroundOutstanding = 0
+        insertedNotes = []
         notice = nil
         // The user's own send always re-pins, even if they'd scrolled up.
         requestStickToBottom()
@@ -761,6 +817,8 @@ final class SessionDetailViewModel {
             // Prompt accepted — the created conversation is now legitimately in use,
             // so it must not be rolled back by a later stream failure.
             draftCreatedConversationID = nil
+            attachPhase = nil
+            refreshSteeringAvailability(connectionID: conn)
         } catch let error as APIError where error.isStaleConnection {
             // Stale connection → drop it and retry once with a fresh spawn.
             connectionID = nil
@@ -798,6 +856,8 @@ final class SessionDetailViewModel {
             if case .connecting = sendState { sendState = .thinking }
             try await sendPrompt(conn: conn, text: text, attachments: sending, clientMessageID: clientMessageID)
             draftCreatedConversationID = nil
+            attachPhase = nil
+            refreshSteeringAvailability(connectionID: conn)
         } catch is CancellationError {
             // no-op
         } catch APIError.turnInProgress {
@@ -1004,6 +1064,7 @@ final class SessionDetailViewModel {
                 // Attach confirmed — a healthy socket. Reset the reconnect budget
                 // and (for the initial connect) release the waiting send.
                 streamReconnects = 0
+                if isCurrent { applyLiveSignals(from: snap) }
                 // A mid-turn RECONNECT can drop the socket exactly as a
                 // `permission_request` / `question_request` arrives — losing that
                 // live event. The fresh snapshot still carries the pending card, so
@@ -1198,6 +1259,7 @@ final class SessionDetailViewModel {
             case .snapshot(let snap):
                 // A snapshot means the socket is healthy — reset the reconnect budget.
                 streamReconnects = 0
+                applyLiveSignals(from: snap)
                 if let rebuilt = buildLiveTurn(from: snap) {
                     live = rebuilt
                     liveTurn = rebuilt
@@ -1404,8 +1466,51 @@ final class SessionDetailViewModel {
             live.updatePlan(entries)
             requestScrollToBottom()
 
+        case .attachProgress(let phase, _):
+            attachPhase = (phase == "ready" || phase == "failed") ? nil : phase
+
+        case .awaitingBackground(let awaiting, let nativeSteering):
+            awaitingBackground = awaiting
+            if nativeSteering { nativeSteeringAvailable = true }
+            if awaiting { drainIntoHeldTurnIfPossible() }
+
+        case .backgroundActivity(let outstanding):
+            backgroundOutstanding = max(0, outstanding)
+
+        case .feedbackSubmitted(let id, let text):
+            if let idx = insertedNotes.firstIndex(where: { $0.serverID == nil && $0.text == text }) {
+                insertedNotes[idx].serverID = id
+            }
+
+        case .feedbackConsumed(let ids):
+            for idx in insertedNotes.indices where insertedNotes[idx].serverID.map({ ids.contains($0) }) == true {
+                insertedNotes[idx].delivered = true
+            }
+
         case .sessionStarted, .conversationStatusChanged, .userPromptSent, .unknown:
             break
+        }
+    }
+
+    /// Adopt the connection-level signals an attach snapshot carries.
+    private func applyLiveSignals(from snap: LiveSessionSnapshot) {
+        if snap.nativeSteeringAvailable { nativeSteeringAvailable = true }
+        awaitingBackground = snap.awaitingBackground && snap.status == .prompting
+        backgroundOutstanding = snap.backgroundOutstanding
+        if awaitingBackground { drainIntoHeldTurnIfPossible() }
+    }
+
+    /// The attach snapshot of a freshly spawned agent can predate its
+    /// handshake, so ask once more after the prompt is accepted.
+    private func refreshSteeringAvailability(connectionID conn: String) {
+        guard !nativeSteeringAvailable else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, self.connectionID == conn, !self.nativeSteeringAvailable else { return }
+            if let snap = try? await self.client.connectionSnapshot(connectionId: conn),
+               snap.nativeSteeringAvailable, self.connectionID == conn {
+                self.nativeSteeringAvailable = true
+            }
         }
     }
 
@@ -1459,9 +1564,16 @@ final class SessionDetailViewModel {
         requestScrollToBottom()
         // Replace the optimistic + live turns with the authoritative server copy.
         Task { [weak self] in await self?.refreshAfterTurn(reconciling: live) }
+        insertedNotes = []
+        awaitingBackground = false
+        backgroundOutstanding = 0
         // The keep-planning turn just ended — deliver the revision notes as the
         // follow-up prompt Grok expects (it discards them on the reply itself).
-        if let planFollowUp { send(overrideText: planFollowUp) }
+        if let planFollowUp {
+            send(overrideText: planFollowUp)
+        } else {
+            sendNextQueued()
+        }
     }
 
     /// Roll back an optimistic send that failed *before the server accepted the
@@ -1505,6 +1617,8 @@ final class SessionDetailViewModel {
 
     private func failLive(_ live: LiveTurn, message: String?) {
         isTurnActive = false
+        awaitingBackground = false
+        attachPhase = nil
         clearInteractivePrompts()
         live.flushAllText()
         live.isStreaming = false
@@ -1707,6 +1821,7 @@ final class SessionDetailViewModel {
         pendingQuestion = nil
         pendingPlanApproval = nil
         pendingPlanFollowUp = nil
+        if let id = conversationID { AttentionStore.shared.set(nil, for: id) }
     }
 
     /// After a successful turn, re-fetch the persisted transcript and splice it
@@ -1825,12 +1940,237 @@ final class SessionDetailViewModel {
         }
     }
 
+    // MARK: - Activity, steering, queue, Continue (codeg fork)
+
+    /// What this session's own live card says it is blocked on.
+    private var localAttention: String? {
+        if pendingPermission != nil { return "permission" }
+        if pendingQuestion != nil { return "question" }
+        if pendingPlanApproval != nil { return "plan_approval" }
+        return nil
+    }
+
+    /// Mirror this session's card into the shared attention snapshot, so its
+    /// list row agrees with the screen.
+    private func syncAttention() {
+        guard let id = conversationID else { return }
+        AttentionStore.shared.set(localAttention, for: id)
+    }
+
+    /// What the session is doing, for the header (see ``SessionActivity``).
+    var activity: SessionActivity {
+        var inputs = SessionActivityInputs(
+            attention: localAttention,
+            turnState: summary?.turnState,
+            turnStateReported: summary?.turnStateReported ?? true,
+            status: summary?.status,
+            limitPause: summary?.limitPause
+        )
+        if inputs.attention == nil, !isInFlight, let id = conversationID {
+            inputs.attention = AttentionStore.shared.kind(for: id)
+        }
+        if isInFlight {
+            if !isTurnActive, case .connecting = sendState {
+                inputs.connection = .connecting(phase: attachPhase)
+            } else {
+                inputs.connectionStatus = .prompting
+                inputs.awaitingBackground = awaitingBackground
+                inputs.backgroundCount = backgroundOutstanding
+            }
+        }
+        return SessionActivity.derive(inputs)
+    }
+
+    /// A message can go into the running turn right now (native steering).
+    var canInsertIntoTurn: Bool {
+        isInFlight && isTurnActive && nativeSteeringAvailable && connectionID != nil
+    }
+
+    /// The turn is held only for background work and the agent is idle: a
+    /// plain send is delivered into it at once instead of queueing.
+    var canDeliverIntoHeldTurn: Bool {
+        canInsertIntoTurn && HeldTurn.canDeliver(
+            status: .prompting, awaitingBackground: awaitingBackground, nativeSteering: nativeSteeringAvailable)
+    }
+
+    /// Where the send button routes while a turn runs.
+    var composerSendRoute: ComposerSendRoute {
+        HeldTurn.route(isPrompting: isInFlight, canDeliverNow: canDeliverIntoHeldTurn)
+    }
+
+    /// The plain send action: an ordinary prompt when idle, a delivery into a
+    /// held turn, or the queue while the agent is really replying.
+    func sendFromComposer() {
+        switch composerSendRoute {
+        case .send: send()
+        case .deliver: insertIntoTurn()
+        case .enqueue: queueDraft()
+        }
+    }
+
+    /// Deliver the composer's text (and images) into the running turn.
+    func insertIntoTurn() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sending = attachments
+        guard !text.isEmpty || !sending.isEmpty else { return }
+        guard canInsertIntoTurn, let conn = connectionID else {
+            queueDraft()
+            return
+        }
+        draft = ""
+        attachments = []
+        Task { [weak self] in
+            await self?.deliverIntoTurn(text: text, attachments: sending, connectionID: conn, restoreToComposer: true)
+        }
+    }
+
+    /// Park the composer's message until the running turn ends.
+    func queueDraft(holdUntilTurnEnd: Bool = false) {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sending = attachments
+        guard !text.isEmpty || !sending.isEmpty else { return }
+        queuedMessages.append(QueuedMessage(id: UUID(), text: text, attachments: sending,
+                                            holdUntilTurnEnd: holdUntilTurnEnd))
+        draft = ""
+        attachments = []
+        // Idle after all (the turn ended while typing): send it now.
+        if !isInFlight { sendNextQueued() }
+    }
+
+    func removeQueued(_ id: UUID) {
+        queuedMessages.removeAll { $0.id == id }
+    }
+
+    /// Put a queued message back in the composer to edit it.
+    func editQueued(_ id: UUID) {
+        guard let item = queuedMessages.first(where: { $0.id == id }) else { return }
+        queuedMessages.removeAll { $0.id == id }
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft = item.text }
+        else { draft += "\n" + item.text }
+        attachments += item.attachments
+    }
+
+    /// "Send now" on a queued row: into the turn when it can take it, else as
+    /// the next prompt when idle.
+    func sendQueuedNow(_ id: UUID) {
+        guard let item = queuedMessages.first(where: { $0.id == id }) else { return }
+        if !isInFlight {
+            queuedMessages.removeAll { $0.id == id }
+            startSend(text: item.text, attachments: item.attachments, fromComposer: false)
+        } else if canInsertIntoTurn, let conn = connectionID {
+            queuedMessages.removeAll { $0.id == id }
+            Task { [weak self] in
+                await self?.deliverIntoTurn(text: item.text, attachments: item.attachments,
+                                            connectionID: conn, restoreToComposer: false)
+            }
+        }
+    }
+
+    /// The turn ended: send the next queued message as a fresh prompt.
+    private func sendNextQueued() {
+        guard !isInFlight, let next = queuedMessages.first else { return }
+        queuedMessages.removeFirst()
+        startSend(text: next.text, attachments: next.attachments, fromComposer: false)
+    }
+
+    /// While the turn is held for background work, deliver the queue's head
+    /// into it — one message per idle stretch, FIFO, skipping nothing: a head
+    /// that waits for the turn's end holds everything behind it.
+    private func drainIntoHeldTurnIfPossible() {
+        guard canDeliverIntoHeldTurn, !deliveringQueued, let head = queuedMessages.first,
+              !head.holdUntilTurnEnd, let conn = connectionID else { return }
+        queuedMessages.removeFirst()
+        deliveringQueued = true
+        Task { [weak self] in
+            await self?.deliverIntoTurn(text: head.text, attachments: head.attachments,
+                                        connectionID: conn, restoreToComposer: false)
+            self?.deliveringQueued = false
+        }
+    }
+
+    /// `submit_session_feedback`. When the turn already ended (`NoActiveTurn`)
+    /// the message is sent as an ordinary prompt instead.
+    private func deliverIntoTurn(text: String, attachments sending: [Attachment], connectionID conn: String,
+                                 restoreToComposer: Bool) async {
+        let note = InsertedNote(id: UUID(), text: text.isEmpty ? "(image)" : text, serverID: nil,
+                                delivered: false)
+        insertedNotes.append(note)
+        requestScrollToBottom()
+        var blocks: [PromptInputBlock]?
+        if !sending.isEmpty {
+            blocks = (text.isEmpty ? [] : [PromptInputBlock.text(text)]) + sending.map(\.promptInputBlock)
+        }
+        do {
+            try await client.submitSessionFeedback(connectionId: conn, text: text, blocks: blocks)
+            // Native steering reaches the agent at once.
+            if let idx = insertedNotes.firstIndex(where: { $0.id == note.id }), nativeSteeringAvailable {
+                insertedNotes[idx].delivered = true
+            }
+        } catch let error as APIError where error.isNoActiveTurn {
+            insertedNotes.removeAll { $0.id == note.id }
+            // The turn finished meanwhile: this is simply the next prompt.
+            if isInFlight {
+                queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending,
+                                                    holdUntilTurnEnd: false), at: 0)
+            } else {
+                startSend(text: text, attachments: sending, fromComposer: false)
+            }
+        } catch {
+            insertedNotes.removeAll { $0.id == note.id }
+            if restoreToComposer, draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                draft = text
+                if attachments.isEmpty { attachments = sending }
+            } else {
+                queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending,
+                                                    holdUntilTurnEnd: false), at: 0)
+            }
+            notice = Self.describe(error)
+        }
+    }
+
+    /// The thread ends on the agent's reply (a finished live reply counts).
+    private var endsWithAgentReply: Bool {
+        if let live = liveTurn, !live.isStreaming { return !live.isEmpty && live.errorMessage == nil }
+        guard pendingUserTurns.isEmpty else { return false }
+        return ContinuePrompt.endsWithAgentReply(turns)
+    }
+
+    /// Offer Continue: an empty composer, nothing queued or waiting on you,
+    /// and the agent either idle after its reply, cut off mid-turn, or held
+    /// open only for background work (then it goes into the held turn).
+    var canOfferContinue: Bool {
+        guard summary != nil, !isDraftEditable else { return false }
+        guard draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty,
+              queuedMessages.isEmpty else { return false }
+        guard localAttention == nil else { return false }
+        switch activity {
+        case .idle: return !isInFlight && endsWithAgentReply
+        case .interrupted: return !isInFlight
+        case .background: return canDeliverIntoHeldTurn
+        default: return false
+        }
+    }
+
+    /// One tap: send the fork's Continue prompt ("continue").
+    func sendContinue() {
+        if canDeliverIntoHeldTurn, let conn = connectionID {
+            Task { [weak self] in
+                await self?.deliverIntoTurn(text: ContinuePrompt.text, attachments: [], connectionID: conn,
+                                            restoreToComposer: false)
+            }
+        } else if !isInFlight {
+            startSend(text: ContinuePrompt.text, attachments: [], fromComposer: false)
+        }
+    }
+
     // MARK: - Cancel
 
     func cancel() {
         guard let live = liveTurn else { return }
         let conn = connectionID
         isTurnActive = false
+        awaitingBackground = false
+        attachPhase = nil
         clearInteractivePrompts()
         live.flushAllText()
         live.isStreaming = false

@@ -40,6 +40,10 @@ struct TimelineNode: Identifiable {
         /// A context-compaction boundary — rendered as a chrome-less divider, not
         /// a card. Token counts are Grok-only (codex sends none).
         case compaction(before: Int?, after: Int?, running: Bool)
+        /// A user turn that only says "keep going" (Continue, the resume after
+        /// a restart, the continuation after a usage-limit reset), drawn as a
+        /// slim divider instead of a message card.
+        case continuation(ContinuePrompt.Variant)
         case footer(MessageTurn, questionID: String?)
         case plan([PlanEntry], streaming: Bool)
         case thinking
@@ -66,7 +70,7 @@ struct TimelineNode: Identifiable {
             let state: ToolCallState = running ? .running : (ops.contains(where: \.isError) ? .error : .done)
             return .tool(icon: "checklist", state: state)
         case .image: return .image
-        case .compaction: return .compaction
+        case .compaction, .continuation: return .compaction
         case .footer: return .footer
         case .plan: return .plan
         case .thinking: return .thinking
@@ -132,7 +136,7 @@ enum TranscriptTimeline {
             switch turn.role {
             case .user:
                 lastUserID = turn.id
-                nodes.append(TimelineNode(id: turn.id, content: .user(turn), agent: agent, startsGroup: true))
+                nodes.append(userNode(turn, agent: agent))
                 i += 1
             case .system:
                 // Skip system turns with no renderable text so the rail doesn't
@@ -152,10 +156,18 @@ enum TranscriptTimeline {
 
         // Optimistic user turns (sent, not yet reconciled into `turns`).
         for turn in pending {
-            nodes.append(TimelineNode(id: turn.id, content: .user(turn), agent: agent, startsGroup: true))
+            nodes.append(userNode(turn, agent: agent))
         }
 
         return nodes
+    }
+
+    /// A user turn's node: a message card, or a divider for a bare Continue.
+    private static func userNode(_ turn: MessageTurn, agent: AgentType) -> TimelineNode {
+        if let variant = ContinuePrompt.variant(of: turn) {
+            return TimelineNode(id: turn.id, content: .continuation(variant), agent: agent, startsGroup: true)
+        }
+        return TimelineNode(id: turn.id, content: .user(turn), agent: agent, startsGroup: true)
     }
 
     /// Build the **live** node tier — the in-flight reply. Cheap (O(segments); text

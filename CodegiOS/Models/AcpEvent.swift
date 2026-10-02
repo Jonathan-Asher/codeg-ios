@@ -78,6 +78,20 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     case planApprovalResolved(approvalId: String)
     /// The agent's live plan / TODO list (display only; does not block the turn).
     case planUpdate(entries: [PlanEntry])
+    /// Progress of opening the session (`queued`, `starting`, `resuming`,
+    /// `loading`, `creating`, `configuring`, `ready`, `failed`).
+    case attachProgress(phase: String, elapsedMs: Int)
+    /// The prompting turn is held open only for background work: the agent
+    /// answered and is idle. `nativeSteering` says a message can be delivered
+    /// into the held turn right away (`_session/steering`).
+    case awaitingBackground(awaiting: Bool, nativeSteering: Bool)
+    /// Background tasks (async sub-agents, background shells) still running,
+    /// from the transcript watcher. Only the count is read here.
+    case backgroundActivity(outstanding: Int)
+    /// A live-feedback note was stored for the running turn.
+    case feedbackSubmitted(id: String, text: String)
+    /// The agent read one or more feedback notes.
+    case feedbackConsumed(ids: [String])
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -87,6 +101,7 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         case used, size, messageId, blocks, message, code, textPreview
         case requestId, toolCall, options, questionId, questions, entries
         case approvalId, planMarkdown
+        case phase, elapsedMs, awaiting, nativeSteering, outstanding, item, ids
     }
 
     init(from decoder: Decoder) throws {
@@ -184,6 +199,26 @@ enum AcpEvent: Hashable, Sendable, Decodable {
             self = .planApprovalResolved(approvalId: try c.decodeIfPresent(String.self, forKey: .approvalId) ?? "")
         case "plan_update":
             self = .planUpdate(entries: try c.decodeIfPresent([PlanEntry].self, forKey: .entries) ?? [])
+        case "attach_progress":
+            self = .attachProgress(
+                phase: (try? c.decodeIfPresent(String.self, forKey: .phase)) ?? "starting",
+                elapsedMs: (try? c.decodeIfPresent(Int.self, forKey: .elapsedMs)) ?? 0
+            )
+        case "awaiting_background":
+            self = .awaitingBackground(
+                awaiting: (try? c.decodeIfPresent(Bool.self, forKey: .awaiting)) ?? false,
+                nativeSteering: (try? c.decodeIfPresent(Bool.self, forKey: .nativeSteering)) ?? false
+            )
+        case "background_activity":
+            self = .backgroundActivity(outstanding: (try? c.decodeIfPresent(Int.self, forKey: .outstanding)) ?? 0)
+        case "feedback_submitted":
+            let item = (try? c.decodeIfPresent(AnyJSON.self, forKey: .item)) ?? nil
+            self = .feedbackSubmitted(
+                id: item?.object?["id"]?.string ?? "",
+                text: item?.object?["text"]?.string ?? ""
+            )
+        case "feedback_consumed":
+            self = .feedbackConsumed(ids: (try? c.decodeIfPresent([String].self, forKey: .ids)) ?? [])
         default:
             self = .unknown(type: type)
         }
@@ -229,10 +264,18 @@ struct LiveSessionSnapshot: Sendable, Decodable {
     let pendingPermission: PendingPermissionSnapshot?
     let pendingQuestion: PendingQuestionSnapshot?
     let pendingPlanApproval: PendingPlanApprovalSnapshot?
+    /// The prompting turn is held open only for background work (fork).
+    let awaitingBackground: Bool
+    /// Launched-but-unresolved background tasks (fork). 0 = none or unknown.
+    let backgroundOutstanding: Int
+    /// Messages can be delivered into the running turn through the native
+    /// `_session/steering` channel (fork). Absent means false.
+    let nativeSteeringAvailable: Bool
 
     private enum CodingKeys: String, CodingKey {
         case connectionId, conversationId, folderId, status, externalId, eventSeq
         case liveMessage, activeToolCalls, pendingPermission, pendingQuestion, pendingPlanApproval
+        case awaitingBackground, backgroundOutstanding, nativeSteeringAvailable
     }
 
     init(from decoder: Decoder) throws {
@@ -248,6 +291,9 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         pendingPermission = (try? c.decodeIfPresent(PendingPermissionSnapshot.self, forKey: .pendingPermission)) ?? nil
         pendingQuestion = (try? c.decodeIfPresent(PendingQuestionSnapshot.self, forKey: .pendingQuestion)) ?? nil
         pendingPlanApproval = (try? c.decodeIfPresent(PendingPlanApprovalSnapshot.self, forKey: .pendingPlanApproval)) ?? nil
+        awaitingBackground = (try? c.decodeIfPresent(Bool.self, forKey: .awaitingBackground)) ?? false
+        backgroundOutstanding = (try? c.decodeIfPresent(Int.self, forKey: .backgroundOutstanding)) ?? 0
+        nativeSteeringAvailable = (try? c.decodeIfPresent(Bool.self, forKey: .nativeSteeringAvailable)) ?? false
     }
 }
 

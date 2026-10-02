@@ -63,9 +63,12 @@ struct SessionSnapshot: Hashable, Sendable, Decodable {
     /// Slash commands the live agent advertises (`available_commands`). Empty
     /// until a connection is bound to the conversation; surfaced in the "+" menu.
     let availableCommands: [AvailableCommandInfo]
+    /// The connection can take messages into a running turn (fork
+    /// `native_steering_available`). Absent means false.
+    let nativeSteeringAvailable: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case modes, currentMode, configOptions, selectorsReady, availableCommands
+        case modes, currentMode, configOptions, selectorsReady, availableCommands, nativeSteeringAvailable
     }
 
     init(from decoder: Decoder) throws {
@@ -75,6 +78,7 @@ struct SessionSnapshot: Hashable, Sendable, Decodable {
         configOptions = try c.decodeIfPresent([SessionConfigOption].self, forKey: .configOptions)
         selectorsReady = try c.decodeIfPresent(Bool.self, forKey: .selectorsReady) ?? false
         availableCommands = try c.decodeIfPresent([AvailableCommandInfo].self, forKey: .availableCommands) ?? []
+        nativeSteeringAvailable = (try? c.decodeIfPresent(Bool.self, forKey: .nativeSteeringAvailable)) ?? false
     }
 
     /// True when the snapshot actually carries selectable options (a live session

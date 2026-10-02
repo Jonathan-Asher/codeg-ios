@@ -77,29 +77,85 @@ struct SessionRow: View {
         .contentShape(Rectangle())
     }
 
+    /// What the session is doing (fork `turn_state` / attention / limit pause),
+    /// read from the shared attention snapshot so a row can say "Needs you".
+    private var activity: SessionActivity {
+        SessionActivity.of(conversation, attention: AttentionStore.shared.kind(for: conversation.id))
+    }
+
     /// Small agent avatar with a status-tinted dot badge in the corner (the live
     /// state additionally shows a pulse on the trailing edge).
     private var avatar: some View {
         AgentAvatar(agent: conversation.agentType, size: 26)
             .overlay(alignment: .bottomTrailing) {
                 Circle()
-                    .fill(conversation.status.tint)
+                    .fill(dotTint)
                     .frame(width: 8, height: 8)
                     .overlay(Circle().strokeBorder(Theme.bg, lineWidth: 1.5))
                     .offset(x: 1.5, y: 1.5)
             }
     }
 
+    /// The corner dot: the activity's colour when it says more than the review
+    /// status (needs you, interrupted, paused), else the status tint.
+    private var dotTint: Color {
+        switch activity {
+        case .needsYou: return Theme.warning
+        case .interrupted, .connectFailed: return Theme.danger
+        case .limitPaused: return Color.secondary
+        default: return conversation.status.tint
+        }
+    }
+
     @ViewBuilder
     private var trailing: some View {
-        if conversation.status.isLive {
+        switch activity {
+        case .working:
             LivePulse()
-        } else {
-            Text(RelativeTime.compact(from: conversation.updatedAt))
-                .font(.caption2)
-                .foregroundStyle(Theme.textTertiary)
-                .fixedSize()
+        case .needsYou:
+            ActivityRowTag(symbol: "hand.raised.fill", text: "Needs you", tint: Theme.warning)
+        case .interrupted:
+            ActivityRowTag(symbol: "exclamationmark.triangle.fill", text: "Interrupted", tint: Theme.danger)
+        case .limitPaused(let pause):
+            ActivityRowTag(
+                symbol: "pause.circle.fill",
+                text: pause.state == .claimed
+                    ? "Continuing"
+                    : LimitResetFormat.parts(resetsAt: pause.resetsAt).time,
+                tint: Theme.textSecondary
+            )
+        default:
+            if conversation.status.isLive && !conversation.turnStateReported {
+                LivePulse()
+            } else {
+                Text(RelativeTime.compact(from: conversation.updatedAt))
+                    .font(.caption2)
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize()
+            }
         }
+    }
+}
+
+/// A compact trailing tag on a session row: an icon and one or two words.
+private struct ActivityRowTag: View {
+    let symbol: String
+    let text: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+                .font(.system(size: 9, weight: .semibold))
+            Text(verbatim: text)
+                .font(.caption2.weight(.semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(tint.opacity(0.12), in: Capsule())
+        .fixedSize()
     }
 }
 

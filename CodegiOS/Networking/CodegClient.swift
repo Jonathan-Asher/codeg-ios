@@ -90,7 +90,7 @@ struct CodegClient: Sendable {
         search: String? = nil,
         sortBy: String? = nil
     ) async throws -> [ConversationSummary] {
-        try await postJSON("list_all_conversations", ListConversationsBody(
+        let data = try await send("list_all_conversations", body: ListConversationsBody(
             folderIds: folderIds,
             agentType: nil,
             search: search,
@@ -98,11 +98,24 @@ struct CodegClient: Sendable {
             status: status,
             includeChildren: nil
         ), session: Self.readSession)
+        let summaries: [ConversationSummary]
+        do { summaries = try CodegJSON.decoder.decode([ConversationSummary].self, from: data) }
+        catch { throw APIError.decoding(String(describing: error)) }
+        // `selector_state` keys are config ids; read them from the raw JSON so
+        // the snake_case key conversion can't rename them.
+        return ConversationSelectorState.patch(summaries, from: data)
     }
 
     /// Full session detail incl. message history.
     func conversationDetail(id: Int) async throws -> ConversationDetail {
-        try await postJSON("get_folder_conversation", ConversationIdBody(conversationId: id))
+        let data = try await send("get_folder_conversation", body: ConversationIdBody(conversationId: id))
+        var detail: ConversationDetail
+        do { detail = try CodegJSON.decoder.decode(ConversationDetail.self, from: data) }
+        catch { throw APIError.decoding(String(describing: error)) }
+        if let state = ConversationSelectorState.index(from: data)[detail.summary.id] {
+            detail.summary.selectorState = state
+        }
+        return detail
     }
 
     /// Create a conversation row up front (before the first prompt) and return its
@@ -325,6 +338,24 @@ struct CodegClient: Sendable {
                            body: SetConfigOptionBody(connectionId: connectionId, configId: configId, valueId: valueId))
     }
 
+    /// What every live session is blocked on (fork `list_conversation_attention`).
+    func listConversationAttention() async throws -> [ConversationAttentionEntry] {
+        try await postJSON("list_conversation_attention", EmptyBody(), session: Self.readSession)
+    }
+
+    /// Deliver a message into the running turn (fork `submit_session_feedback`).
+    /// With native steering the agent reads it at once; otherwise it waits for
+    /// the agent's `check_user_feedback`. Throws `APIError.server` with a
+    /// "no active turn" message when the turn already ended
+    /// (``APIError/isNoActiveTurn``): the caller then sends it as a prompt.
+    func submitSessionFeedback(connectionId: String, text: String, blocks: [PromptInputBlock]?) async throws {
+        _ = try await send("submit_session_feedback", body: SubmitFeedbackBody(
+            connectionId: connectionId,
+            text: text,
+            blocks: (blocks?.isEmpty ?? true) ? nil : blocks
+        ))
+    }
+
     // MARK: - Compose "+" menu sources
 
     /// Reusable message templates for the "+" menu's Quick Messages list.
@@ -454,6 +485,10 @@ struct CodegClient: Sendable {
 /// keeps its prior value for it, so one endpoint blipping degrades gracefully
 /// instead of turning the whole screen red.
 struct ServerSnapshotLoad {
+    /// What each session is blocked on (`list_conversation_attention`), keyed
+    /// by the conversation the list shows (a sub-agent's root). `nil` when the
+    /// call failed or the server predates it.
+    var attention: [Int: String]? = nil
     /// The full folder set (`list_all_folder_details`) — for by-id lookups (a
     /// conversation's folder name/path, incl. worktree and chat folders).
     let folders: [FolderDetail]?
@@ -484,9 +519,11 @@ extension CodegClient {
         async let foldersResult = resultOfRetry { try await self.listFolders() }
         async let openFoldersResult = resultOfRetry { try await self.listOpenFolders() }
         async let conversationsResult = resultOfRetry { try await self.listConversations() }
+        async let attentionResult = try? await self.listConversationAttention()
         let folders = await foldersResult
         let openFolders = await openFoldersResult
         let conversations = await conversationsResult
+        let attention = await attentionResult
 
         // All fail with a cancellation when the awaiting task is torn down — report
         // it so callers don't clobber on-screen state with an empty/error result.
@@ -497,6 +534,7 @@ extension CodegClient {
         let firstError = folders.failureError ?? openFolders.failureError ?? conversations.failureError
         let message = firstError.map { ($0 as? LocalizedError)?.errorDescription ?? $0.localizedDescription }
         return ServerSnapshotLoad(
+            attention: attention.map(ConversationAttentionEntry.byConversation),
             folders: try? folders.get(),
             openFolders: try? openFolders.get(),
             conversations: try? conversations.get(),

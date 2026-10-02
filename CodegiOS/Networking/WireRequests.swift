@@ -195,3 +195,34 @@ struct ServerError: Decodable, Sendable {
     let code: String?
     let message: String?
 }
+
+/// Body for `submit_session_feedback` (fork): a note delivered into the
+/// running turn. `blocks` carries image attachments (native steering only).
+struct SubmitFeedbackBody: Encodable, Sendable {
+    let connectionId: String
+    let text: String
+    var blocks: [PromptInputBlock]?
+}
+
+/// One row of `list_conversation_attention` (fork).
+struct ConversationAttentionEntry: Decodable, Sendable, Hashable {
+    let conversationId: Int
+    /// `permission`, `question` or `plan_approval`.
+    let kind: String
+    /// The top-level conversation the list shows for it (itself unless a
+    /// sub-agent).
+    let rootConversationId: Int?
+}
+
+extension ConversationAttentionEntry {
+    /// The attention kind per conversation the list shows: a blocked
+    /// sub-agent surfaces on its root row.
+    static func byConversation(_ entries: [ConversationAttentionEntry]) -> [Int: String] {
+        var out: [Int: String] = [:]
+        for entry in entries {
+            out[entry.rootConversationId ?? entry.conversationId] = entry.kind
+            out[entry.conversationId] = entry.kind
+        }
+        return out
+    }
+}

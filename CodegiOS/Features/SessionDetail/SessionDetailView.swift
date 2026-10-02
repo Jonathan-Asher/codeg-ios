@@ -61,6 +61,15 @@ struct SessionDetailView: View {
         .navigationTitle(navTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Title + what the session is doing ("Working", "Needs you",
+            // "Idle — 2 background tasks running", "Paused — limit resets at …").
+            ToolbarItem(placement: .principal) {
+                SessionTitleView(
+                    title: navTitle,
+                    activity: model.summary == nil ? nil : model.activity,
+                    agentName: model.agentTypeForUI.displayName
+                )
+            }
             // The agent avatar (formerly in the compose bar) sits to the right of
             // the title. Shown once loaded; for an editable draft its sheet also
             // hosts the Agent + Folder pickers, otherwise just Mode/config.
@@ -130,7 +139,8 @@ struct SessionDetailView: View {
         }
         .sheet(isPresented: $showDetails) {
             if let summary = model.summary {
-                SessionDetailsSheet(summary: summary, stats: model.sessionStats, folder: model.folder)
+                SessionDetailsSheet(summary: summary, stats: model.sessionStats, folder: model.folder,
+                                    activity: model.activity, agentName: model.agentTypeForUI.displayName)
             }
         }
         .task { await model.load() }
@@ -275,6 +285,25 @@ struct SessionDetailView: View {
                     .transition(.opacity)
                     .zIndex(2)
                 }
+                if !model.insertedNotes.isEmpty {
+                    InsertedNotesView(notes: model.insertedNotes)
+                        .transition(.opacity)
+                }
+                if !model.queuedMessages.isEmpty {
+                    QueuedMessagesView(
+                        items: model.queuedMessages,
+                        canSendNow: !model.isInFlight || model.canInsertIntoTurn,
+                        onSendNow: { model.sendQueuedNow($0) },
+                        onEdit: { model.editQueued($0) },
+                        onRemove: { model.removeQueued($0) }
+                    )
+                    .transition(.opacity)
+                }
+                if model.canOfferContinue {
+                    ContinueChip { model.sendContinue() }
+                        .padding(.bottom, 2)
+                        .transition(.opacity)
+                }
                 if !model.isPinnedToBottom {
                     JumpToLatestButton { model.userTappedScrollToBottom() }
                         .padding(.bottom, 10)
@@ -295,13 +324,22 @@ struct SessionDetailView: View {
                     onAddAttachments: { model.addAttachments($0) },
                     onRemoveAttachment: { model.removeAttachment($0) },
                     onNotice: { model.notice = $0 },
-                    onSend: { model.send() },
+                    onSend: { model.sendFromComposer() },
                     onStop: { model.cancel() },
+                    steering: ComposeSteering(
+                        canInsert: model.canInsertIntoTurn,
+                        deliverNow: model.canDeliverIntoHeldTurn
+                    ),
+                    onInsert: { model.insertIntoTurn() },
+                    onQueue: { model.queueDraft() },
                     onDismissNotice: { model.notice = nil },
                     insertModel: model.insertModel
                 )
             }
             .animation(.snappy(duration: 0.24), value: model.isPinnedToBottom)
+            .animation(.snappy(duration: 0.24), value: model.queuedMessages)
+            .animation(.snappy(duration: 0.24), value: model.insertedNotes)
+            .animation(.snappy(duration: 0.24), value: model.canOfferContinue)
             .animation(.snappy(duration: 0.26), value: model.pendingPermission?.id)
             .animation(.snappy(duration: 0.26), value: model.pendingQuestion?.id)
             .animation(.snappy(duration: 0.26), value: model.pendingPlanApproval?.id)
@@ -431,6 +469,8 @@ private struct SessionDetailsSheet: View {
     let summary: ConversationSummary
     let stats: SessionStats?
     let folder: FolderDetail?
+    let activity: SessionActivity
+    let agentName: String
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -439,6 +479,9 @@ private struct SessionDetailsSheet: View {
                 VStack(alignment: .leading, spacing: 14) {
                     SessionHeaderView(summary: summary, stats: stats)
                     metadata
+                    if let selector = summary.selectorState, !selector.displayItems.isEmpty {
+                        selectorCard(selector)
+                    }
                 }
                 .padding(16)
             }
@@ -455,8 +498,25 @@ private struct SessionDetailsSheet: View {
         .presentationDetents([.medium, .large])
     }
 
+    /// The model / effort / mode this conversation's session runs with
+    /// (`selector_state`), as the server recorded it.
+    private func selectorCard(_ selector: ConversationSelectorState) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(selector.displayItems.enumerated()), id: \.offset) { index, item in
+                if index > 0 { Divider().overlay(Theme.hairline) }
+                DetailRow(label: LocalizedStringKey(item.label), value: Text(verbatim: item.value))
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        .hairlineBorder(Theme.Radius.lg)
+    }
+
     private var metadata: some View {
         VStack(spacing: 0) {
+            DetailRow(label: "Activity", value: Text(verbatim: activity.label(agentName: agentName)))
+            Divider().overlay(Theme.hairline)
             DetailRow(label: "Status", value: Text(summary.status.label))
             Divider().overlay(Theme.hairline)
             if let folder {

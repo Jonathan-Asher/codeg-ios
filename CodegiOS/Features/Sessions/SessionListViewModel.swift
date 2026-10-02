@@ -251,6 +251,7 @@ final class SessionListViewModel {
         if let loaded = result.folders { folders = loaded }
         if let loaded = result.openFolders { openFolders = loaded; openFoldersLoaded = true }
         if let loaded = result.conversations { conversations = loaded }
+        AttentionStore.shared.update(result.attention)
 
         if result.anySucceeded {
             hasLoaded = true

@@ -49,6 +49,8 @@ struct NodeBody: View {
                 .railHead(.top(14))
         case .compaction(let before, let after, let running):
             ContextCompactionDivider(before: before, after: after, running: running)
+        case .continuation(let variant):
+            ContinuationDivider(variant: variant)
         case .footer(let turn, let questionID):
             TurnFooter(turn: turn, questionID: questionID)
         case .plan(let entries, let streaming):
@@ -298,6 +300,46 @@ struct ContextCompactionDivider: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
+    }
+
+    private var hairline: some View {
+        Rectangle()
+            .fill(Theme.hairline)
+            .frame(height: 1)
+            .frame(maxWidth: .infinity)
+    }
+}
+
+/// "▶ Continued": a user turn that only asked the agent to keep going, drawn
+/// as a hairline divider like the desktop's, not as a message card.
+struct ContinuationDivider: View {
+    let variant: ContinuePrompt.Variant
+
+    private var symbol: String {
+        switch variant {
+        case .continued: return "play.fill"
+        case .resumed: return "arrow.clockwise"
+        case .limit: return "clock.arrow.circlepath"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            hairline
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 9, weight: .bold))
+                Text(verbatim: variant.label)
+                    .font(Theme.Typography.metaLabel)
+            }
+            .foregroundStyle(Theme.textTertiary)
+            .fixedSize()
+            hairline
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(Text(verbatim: variant.hint))
     }
 
     private var hairline: some View {

@@ -62,6 +62,17 @@ enum APIError: LocalizedError, Sendable {
         }
     }
 
+    /// `submit_session_feedback` found no turn in flight (the agent finished):
+    /// the backend's `AcpError::NoActiveTurn`, mapped to a 4xx with its
+    /// Display text "no active turn to send feedback to".
+    var isNoActiveTurn: Bool {
+        if case .server(let status, let code, let message) = self {
+            return (400..<500).contains(status)
+                && (code == "no_active_turn" || message.lowercased().contains("no active turn"))
+        }
+        return false
+    }
+
     /// True for conditions where a fresh `acp_connect` + retry is the right fix.
     var isStaleConnection: Bool {
         switch self {
