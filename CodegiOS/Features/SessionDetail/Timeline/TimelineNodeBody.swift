@@ -183,6 +183,7 @@ private struct TurnFooter: View {
         HStack(spacing: 10) {
             if !copyText.isEmpty {
                 CopyButton(text: copyText, label: "Copy")
+                ReadAloudButton(id: turn.id, blocks: turn.blocks)
             }
             if let questionID {
                 JumpToQuestionButton(questionID: questionID)

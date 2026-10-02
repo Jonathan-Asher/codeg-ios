@@ -448,4 +448,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         PushRegistration.shared.didFailToRegister(error)
     }
+
+    /// Model downloads run in a background `URLSession`; iOS relaunches the
+    /// app to deliver their events.
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        VoiceModelStore.shared.handleBackgroundEvents(identifier: identifier, completion: completionHandler)
+    }
 }

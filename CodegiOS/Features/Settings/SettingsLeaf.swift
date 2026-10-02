@@ -20,6 +20,7 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
     case chatChannels
     case system
     case notifications
+    case voice
 
     var id: String { rawValue }
 
@@ -46,6 +47,7 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
         case .chatChannels: "Chat Channels"
         case .system: "System"
         case .notifications: "Notifications"
+        case .voice: "Voice"
         }
     }
 
@@ -62,6 +64,7 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
         case .chatChannels: "bell.badge.fill"
         case .system: "gearshape.2.fill"
         case .notifications: "app.badge.fill"
+        case .voice: "speaker.wave.2.fill"
         }
     }
 
@@ -92,6 +95,8 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
             SystemSettingsView(client: client)
         case .notifications:
             NotificationsSettingsView(store: store)
+        case .voice:
+            VoiceSettingsView()
         }
     }
 }

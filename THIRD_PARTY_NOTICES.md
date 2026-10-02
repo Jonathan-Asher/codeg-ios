@@ -41,3 +41,31 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## Added by the Codeg Plus fork
+
+### BlueTTSKit (vendored in `Packages/BlueTTSKit`)
+
+- Source: Jonathan Ashurov's codeg-voice repository, added with git subtree
+- License: MIT, except BlueTTSEspeak (below). See `Packages/BlueTTSKit/LICENSE`.
+- Ports Light-BlueTTS (https://github.com/maxmelichov/Light-BlueTTS, MIT) and
+  renikud-plus (MIT).
+
+### espeak-ng 1.52.0 and ucd-tools (inside BlueTTSEspeak)
+
+- Source: https://github.com/espeak-ng/espeak-ng
+- License: GPL-3.0-or-later (`Packages/BlueTTSKit/Sources/CEspeakNG/COPYING`)
+
+Linking BlueTTSEspeak makes the app a combined GPL-3 work. That is fine for a
+personal TestFlight build; see docs/FORK.md before any public release.
+
+### ONNX Runtime 1.30.0
+
+- Source: https://github.com/microsoft/onnxruntime
+- License: MIT (`Packages/BlueTTSKit/Sources/OnnxRuntimeBindings/LICENSE`)
+
+### Voice model files (downloaded at runtime, not bundled)
+
+- BlueTTS 2.5 ONNX (notmax123/BlueTTS2.5-onnx): no license declared.
+- RenikudPlus (notmax123/RenikudPlus): Apache-2.0.
+- Voices from Light-BlueTTS (maxmelichov/Light-BlueTTS): MIT.

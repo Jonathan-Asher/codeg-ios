@@ -65,10 +65,10 @@ struct SettingsView: View {
         }
     }
 
-    /// Settings of this iPhone itself: push notifications.
+    /// Settings of this iPhone itself: push notifications and read-aloud.
     private var iPhoneSection: some View {
         EditorSection(title: "On This iPhone") {
-            leafRows([.notifications])
+            leafRows([.notifications, .voice])
         }
     }
 
