@@ -34,8 +34,8 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
-/// User-chosen appearance: light/dark/system mode and the accent color scheme.
-/// Both persist to `UserDefaults` and survive relaunch. Owned at the app root
+/// User-chosen appearance: light/dark/system mode, the accent color scheme and
+/// the Activity tab's order. All persist to `UserDefaults` and survive relaunch. Owned at the app root
 /// (`RootView`) and injected into the environment so the Settings screen can read
 /// and mutate it; `mode` drives `.preferredColorScheme` and `accent` drives the
 /// `\.codegAccent` trait bridge, both applied once in `RootView`.
@@ -44,6 +44,7 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 final class AppearanceStore {
     private static let modeKey = "codeg.appearance.mode"
     private static let accentKey = "codeg.appearance.accent"
+    private static let newestAtBottomKey = "codeg.activity.newestAtBottom"
 
     var mode: AppearanceMode {
         didSet {
@@ -59,6 +60,15 @@ final class AppearanceStore {
         }
     }
 
+    /// The Activity tab lists the most recent session at the bottom of the
+    /// screen (thumb reach) and opens scrolled there. On unless turned off.
+    var newestAtBottom: Bool {
+        didSet {
+            guard oldValue != newestAtBottom else { return }
+            UserDefaults.standard.set(newestAtBottom, forKey: Self.newestAtBottomKey)
+        }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.mode = defaults.string(forKey: Self.modeKey)
             .flatMap(AppearanceMode.init(rawValue:)) ?? .system
@@ -67,5 +77,6 @@ final class AppearanceStore {
         // default; an out-of-range stored index also falls back to neutral.
         self.accent = (defaults.object(forKey: Self.accentKey) as? Int)
             .flatMap(AccentPalette.init(rawValue:)) ?? .neutral
+        self.newestAtBottom = defaults.object(forKey: Self.newestAtBottomKey) as? Bool ?? true
     }
 }

@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// The Activity tab: a live monitor of what your agents are doing right now and
-/// what just finished — running sessions on top, then everything touched in the
-/// last 24 hours. Unlike the Chats list, rows are **directly tappable**: each
+/// what just finished — running sessions, then everything touched in the last
+/// 24 hours. By default (Settings › Appearance › "Newest at the bottom") the
+/// most recent session sits at the bottom of the screen. Unlike the Chats list, rows are **directly tappable**: each
 /// opens its session in a single tap, with no App Store-style card/zoom drill-in
 /// in between (Activity favors immediacy — it's backed by a periodic poll that
 /// keeps the list live). The list itself is ``ActivityFeed``, which takes plain
@@ -15,6 +16,7 @@ struct ActivityView: View {
     let onOpen: (Int) -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(AppearanceStore.self) private var appearance
 
     var body: some View {
         ZStack {
@@ -57,7 +59,8 @@ struct ActivityView: View {
                     error: activity.hasLoaded ? activity.error : nil,
                     onOpen: onOpen,
                     onRefresh: { await activity.refresh(client: client) },
-                    onDismissError: { activity.dismissError() }
+                    onDismissError: { activity.dismissError() },
+                    newestAtBottom: appearance.newestAtBottom
                 )
             }
         }
@@ -67,11 +70,15 @@ struct ActivityView: View {
     }
 }
 
-/// The Activity list: directly-tappable rows under tinted "Running" / "Last 24
-/// Hours" headers. Rows, the refresh-error banner, the idle empty state, and the
-/// "Updated …" footer are all borderless list rows over the screen's
-/// `CodegBackground`. Takes plain values (read live by ``ActivityView`` each
-/// render, so a background pulse keeps them fresh).
+/// The Activity list: directly-tappable session cards under tinted "Running" /
+/// "Last 24 Hours" headers, plus the refresh-error banner, the idle empty state
+/// and the "Updated …" line. Takes plain values (read live by ``ActivityView``
+/// each render, so a background pulse keeps them fresh).
+///
+/// With `newestAtBottom` the feed is turned over (``ActivityFeedLayout``), it
+/// opens scrolled to the bottom with no jump, short content sits at the bottom,
+/// and ``BottomPin`` keeps it on the newest row while it is there. The error
+/// banner moves to the bottom with the newest rows and "Updated …" to the top.
 struct ActivityFeed: View {
     /// Running sessions, most recently updated first.
     let running: [ConversationSummary]
@@ -87,66 +94,125 @@ struct ActivityFeed: View {
     let onOpen: (Int) -> Void
     let onRefresh: () async -> Void
     let onDismissError: () -> Void
+    /// Oldest at the top, the most recent session at the bottom.
+    var newestAtBottom: Bool = false
 
     /// Bumped only when a user pull-to-refresh completes, so the soft landing
     /// haptic fires on the pull — not on the initial programmatic load.
     @State private var pullTick = 0
+    @State private var pin = BottomPin()
+    @State private var isUserScrolling = false
+
+    private static let topID = "activity-top"
+    private static let bottomID = "activity-bottom"
+
+    private var sections: [ActivityFeedLayout.Section] {
+        ActivityFeedLayout.sections(running: running, recent: recent, newestAtBottom: newestAtBottom)
+    }
+
+    /// Changes whenever a row is added, removed or moved.
+    private var rowIDs: [Int] { sections.flatMap { $0.rows.map(\.id) } }
 
     var body: some View {
-        List {
-            // A failed refresh over a list that still has rows: surface the error
-            // inline above the sections rather than swallowing it.
-            if let error {
-                RefreshErrorBanner(
-                    message: error,
-                    retry: { Task { await onRefresh() } },
-                    dismiss: onDismissError
-                )
-                .plainRow(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-            }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    Color.clear.frame(height: 1).id(Self.topID)
+                    if newestAtBottom { updatedLine } else { errorBanner }
 
-            if running.isEmpty, recent.isEmpty {
-                EmptyStateView(
-                    icon: "moon.zzz",
-                    title: "All Agents Idle",
-                    message: "Nothing is running and nothing finished in the last 24 hours."
-                )
-                .frame(maxWidth: .infinity, minHeight: 360)
-                .plainRow(EdgeInsets())
-            } else {
-                if !running.isEmpty {
-                    sectionHeader("Running", count: running.count,
-                                  icon: "waveform", tint: Theme.accent)
-                    ForEach(running) { row($0) }
+                    if sections.isEmpty {
+                        EmptyStateView(
+                            icon: "moon.zzz",
+                            title: "All Agents Idle",
+                            message: "Nothing is running and nothing finished in the last 24 hours."
+                        )
+                        .frame(maxWidth: .infinity, minHeight: 360)
+                    } else {
+                        ForEach(sections) { section in
+                            sectionHeader(section)
+                            ForEach(section.rows) { row($0) }
+                        }
+                    }
+
+                    if newestAtBottom { errorBanner } else { updatedLine }
+                    Color.clear.frame(height: 1).id(Self.bottomID)
                 }
-                if !recent.isEmpty {
-                    sectionHeader("Last 24 Hours", count: recent.count,
-                                  icon: "clock.arrow.circlepath", tint: Theme.textSecondary)
-                    ForEach(recent) { row($0) }
+                .padding(.horizontal, Theme.Layout.screenHMargin)
+                .padding(.bottom, newestAtBottom ? 8 : Theme.Layout.screenBottomInset)
+                // Ease rows between Running ↔ Last-24h as the background poll
+                // reorders them, instead of teleporting.
+                .animation(Theme.Motion.chrome, value: rowIDs)
+            }
+            .scrollContentBackground(.hidden)
+            .refreshable {
+                await onRefresh()
+                pullTick &+= 1
+            }
+            // Newest at the bottom: open there (no visible jump), sit short
+            // content at the bottom, and keep the bottom in place as rows
+            // change, but only while pinned. Scrolled up, a size change keeps
+            // the top in place instead, so the rows he is reading stay put.
+            .defaultScrollAnchor(newestAtBottom ? UnitPoint.bottom : nil, for: .initialOffset)
+            .defaultScrollAnchor(newestAtBottom ? UnitPoint.bottom : nil, for: .alignment)
+            .defaultScrollAnchor(newestAtBottom && pin.isPinned ? UnitPoint.bottom : UnitPoint.top, for: .sizeChanges)
+            .onScrollPhaseChange { _, phase, context in
+                let wasUserScrolling = isUserScrolling
+                isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
+                guard newestAtBottom, isUserScrolling || wasUserScrolling else { return }
+                pin.update(atBottom: FeedScrollMetrics(context.geometry).atBottom, userScrolling: true)
+            }
+            // Late row measurement and inset changes: follow while pinned; a
+            // layout change can re-pin but never unpin.
+            .onScrollGeometryChange(for: FeedScrollMetrics.self) { FeedScrollMetrics($0) } action: { old, new in
+                guard newestAtBottom else { return }
+                if isUserScrolling {
+                    pin.update(atBottom: new.atBottom, userScrolling: true)
+                } else if pin.isPinned {
+                    if old.contentHeight != new.contentHeight || old.containerHeight != new.containerHeight {
+                        proxy.scrollTo(Self.bottomID, anchor: .bottom)
+                    }
+                } else {
+                    pin.update(atBottom: new.atBottom, userScrolling: false)
                 }
             }
-
-            if let lastRefreshed {
-                Text("Updated \(RelativeTime.string(from: lastRefreshed))")
-                    .font(.caption2)
-                    .foregroundStyle(Theme.textTertiary)
-                    .frame(maxWidth: .infinity)
-                    .plainRow(EdgeInsets(top: 8, leading: 16, bottom: 16, trailing: 16))
+            // A session updated or arrived: stay on the newest row while
+            // pinned; leave a scrolled-up list alone.
+            .onChange(of: rowIDs) { _, _ in
+                guard newestAtBottom, pin.isPinned, !isUserScrolling else { return }
+                withAnimation(Theme.Motion.chrome) {
+                    proxy.scrollTo(Self.bottomID, anchor: .bottom)
+                }
+            }
+            // The option was switched while the list is alive (another tab).
+            .onChange(of: newestAtBottom) { _, bottom in
+                pin.reset()
+                proxy.scrollTo(bottom ? Self.bottomID : Self.topID, anchor: bottom ? .bottom : .top)
             }
         }
-        .listStyle(.plain)
-        .environment(\.defaultMinListRowHeight, 1)
-        .scrollContentBackground(.hidden)
-        .refreshable {
-            await onRefresh()
-            pullTick &+= 1
-        }
-        // Ease rows between Running ↔ Last-24h as the background poll reorders
-        // them, instead of teleporting (this list refreshes live).
-        .animation(Theme.Motion.chrome, value: running.map(\.id))
-        .animation(Theme.Motion.chrome, value: recent.map(\.id))
         // A soft tick when a user pull-to-refresh lands (not the initial load).
         .sensoryFeedback(.impact(flexibility: .soft), trigger: pullTick)
+    }
+
+    @ViewBuilder
+    private var errorBanner: some View {
+        if let error {
+            RefreshErrorBanner(
+                message: error,
+                retry: { Task { await onRefresh() } },
+                dismiss: onDismissError
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var updatedLine: some View {
+        if let lastRefreshed {
+            Text("Updated \(RelativeTime.string(from: lastRefreshed))")
+                .font(.caption2)
+                .foregroundStyle(Theme.textTertiary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+        }
     }
 
     /// One directly-tappable session card (opens in a single tap), as in
@@ -158,32 +224,46 @@ struct ActivityFeed: View {
             folderName: folderNames[conversation.folderId],
             onTap: { onOpen(conversation.id) }
         )
-        .plainRow(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
     }
 
     /// A group header above its cards: a tinted circular badge + the section
     /// name + a count pill.
-    private func sectionHeader(_ title: LocalizedStringKey, count: Int,
-                               icon: String, tint: Color) -> some View {
-        HStack(spacing: 11) {
+    private func sectionHeader(_ section: ActivityFeedLayout.Section) -> some View {
+        let (title, icon, tint): (LocalizedStringKey, String, Color) = switch section.kind {
+        case .running: ("Running", "waveform", Theme.accent)
+        case .recent: ("Last 24 Hours", "clock.arrow.circlepath", Theme.textSecondary)
+        }
+        return HStack(spacing: 11) {
             SectionBadgeIcon(systemImage: icon, tint: tint)
             Text(title)
                 .font(.headline)
                 .foregroundStyle(Theme.textPrimary)
             Spacer(minLength: 8)
-            CountBadge(count: count)
+            CountBadge(count: section.rows.count)
         }
-        .plainRow(EdgeInsets(top: 16, leading: 18, bottom: 6, trailing: 18))
+        .padding(.horizontal, 2)
+        .padding(.top, 12)
+        .padding(.bottom, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
-private extension View {
-    /// Shared list-row chrome for this screen: explicit insets, no separator, and
-    /// a clear background so the `ZStack`'s `CodegBackground` shows through.
-    func plainRow(_ insets: EdgeInsets) -> some View {
-        self
-            .listRowInsets(insets)
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
+/// What the feed reads from its scroll geometry. Layout changes must not be
+/// mistaken for the user scrolling away from the bottom.
+private struct FeedScrollMetrics: Equatable {
+    var atBottom: Bool
+    var contentHeight: CGFloat
+    var containerHeight: CGFloat
+
+    init(_ geometry: ScrollGeometry) {
+        contentHeight = geometry.contentSize.height
+        containerHeight = geometry.containerSize.height
+        atBottom = BottomPin.isAtBottom(
+            contentHeight: geometry.contentSize.height,
+            containerHeight: geometry.containerSize.height,
+            offsetY: geometry.contentOffset.y,
+            bottomInset: geometry.contentInsets.bottom
+        )
     }
 }

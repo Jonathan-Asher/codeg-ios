@@ -1,6 +1,26 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Newest at the bottom" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最新的在底部"
+          }
+        }
+      }
+    },
+    "The most recent session sits at the bottom of the Activity tab, within reach of your thumb, and older ones go up. The list opens at the bottom and stays there as sessions update, unless you have scrolled up." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近的会话显示在“活动”标签页底部，拇指即可触及，较早的会话依次向上排列。列表打开时位于底部，会话更新时保持在底部，除非你已向上滚动。"
+          }
+        }
+      }
+    },
     "Opens the session" : {
       "localizations" : {
         "zh-Hans" : {

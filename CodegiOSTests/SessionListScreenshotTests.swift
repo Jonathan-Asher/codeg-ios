@@ -153,25 +153,51 @@ final class SessionListScreenshotTests: XCTestCase {
     func testRenderActivity() throws {
         let split = SampleSessions.activitySplit(sessions, now: now)
         for style in Shot.styles {
+            // Newest at the bottom (the default): opens scrolled to the bottom.
             try Shot.capture("activity", style) {
-                Shot.tabs(selected: 2) {
-                    ZStack {
-                        CodegBackground()
-                        ActivityFeed(
-                            running: split.running,
-                            recent: split.recent,
-                            folderNames: SampleSessions.folders,
-                            markedID: Self.marked,
-                            lastRefreshed: now.addingTimeInterval(-20),
-                            error: nil,
-                            onOpen: { _ in },
-                            onRefresh: {},
-                            onDismissError: {}
-                        )
-                    }
-                    .screenTitle("Activity", compact: true)
-                }
+                activityScreen(running: split.running, recent: split.recent, newestAtBottom: true)
             }
+            try Shot.capture("activity-newest-first", style) {
+                activityScreen(running: split.running, recent: split.recent, newestAtBottom: false)
+            }
+        }
+        // A short list sits at the bottom, by the thumb.
+        try Shot.capture("activity-short", .light) {
+            activityScreen(running: Array(split.running.prefix(1)),
+                           recent: Array(split.recent.prefix(2)), newestAtBottom: true)
+        }
+    }
+
+    func testRenderAppearanceSettings() throws {
+        for style in Shot.styles {
+            try Shot.capture("settings-appearance", style) {
+                NavigationStack {
+                    AppearanceSettingsView()
+                }
+                .environment(AppearanceStore(defaults: UserDefaults(suiteName: "codeg.tests.shots") ?? .standard))
+            }
+        }
+    }
+
+    private func activityScreen(running: [ConversationSummary], recent: [ConversationSummary],
+                                newestAtBottom: Bool) -> some View {
+        Shot.tabs(selected: 2) {
+            ZStack {
+                CodegBackground()
+                ActivityFeed(
+                    running: running,
+                    recent: recent,
+                    folderNames: SampleSessions.folders,
+                    markedID: Self.marked,
+                    lastRefreshed: now.addingTimeInterval(-20),
+                    error: nil,
+                    onOpen: { _ in },
+                    onRefresh: {},
+                    onDismissError: {},
+                    newestAtBottom: newestAtBottom
+                )
+            }
+            .screenTitle("Activity", compact: true)
         }
     }
 }

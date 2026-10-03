@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Appearance settings: the theme mode (Light / Dark / System) and the accent
-/// color scheme. Both are purely local (device-scoped) preferences held in
+/// Appearance settings: the theme mode (Light / Dark / System), the accent
+/// color scheme and the Activity tab's order. All are purely local (device-scoped) preferences held in
 /// `AppearanceStore`, which is injected into the environment by `RootView`.
 /// Changing either recolors the whole app live — mode via `.preferredColorScheme`
 /// and accent via the `\.codegAccent` trait bridge. This screen's own accent-tinted
@@ -32,6 +32,7 @@ struct AppearanceSettingsView: View {
                 VStack(spacing: 22) {
                     themeSection
                     accentSection
+                    activitySection
                     previewSection
                 }
                 .padding(.horizontal, Theme.Layout.screenHMargin)
@@ -109,6 +110,33 @@ struct AppearanceSettingsView: View {
         }
         .buttonStyle(.plain)
         .animation(.snappy(duration: 0.2), value: isSelected)
+    }
+
+    // MARK: - Activity order
+
+    private var activitySection: some View {
+        EditorSection(
+            title: "Activity",
+            footer: "The most recent session sits at the bottom of the Activity tab, within reach of your thumb, and older ones go up. The list opens at the bottom and stays there as sessions update, unless you have scrolled up."
+        ) {
+            Toggle(isOn: Binding(
+                get: { appearance.newestAtBottom },
+                set: { appearance.newestAtBottom = $0 }
+            )) {
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.down.to.line")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(resolvedAccent)
+                        .frame(width: 26)
+                        .accessibilityHidden(true)
+                    Text("Newest at the bottom")
+                        .foregroundStyle(Theme.textPrimary)
+                }
+            }
+            .tint(resolvedAccent)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
     }
 
     // MARK: - Live preview
