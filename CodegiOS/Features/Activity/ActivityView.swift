@@ -10,6 +10,8 @@ import SwiftUI
 struct ActivityView: View {
     let activity: ActivityModel
     let client: CodegClient?
+    /// The session that is open (iPad) or was opened last (iPhone).
+    var markedConversationID: Int? = nil
     let onOpen: (Int) -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -50,6 +52,7 @@ struct ActivityView: View {
                     running: activity.running,
                     recent: activity.recent,
                     folderNames: activity.folderNames,
+                    markedID: markedConversationID,
                     lastRefreshed: activity.lastRefreshed,
                     error: activity.hasLoaded ? activity.error : nil,
                     onOpen: onOpen,
@@ -75,6 +78,9 @@ struct ActivityFeed: View {
     /// Sessions touched in the last 24 hours, most recently updated first.
     let recent: [ConversationSummary]
     let folderNames: [Int: String]
+    /// The session that is open (iPad) or was opened last (iPhone); its row is
+    /// marked.
+    var markedID: Int? = nil
     let lastRefreshed: Date?
     /// A failed refresh over a list that still has rows.
     let error: String?
@@ -148,7 +154,7 @@ struct ActivityFeed: View {
     private func row(_ conversation: ConversationSummary) -> some View {
         SessionRow(
             conversation: conversation,
-            isSelected: false,
+            isSelected: conversation.id == markedID,
             folderName: folderNames[conversation.folderId],
             onTap: { onOpen(conversation.id) }
         )

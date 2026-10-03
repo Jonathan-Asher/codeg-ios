@@ -89,7 +89,7 @@ final class SessionListScreenshotTests: XCTestCase {
                                 SessionSectionCard(
                                     title: "Pinned", tint: Theme.accent, conversations: pinned,
                                     folderName: { SampleSessions.folders[$0.folderId] },
-                                    onOpen: { _ in }, onTogglePin: { _ in },
+                                    markedID: marked, onOpen: { _ in }, onTogglePin: { _ in },
                                     onExpand: {}
                                 )
                                 .padding(.horizontal, Theme.Layout.screenHMargin)
@@ -98,7 +98,7 @@ final class SessionListScreenshotTests: XCTestCase {
                                         title: SampleSessions.folders[fid] ?? "",
                                         tint: Color(hexString: SampleSessions.folderColors[fid] ?? "") ?? Theme.accent,
                                         conversations: convs,
-                                        onOpen: { _ in }, onTogglePin: { _ in },
+                                        markedID: marked, onOpen: { _ in }, onTogglePin: { _ in },
                                         onExpand: {}
                                     )
                                     .padding(.horizontal, Theme.Layout.screenHMargin)
@@ -141,6 +141,7 @@ final class SessionListScreenshotTests: XCTestCase {
                     tint: Color(hexString: SampleSessions.folderColors[2] ?? "") ?? Theme.accent,
                     conversations: convs,
                     folderName: { SampleSessions.folders[$0.folderId] },
+                    markedID: marked,
                     onOpen: { _ in },
                     onTogglePin: { _ in },
                     onClose: {}
@@ -160,6 +161,7 @@ final class SessionListScreenshotTests: XCTestCase {
                             running: split.running,
                             recent: split.recent,
                             folderNames: SampleSessions.folders,
+                            markedID: marked,
                             lastRefreshed: now.addingTimeInterval(-20),
                             error: nil,
                             onOpen: { _ in },
