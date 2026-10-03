@@ -149,6 +149,71 @@ remains.
   `awaiting_background`, `background_activity`, `feedback_submitted`,
   `feedback_consumed`.
 
+## Session lists
+
+The Chats folder cards, a folder's full list, Activity and Search share one
+row, `Features/Sessions/SessionRow.swift`. Upstream drew each session as one
+line of small text with no separation, so sessions were hard to tell apart and
+it was unclear which one a tap had opened.
+
+- **Row.** The agent's avatar (with the review-status dot), the title in
+  headline type on up to two lines, and the relative time on the right. Below
+  it, the agent, the folder, and a status tag when the session is doing
+  something: Working, Needs you, Interrupted, Paused (with the reset time),
+  Continuing. An idle session shows no tag. The fork has no last-message text
+  on a summary, so there is no preview line.
+- **Surface.** In Activity, Search and a folder's full list each row is a flat
+  card (`Theme.bgElevated`, a hairline, `Theme.Radius.md` corners, 8 pt apart).
+  Flat rather than Liquid Glass: a glass plate per row reads as a stack of
+  shadowed plates on the light backdrop and costs a backdrop pass per cell.
+  Inside a Chats folder card (which is glass) rows stay inset, between inset
+  dividers, like the grouped Settings rows.
+- **Touch.** A press highlights the row's surface (`Theme.pressed`) and shrinks
+  it slightly. In a Chats folder card a row opens its own session; the header
+  and "Show all" open the full list (upstream zoomed the whole card open on any
+  tap). Pin/Unpin stays on a long press.
+- **The session you came from.** `AppModel.lastOpenedConversationID` records
+  the conversation opened last, from a list, a link or a notification. On
+  iPhone every list draws that row with an accent outline; on iPad the lists
+  mark the session open in the detail column.
+- **Accessibility.** VoiceOver reads a row as one element: title, status,
+  agent, folder and the time in words (`RelativeTime.spoken`), with Pin/Unpin
+  as an action and the selected trait on the marked row. The avatar scales
+  with Dynamic Type, titles get four lines at accessibility sizes, and the
+  details line stacks instead of squeezing.
+
+This part was offered upstream as a pull request (rows, folder cards, marking;
+without the fork's activity states).
+
+### Activity: newest at the bottom (fork only)
+
+Settings › Appearance › Activity › **Newest at the bottom**, on by default
+(`AppearanceStore.newestAtBottom`, key `codeg.activity.newestAtBottom`). The
+Activity feed is turned over so the most recent session sits at the bottom of
+the screen, within reach of the thumb: "Last 24 Hours" comes first and
+"Running" last, each oldest first, with every header above its own rows
+(`ActivityFeedLayout`). The error banner moves to the bottom with the newest
+rows, "Updated …" to the top.
+
+The feed is a `ScrollView` + `LazyVStack` so it can use the scroll-anchor
+roles: `.initialOffset` and `.alignment` at the bottom (it opens there with no
+jump, and a short list sits at the bottom), and `.sizeChanges` at the bottom
+only while pinned. `BottomPin` follows the transcript's rule (upstream #16):
+only the user's own scroll unpins; a refresh, new rows or a layout pass can
+only re-pin. While pinned, a session that updates or arrives keeps the newest
+row in view; scrolled up, the list stays where it is.
+
+### Screenshots
+
+`CodegiOSTests/SessionListScreenshotTests.swift` renders the rows, the Chats
+cards, a folder's full list, Activity in both orders, a short Activity list and
+the Appearance settings with `CodegiOSTests/SampleSessions.swift`, in light
+and dark. `ImageRenderer` can't draw `List`, `ScrollView` or the navigation and
+tab bars, so each screen is hosted in its own window on the simulator and
+captured with `drawHierarchy`. The `test` job runs on an iPhone 17 Pro Max
+simulator (440 × 956 pt, @3x) and uploads the PNGs as the
+`session-list-screenshots` artifact.
+
 ## Read aloud (BlueTTS)
 
 `Packages/BlueTTSKit` is Jonathan's on-device Hebrew + English TTS package
@@ -428,8 +493,10 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
 [`.github/workflows/ios.yml`](../.github/workflows/ios.yml)
 
 - **`test`** runs the `CodegiOSTests` unit tests (session activity, push
-  payload routing, Markdown-to-speech text, the fork's JSON fields) on an
-  iPhone simulator, in parallel with `build`.
+  payload routing, Markdown-to-speech text, voice typing, the Activity order
+  and bottom pin) on an iPhone simulator, preferably an iPhone 17 Pro Max, in
+  parallel with `build`. It uploads the session list screenshots as the
+  `session-list-screenshots` artifact.
 - **`build`** runs on every push and pull request on GitHub-hosted `macos-26`
   with its default Xcode. It runs `brew install xcodegen`, `xcodegen generate`,
   then an unsigned `xcodebuild build` for `generic/platform=iOS Simulator`.

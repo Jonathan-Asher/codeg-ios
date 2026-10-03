@@ -12,6 +12,11 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Activity can list the most recent session at the bottom of the screen and
+  open scrolled there (Settings › Appearance › "Newest at the bottom", on by
+  default). It stays on the newest session as sessions update, unless you have
+  scrolled up.
+
 - Voice typing: a mic in the message bar (tap to start and stop, or hold to
   talk) with a live level meter and timer. Speech is transcribed on the iPhone
   with whisper.cpp and ivrit.ai's Hebrew large-v3-turbo (q8_0), trimmed with
@@ -49,6 +54,11 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Changed
 
+- Session lists are easier to read: each session is its own card (inset rows
+  inside the Chats folder cards) with the title on up to two lines, the agent,
+  the folder, the time and a status tag, and a press highlight. A row in a
+  Chats folder card opens that session instead of the whole card. The session
+  you came from is outlined. VoiceOver reads each row as one element.
 - The fork's Apple Developer team is committed in `Config/Signing.xcconfig`;
   `Config/Signing.local.xcconfig` can still override it.
 - Archive, export and upload moved into `scripts/archive.sh`, shared by
