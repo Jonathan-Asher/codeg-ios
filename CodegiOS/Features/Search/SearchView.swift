@@ -62,7 +62,7 @@ struct SearchView: View {
 
     private var resultsList: some View {
         ScrollView {
-            LazyVStack(spacing: 10) {
+            LazyVStack(spacing: 8) {
                 ForEach(results) { conversation in
                     SessionRow(
                         conversation: conversation,

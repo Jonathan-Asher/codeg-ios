@@ -252,7 +252,7 @@ struct SessionListView: View {
         // double-counts a conversation. Lazy so a broad match set stays smooth on
         // large servers (matches the old flat list's virtualization).
         let matches = pinned + groups.flatMap(\.conversations) + orphans
-        LazyVStack(spacing: 0) {
+        LazyVStack(spacing: 8) {
             ForEach(matches) { conv in
                 SessionRow(
                     conversation: conv,
