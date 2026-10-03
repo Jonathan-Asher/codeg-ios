@@ -4,13 +4,13 @@ import Combine
 /// Lists a server's conversations grouped by folder (the iPad split's middle
 /// column / the iPhone "Chats" tab root): a "Pinned" group on top, then one
 /// group per folder, then an "Other" catch-all. Each group is an App Store-style
-/// **card** showing a capped preview; tapping a card zoom-expands it to a
-/// fullscreen list of that group's sessions (``SessionSectionFullScreen``).
-/// Rows are tappable only inside the fullscreen list — the card itself owns the
-/// tap. On iPad a row tap binds `selectedConversationID`; on iPhone the parent
-/// passes `onOpen` to push instead. Global search lives in the system Search tab
-/// on iPhone; regular width keeps a local `.searchable` filter that falls back to
-/// a flat, directly-tappable result list.
+/// **card** showing a capped preview whose rows open their session directly;
+/// the card's header (or "Show all") zoom-expands it to a fullscreen list of
+/// that group's sessions (``SessionSectionFullScreen``). On iPad a row tap binds
+/// `selectedConversationID`; on iPhone the parent passes `onOpen` to push
+/// instead. Global search lives in the system Search tab on iPhone; regular
+/// width keeps a local `.searchable` filter that falls back to a flat,
+/// directly-tappable result list.
 struct SessionListView: View {
     let server: ServerProfile
     let client: CodegClient
@@ -235,6 +235,8 @@ struct SessionListView: View {
             tint: tint,
             conversations: conversations,
             folderName: { showFolder ? viewModel.folderNames[$0.folderId] : nil },
+            onOpen: { open(id: $0) },
+            onTogglePin: { togglePin($0) },
             onExpand: { expandedSection = section }
         )
         .matchedTransitionSource(id: section.id, in: cardNS)
