@@ -182,8 +182,9 @@ it was unclear which one a tap had opened.
   with Dynamic Type, titles get four lines at accessibility sizes, and the
   details line stacks instead of squeezing.
 
-This part was offered upstream as a pull request (rows, folder cards, marking;
-without the fork's activity states).
+This part is offered upstream as
+[#20](https://github.com/xintaofei/codeg-ios/pull/20) (rows, folder cards,
+marking; with Running / Review tags instead of the fork's activity states).
 
 ### Activity: newest at the bottom (fork only)
 
