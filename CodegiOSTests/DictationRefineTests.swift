@@ -58,8 +58,15 @@ final class TranscriptPostProcessorTests: XCTestCase {
         let request = server.requests[0]
         XCTAssertEqual(request.refine, true)
         XCTAssertEqual(request.translate, true)
-        XCTAssertEqual(request.targetLanguage, "en")
-        XCTAssertEqual(request.sourceLanguage, "he")
+        XCTAssertEqual(request.targetLanguage, "English")
+        XCTAssertEqual(request.sourceLanguage, "Hebrew")
+    }
+
+    func testATranslateOnlyProviderIsNotAskedToCleanUp() async {
+        let server = MockRefineServer(settings: .success(DictationRefineSettings(configured: true, provider: "google")))
+        _ = await makeProcessor(server).process("שלום", mode: .translate, sourceLanguage: "he")
+        XCTAssertEqual(server.requests.first?.refine, false)
+        XCTAssertEqual(server.requests.first?.translate, true)
     }
 
     func testCleanUpDoesNotTranslate() async {
@@ -83,8 +90,24 @@ final class TranscriptPostProcessorTests: XCTestCase {
         let server = MockRefineServer(refine: .failure(APIError.server(status: 500, code: "network_error", message: "Groq is down")))
         let outcome = await makeProcessor(server).process("שלום עולם", mode: .translate, sourceLanguage: "he")
         XCTAssertEqual(outcome.text, "שלום עולם")
-        XCTAssertEqual(outcome.status, .kept(.failed("Groq is down (network_error, HTTP 500)")))
-        XCTAssertEqual(outcome.notice, "Translation failed: Groq is down (network_error, HTTP 500). Kept as spoken.")
+        XCTAssertEqual(outcome.status, .kept(.failed("Groq is down")))
+        XCTAssertEqual(outcome.notice, "Translation failed: Groq is down. Kept as spoken.")
+    }
+
+    func testTheServersMessageIsShownAsIs() async {
+        let message = "Groq: the API key was rejected — check it in Settings › General › Dictation clean-up and translation"
+        let server = MockRefineServer(refine: .failure(APIError.server(
+            status: 422, code: "authentication_failed", message: message)))
+        let outcome = await makeProcessor(server).process("שלום", mode: .cleanUp, sourceLanguage: "he")
+        XCTAssertEqual(outcome.text, "שלום")
+        XCTAssertEqual(outcome.notice, "Clean-up failed: \(message). Kept as spoken.")
+    }
+
+    func testATransportFailureKeepsTheWords() async {
+        let server = MockRefineServer(refine: .failure(APIError.transport("The Internet connection appears to be offline.")))
+        let outcome = await makeProcessor(server).process("שלום", mode: .translate, sourceLanguage: "he")
+        XCTAssertEqual(outcome.text, "שלום")
+        XCTAssertEqual(outcome.status, .kept(.failed("Network error: The Internet connection appears to be offline")))
     }
 
     func testAnEmptyAnswerKeepsTheWords() async {
@@ -146,6 +169,18 @@ final class TranscriptPostProcessorTests: XCTestCase {
         XCTAssertTrue(server.requests.isEmpty)
     }
 
+    func testAKeyStoreErrorIsNotSetUp() async {
+        let server = MockRefineServer(settings: .success(DictationRefineSettings(
+            configured: true, keyError: "the keychain is locked")))
+        let processor = makeProcessor(server)
+        let outcome = await processor.process("שלום", mode: .translate, sourceLanguage: "he")
+        XCTAssertEqual(outcome.status, .kept(.notConfigured))
+        XCTAssertEqual(outcome.notice, "Set up translation in codeg Settings on your computer.")
+        XCTAssertTrue(server.requests.isEmpty)
+        let availability = await processor.availability(maxAge: 300)
+        XCTAssertEqual(availability, .notConfigured(keyError: "the keychain is locked"))
+    }
+
     func testAMissingConfigurationErrorIsNotConfigured() async {
         let server = MockRefineServer(refine: .failure(APIError.server(
             status: 422, code: "configuration_missing", message: "No provider")))
@@ -174,6 +209,13 @@ final class TranscriptPostProcessorTests: XCTestCase {
 }
 
 final class DictationRefineWireTests: XCTestCase {
+    func testLanguagesGoOutAsNames() {
+        let request = DictationRefineRequest(text: "hi", mode: .translate, sourceLanguage: "en")
+        XCTAssertEqual(request.sourceLanguage, "English")
+        XCTAssertEqual(request.targetLanguage, "English")
+        XCTAssertNil(DictationRefineRequest(text: "hi", mode: .cleanUp, sourceLanguage: nil).sourceLanguage)
+    }
+
     func testRequestBodyUsesTheWireNames() throws {
         let body = try DictationRefineRequest(text: "שלום", mode: .cleanUp, sourceLanguage: nil).jsonBody()
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
@@ -189,22 +231,30 @@ final class DictationRefineWireTests: XCTestCase {
         let snake = """
         {"configured": true, "providers": [{"id": "groq", "label": "Groq", "has_key": true,
          "default_model": "llama-3.3-70b"}], "provider": "groq", "model": null,
-         "target_language": "en", "refine": true, "translate": false, "instructions": ""}
+         "target_language": "en", "refine": true, "translate": false, "instructions": "", "key_error": null}
         """
         let camel = """
-        {"configured": true, "providers": [{"id": "groq", "label": "Groq", "hasKey": true,
-         "defaultModel": "llama-3.3-70b"}], "provider": "groq", "targetLanguage": "en"}
+        {"provider": "groq", "model": "", "endpoint": "", "targetLanguage": "en", "refine": true,
+         "translate": true, "instructions": "", "configured": true,
+         "providers": [{"id": "groq", "label": "Groq", "hasKey": true, "defaultModel": "llama-3.3-70b"},
+                       {"id": "google", "label": "Google Cloud Translation", "hasKey": false, "defaultModel": null}],
+         "keyError": null}
         """
         for json in [snake, camel] {
             let settings = try CodegJSON.decoder.decode(DictationRefineSettings.self, from: Data(json.utf8))
             XCTAssertTrue(settings.configured)
-            XCTAssertEqual(settings.providers, [DictationRefineProvider(
-                id: "groq", label: "Groq", hasKey: true, defaultModel: "llama-3.3-70b")])
+            XCTAssertTrue(settings.isSetUp)
+            XCTAssertNil(settings.keyError)
+            XCTAssertEqual(settings.providers.first, DictationRefineProvider(
+                id: "groq", label: "Groq", hasKey: true, defaultModel: "llama-3.3-70b"))
             XCTAssertEqual(settings.targetLanguage, "en")
             XCTAssertEqual(settings.summary, "Groq · llama-3.3-70b")
         }
         let empty = try CodegJSON.decoder.decode(DictationRefineSettings.self, from: Data("{}".utf8))
         XCTAssertFalse(empty.configured)
+        let locked = try CodegJSON.decoder.decode(DictationRefineSettings.self,
+                                                  from: Data(#"{"configured": true, "keyError": "locked"}"#.utf8))
+        XCTAssertFalse(locked.isSetUp)
     }
 
     func testResultDecodes() throws {
@@ -220,6 +270,8 @@ final class DictationRefineWireTests: XCTestCase {
         XCTAssertFalse(DictationRefineWire.isNotAvailable(APIError.transport("offline")))
         XCTAssertFalse(DictationRefineWire.isNotAvailable(APIError.unauthorized))
         XCTAssertTrue(DictationRefineWire.isNotConfigured(APIError.server(status: 422, code: "configuration_missing", message: "")))
+        XCTAssertFalse(DictationRefineWire.isNotConfigured(APIError.server(status: 422, code: "configuration_invalid", message: "")))
+        XCTAssertFalse(DictationRefineWire.isNotConfigured(APIError.server(status: 422, code: "authentication_failed", message: "")))
     }
 
     func testTheStripChipCyclesTheModes() {

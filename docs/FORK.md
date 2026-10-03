@@ -363,41 +363,55 @@ The phone calls the codeg server it is connected to through the usual
 transport (`POST /api/<command>` with the token). The server passes the text
 to the provider set up in codeg Settings on the computer (Groq and similar).
 
-- **Commands.** `get_dictation_refine_settings` answers `{ configured,
-  providers: [{ id, label, hasKey, defaultModel }], provider, model,
-  targetLanguage, refine, translate, instructions }`. `refine_dictation`
+- **Contract.** codeg's `docs/dictation-refine.md`, from server fork.155.
+  `get_dictation_refine_settings` answers `{ provider, model, endpoint,
+  targetLanguage, refine, translate, instructions, configured, providers:
+  [{ id, label, hasKey, defaultModel }], keyError }`. `refine_dictation`
   takes `{ text, refine, translate, targetLanguage, sourceLanguage }` and
   answers `{ text, provider, model, elapsedMs }`. Every name is in
-  `DictationRefineWire`, the one place to change if the server's names
-  change. Requests use those keys verbatim; responses go through the shared
-  snake_case decoder, so `target_language` and `targetLanguage` both match.
+  `DictationRefineWire`. Requests use those keys verbatim (camelCase);
+  responses go through the shared snake_case decoder, so either casing
+  matches. Errors are codeg's `{ code, message }` with a non-2xx status.
 - **Arguments.** Clean up: `refine: true, translate: false,
   targetLanguage: null`. Clean up and translate: `refine: true,
-  translate: true, targetLanguage: "en"`. `sourceLanguage` is the dictation
-  language (`he`, `en`), or `null` for Detect automatically.
+  translate: true, targetLanguage: "English"`, except that a translate-only
+  provider (Google Cloud Translation) gets `refine: false`, since asking it
+  to clean up is an error. `sourceLanguage` is the dictation language by
+  name (`"Hebrew"`, `"English"`), which the server names in its prompt, or
+  `null` for Detect automatically.
 - **Availability.** Each recording asks `get_dictation_refine_settings` while
   you speak (cached per server, refreshed at most every 10 s; a failure to
-  ask is not cached). An older server answers 501 `not_implemented` (codeg's
-  answer to an unknown command), or 404: that is "not available", not an
-  error, and the strip hides its chip. `configured: false`, or a
-  `configuration_missing` error from `refine_dictation`, is "not
-  configured": the notice says "Set up translation in codeg Settings on your
+  ask is not cached). A server older than fork.155 answers 501
+  `not_implemented` (codeg's answer to an unknown command), or 404: that is
+  "not available", not an error, and the strip hides its chip.
+  `configured: false`, a non-null `keyError` (codeg's key store wouldn't
+  open), or a `configuration_missing` error from `refine_dictation` is "not
+  set up": the notice says "Set up translation in codeg Settings on your
   computer."
 - **Never losing the words.** Any error, an empty answer, or no answer within
-  12 seconds inserts the transcript as spoken, with a short notice. The
-  timeout doesn't wait for the request to wind down. The strip's X while
-  "Translating…" shows inserts the words as spoken at once. If Send is on, a
-  message kept as spoken is still sent, so nothing said into the Camera
-  Control silently stays behind; the notice says it wasn't cleaned up.
+  12 seconds inserts the transcript as spoken, with a short notice. Other
+  server errors (`authentication_failed`, `configuration_invalid`,
+  `network_error`, `task_execution_failed`, `io_error`) show codeg's own
+  `message`, which it writes for the user. The timeout doesn't wait for the
+  request to wind down. The strip's X while "Translating…" shows inserts the
+  words as spoken at once. If Send is on, a message kept as spoken is still
+  sent, so nothing said into the Camera Control silently stays behind; the
+  notice says it wasn't cleaned up.
+- **Timeout.** 12 s, as asked for the phone. The server gives its provider
+  10 s and then retries once, so its worst case is about 20 s and its doc
+  suggests a 25 s client timeout. A first attempt that times out on the
+  server therefore always ends as "kept as spoken" on the phone, which is
+  quicker for walkie-talkie use. Change `TranscriptPostProcessor.timeout` if
+  the retry should get its chance.
 - **UX.** Settings › Voice › Voice Typing › After transcribing: Insert as
   spoken (default), Clean up, or Clean up and translate to English, with the
-  selected server's status (provider and model, not configured, too old,
-  unreachable). The recording strip's chip changes it for one message
-  (As spoken → Clean up → English). During the call the strip shows
-  "Cleaning up…" or "Translating…".
-- **Not yet tested against a live server.** The server side was written at
-  the same time; the client is tested with a mock transport
-  (`CodegiOSTests/DictationRefineTests.swift`).
+  selected server's status (provider and model, not set up, the key store
+  error, too old, unreachable). The recording strip's chip changes it for
+  one message (As spoken → Clean up → English). During the call the strip
+  shows "Cleaning up…" or "Translating…".
+- **Not yet tested against a live server.** The client is tested with a mock
+  transport (`CodegiOSTests/DictationRefineTests.swift`) built to the
+  server's doc.
 
 ### Language setting
 

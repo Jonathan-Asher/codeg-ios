@@ -7,10 +7,10 @@ import os
 // Settings on the computer. Whatever goes wrong, the words as spoken are kept.
 
 /// Every name the phone uses for the server's dictation commands, in one
-/// place. The server side is new, so these may still change.
+/// place (codeg `docs/dictation-refine.md`, from fork.155).
 enum DictationRefineWire {
-    /// `{ configured, providers: [{ id, label, hasKey, defaultModel }],
-    /// provider, model, targetLanguage, refine, translate, instructions }`
+    /// `{ configured, keyError, providers: [{ id, label, hasKey, defaultModel }],
+    /// provider, model, endpoint, targetLanguage, refine, translate, instructions }`
     static let settingsCommand = "get_dictation_refine_settings"
     /// Args below; answers `{ text, provider, model, elapsedMs }`.
     static let refineCommand = "refine_dictation"
@@ -24,13 +24,26 @@ enum DictationRefineWire {
         static let sourceLanguage = "sourceLanguage"
     }
 
-    /// The target of "Clean up and translate to English".
-    static let english = "en"
+    /// The target of "Clean up and translate to English". The server takes a
+    /// language name or code, and names it in the model's prompt.
+    static let english = "English"
+
+    /// The dictation language as the server's prompt names it.
+    static func languageName(_ code: String?) -> String? {
+        switch code {
+        case "he": "Hebrew"
+        case "en": "English"
+        default: code
+        }
+    }
+
+    /// Providers that only translate: asking them to clean up is an error.
+    static let translateOnlyProviders: Set<String> = ["google"]
 
     /// Response keys. Responses are decoded with the shared snake_case
     /// conversion, so `target_language` and `targetLanguage` both match.
     enum SettingsKey: String, CodingKey {
-        case configured, providers, provider, model, targetLanguage, refine, translate, instructions
+        case configured, keyError, providers, provider, model, endpoint, targetLanguage, refine, translate, instructions
     }
 
     enum ProviderKey: String, CodingKey {
@@ -48,10 +61,12 @@ enum DictationRefineWire {
         return status == 404 || status == 501 || code == "not_implemented" || code == "unknown_command"
     }
 
-    /// The server has the command but no provider is set up.
+    /// The server has the command but the selected provider has no key (or,
+    /// for a custom one, no endpoint or model). Other server errors carry a
+    /// message written for the user, which is shown as is.
     static func isNotConfigured(_ error: Error) -> Bool {
         guard case .server(_, let code, _)? = error as? APIError else { return false }
-        return code == "configuration_missing" || code == "configuration_invalid" || code == "not_configured"
+        return code == "configuration_missing"
     }
 }
 
@@ -137,18 +152,22 @@ struct DictationRefineProvider: Decodable, Equatable, Sendable, Identifiable {
 /// `get_dictation_refine_settings`. Every field is optional on the wire.
 struct DictationRefineSettings: Decodable, Equatable, Sendable {
     var configured: Bool
+    /// Set when codeg's key store wouldn't open; the keys may then look absent.
+    var keyError: String?
     var providers: [DictationRefineProvider]
     var provider: String?
     var model: String?
+    var endpoint: String?
     var targetLanguage: String?
     var refine: Bool?
     var translate: Bool?
     var instructions: String?
 
-    init(configured: Bool, providers: [DictationRefineProvider] = [], provider: String? = nil,
-         model: String? = nil, targetLanguage: String? = nil, refine: Bool? = nil,
+    init(configured: Bool, keyError: String? = nil, providers: [DictationRefineProvider] = [],
+         provider: String? = nil, model: String? = nil, targetLanguage: String? = nil, refine: Bool? = nil,
          translate: Bool? = nil, instructions: String? = nil) {
         self.configured = configured
+        self.keyError = keyError
         self.providers = providers
         self.provider = provider
         self.model = model
@@ -161,14 +180,20 @@ struct DictationRefineSettings: Decodable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: DictationRefineWire.SettingsKey.self)
         configured = (try? c.decodeIfPresent(Bool.self, forKey: .configured)) ?? false
+        keyError = (try? c.decodeIfPresent(String.self, forKey: .keyError)).flatMap { $0.isEmpty ? nil : $0 }
         providers = (try? c.decodeIfPresent([DictationRefineProvider].self, forKey: .providers)) ?? []
         provider = try? c.decodeIfPresent(String.self, forKey: .provider)
         model = try? c.decodeIfPresent(String.self, forKey: .model)
+        endpoint = try? c.decodeIfPresent(String.self, forKey: .endpoint)
         targetLanguage = try? c.decodeIfPresent(String.self, forKey: .targetLanguage)
         refine = try? c.decodeIfPresent(Bool.self, forKey: .refine)
         translate = try? c.decodeIfPresent(Bool.self, forKey: .translate)
         instructions = try? c.decodeIfPresent(String.self, forKey: .instructions)
     }
+
+    /// Clean-up can be asked for: a provider that can be called, and a key
+    /// store that opened.
+    var isSetUp: Bool { configured && keyError == nil }
 
     /// "Groq · llama-3.3-70b" for the settings screen.
     var summary: String? {
@@ -188,9 +213,12 @@ struct DictationRefineRequest: Equatable, Sendable {
     var targetLanguage: String?
     var sourceLanguage: String?
 
-    init(text: String, mode: DictationRefineMode, sourceLanguage: String?) {
+    /// `sourceLanguage` is a whisper code (`he`, `en`) or nil; it goes out as
+    /// a name. `provider` is the server's selected one, when known: a
+    /// translate-only provider isn't asked to clean up.
+    init(text: String, mode: DictationRefineMode, sourceLanguage: String?, provider: String? = nil) {
         self.text = text
-        self.sourceLanguage = sourceLanguage
+        self.sourceLanguage = DictationRefineWire.languageName(sourceLanguage)
         switch mode {
         case .asSpoken:
             refine = false
@@ -199,7 +227,7 @@ struct DictationRefineRequest: Equatable, Sendable {
             refine = true
             translate = false
         case .translate:
-            refine = true
+            refine = !DictationRefineWire.translateOnlyProviders.contains(provider ?? "")
             translate = true
             targetLanguage = DictationRefineWire.english
         }
@@ -280,8 +308,9 @@ extension CodegClient: DictationRefineTransport {
 /// Whether a server can clean up dictation.
 enum DictationRefineAvailability: Equatable, Sendable {
     case ready(DictationRefineSettings)
-    /// The server has the commands but no provider is set up.
-    case notConfigured
+    /// The server has the commands but no provider is set up, or its key
+    /// store wouldn't open (`keyError`).
+    case notConfigured(keyError: String?)
     /// An older server without the commands.
     case notAvailable
     /// Couldn't ask (offline, an error). Clean-up is still tried.
@@ -327,10 +356,10 @@ actor DictationRefineStatusCache {
     private static func ask(_ transport: any DictationRefineTransport) async -> DictationRefineAvailability {
         do {
             let settings = try await transport.dictationRefineSettings()
-            return settings.configured ? .ready(settings) : .notConfigured
+            return settings.isSetUp ? .ready(settings) : .notConfigured(keyError: settings.keyError)
         } catch {
             if DictationRefineWire.isNotAvailable(error) { return .notAvailable }
-            if DictationRefineWire.isNotConfigured(error) { return .notConfigured }
+            if DictationRefineWire.isNotConfigured(error) { return .notConfigured(keyError: nil) }
             return .unknown((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
     }
@@ -425,15 +454,17 @@ struct TranscriptPostProcessor: Sendable {
         func kept(_ reason: DictationRefineFallback) -> DictationRefineOutcome {
             DictationRefineOutcome(text: text, status: .kept(reason), mode: mode)
         }
+        var provider: String?
         switch await cache.availability(of: transport, maxAge: settingsMaxAge) {
         case .notAvailable: return kept(.notAvailable)
         case .notConfigured: return kept(.notConfigured)
-        case .ready, .unknown: break
+        case .ready(let settings): provider = settings.provider
+        case .unknown: break
         }
         if Task.isCancelled { return kept(.skipped) }
         do {
             let result = try await transport.refineDictation(
-                DictationRefineRequest(text: text, mode: mode, sourceLanguage: sourceLanguage))
+                DictationRefineRequest(text: text, mode: mode, sourceLanguage: sourceLanguage, provider: provider))
             let refined = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !refined.isEmpty else { return kept(.failed("the server returned no text")) }
             return DictationRefineOutcome(
@@ -448,7 +479,7 @@ struct TranscriptPostProcessor: Sendable {
                 return kept(.notAvailable)
             }
             if DictationRefineWire.isNotConfigured(error) {
-                await cache.record(.notConfigured, for: transport.refineServerKey)
+                await cache.record(.notConfigured(keyError: nil), for: transport.refineServerKey)
                 return kept(.notConfigured)
             }
             if Task.isCancelled { return kept(.skipped) }
@@ -456,10 +487,17 @@ struct TranscriptPostProcessor: Sendable {
         }
     }
 
+    /// The server's own message when it sent one (codeg writes it for the
+    /// user), otherwise the transport's.
     private static func shortMessage(_ error: Error) -> String {
-        let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        let text: String
+        if case .server(_, _, let message)? = error as? APIError, !message.isEmpty {
+            text = message
+        } else {
+            text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
         let trimmed = text.trimmingCharacters(in: CharacterSet(charactersIn: ". \n"))
-        return trimmed.count > 120 ? String(trimmed.prefix(117)) + "…" : trimmed
+        return trimmed.count > 180 ? String(trimmed.prefix(177)) + "…" : trimmed
     }
 
     /// The operation's result, or `timedOut` after `timeout`, or `cancelled`

@@ -156,7 +156,10 @@ struct VoiceTypingSection: View {
         case .ready(let settings)?:
             let with = settings.summary.map { " with \($0)" } ?? ""
             return "Runs on your codeg server\(with). If it fails or takes over 12 seconds, your words go in as spoken."
-        case .notConfigured?:
+        case .notConfigured(let keyError)?:
+            if let keyError {
+                return "codeg couldn't open its key store (\(keyError)). Set up translation in codeg Settings on your computer; until then, your words go in as spoken."
+            }
             return "Set up translation in codeg Settings on your computer. Until then, your words go in as spoken."
         case .notAvailable?:
             return "This codeg server is too old to clean up dictation. Until it's updated, your words go in as spoken."
