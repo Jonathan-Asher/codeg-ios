@@ -37,7 +37,8 @@ struct SessionSectionCard: View {
                         SessionRow(
                             conversation: conv,
                             isSelected: false,
-                            folderName: folderName(conv)
+                            folderName: folderName(conv),
+                            style: .inset
                         )
                         .padding(.horizontal, 6)
                     }
@@ -110,8 +111,8 @@ struct SessionSectionCard: View {
 /// is hidden so that native close button floats over a clean top (App Store
 /// editorial style) above a big left-aligned title with a small "N sessions total"
 /// eyebrow. The row list is a `List` (UICollectionView cell recycling) so a
-/// many-hundred-row group scrolls without the lazy-stack stutter. Rows are tappable
-/// **only here** — a tap reports the id via `onOpen` (the host opens the conversation
+/// many-hundred-row group scrolls without the lazy-stack stutter. Each row is its own
+/// card; a tap reports the id via `onOpen` (the host opens the conversation
 /// first — pushing the detail onto the nav stack behind the cover — *then* clears the
 /// cover binding, so the cover's dismissal reveals the already-pushed detail in one
 /// motion instead of flashing this list); the close button reports via `onClose`.
@@ -152,7 +153,7 @@ struct SessionSectionFullScreen: View {
                         onTap: { onOpen(conv.id) },
                         onTogglePin: onTogglePin.map { toggle in { toggle(conv) } }
                     )
-                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
                 }
