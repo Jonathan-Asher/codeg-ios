@@ -5,8 +5,9 @@ This repository is a fork of [xintaofei/codeg-ios](https://github.com/xintaofei/
 **Codeg Plus**. Upstream is largely frozen, with several useful fixes waiting
 in open pull requests. The fork carries those fixes and its own app identity, so it
 installs next to the upstream app. Features for Jonathan's own codeg server,
-push notifications and on-device voice (read aloud and voice typing), are
-added here.
+push notifications, on-device voice (read aloud and voice typing, with
+clean-up and translation through the codeg server) and Camera Control to
+talk, are added here.
 
 `LICENSE` is kept as upstream ships it. `THIRD_PARTY_NOTICES.md` keeps
 upstream's entries and adds the fork's own dependencies at the end.
@@ -255,9 +256,10 @@ git subtree pull --prefix Packages/BlueTTSKit <path-or-url-of-codeg-voice/BlueTT
 
 ## Voice typing (on-device whisper)
 
-The mic in the message bar transcribes speech on the iPhone. Nothing is sent
-to a server, and Apple's `SFSpeechRecognizer` is not used, so the app needs
-only `NSMicrophoneUsageDescription`.
+The mic in the message bar transcribes speech on the iPhone. The audio never
+leaves the phone, and Apple's `SFSpeechRecognizer` is not used, so the app
+needs only `NSMicrophoneUsageDescription`. Only when clean-up or translation
+is turned on does the transcribed text go to the codeg server (see below).
 
 ### Engine: whisper.cpp
 
@@ -310,7 +312,10 @@ FLEURS WER from 23.7% to 40%.
 3. **Decode.** There is one decode over the trimmed audio, as in Speakly's
    dictation. Output that is only non-speech markers (`[BLANK_AUDIO]`,
    `(מוזיקה)`) is dropped.
-4. **Insert.** `DictationText.insert` puts the text at the field's cursor, or
+4. **Clean up.** With "After transcribing" set to clean up or translate, the
+   text goes to the codeg server first (see "Clean-up and translation"
+   below). On any failure the words are kept as spoken.
+5. **Insert.** `DictationText.insert` puts the text at the field's cursor, or
    replaces the selection, using the iOS 18 `TextField(text:selection:)`
    binding. It adds a space where the transcript would touch a word, and the
    cursor ends after the inserted text. With "Send" on, the message is then
@@ -331,11 +336,11 @@ again. A decode that is already running is cancelled and run again then.
   VoiceOver activation toggles. While recording, the button turns into a red
   stop button. While transcribing, it shows a spinner.
 - **Recording strip** above the field: a pulsing dot, the elapsed time, a live
-  level meter, a **Send** switch (send right after transcribing, remembered),
-  and cancel.
+  level meter, the clean-up chip for this message, a **Send** switch (send
+  right after transcribing, remembered), and cancel.
 - **Settings › Voice › Voice Typing**: the model download (download, pause,
-  resume, delete, progress), Language, "Send right after transcribing" and
-  "Use the session context".
+  resume, delete, progress), Language, After transcribing, "Send right after
+  transcribing" and "Use the session context".
 - **Without the model**, tapping the mic offers the download (875 MB) and
   points to the mic key on the iOS keyboard, Apple's own dictation. During the
   download, a notice shows the progress. If the microphone is denied, a notice
@@ -345,7 +350,54 @@ again. A decode that is already running is cancelled and run again then.
   Any reply being read aloud is stopped first. On stop, the session is
   deactivated with `.notifyOthersOnDeactivation`, and Read aloud sets
   `.playback` again the next time it starts. A call or Siri interruption, or a
-  route change that stops the engine, ends the recording and transcribes it.
+  route change that stops the engine, ends the recording and transcribes it
+  into the message bar without sending it, even with Send on. Haptics are
+  allowed during recording (`setAllowHapticsAndSystemSoundsDuringRecording`),
+  so the press and release are felt.
+
+### Clean-up and translation (codeg server)
+
+`Features/Dictation/DictationRefine.swift`. `TranscriptPostProcessor` runs
+between transcription and insert, for both the mic and the Camera Control.
+The phone calls the codeg server it is connected to through the usual
+transport (`POST /api/<command>` with the token). The server passes the text
+to the provider set up in codeg Settings on the computer (Groq and similar).
+
+- **Commands.** `get_dictation_refine_settings` answers `{ configured,
+  providers: [{ id, label, hasKey, defaultModel }], provider, model,
+  targetLanguage, refine, translate, instructions }`. `refine_dictation`
+  takes `{ text, refine, translate, targetLanguage, sourceLanguage }` and
+  answers `{ text, provider, model, elapsedMs }`. Every name is in
+  `DictationRefineWire`, the one place to change if the server's names
+  change. Requests use those keys verbatim; responses go through the shared
+  snake_case decoder, so `target_language` and `targetLanguage` both match.
+- **Arguments.** Clean up: `refine: true, translate: false,
+  targetLanguage: null`. Clean up and translate: `refine: true,
+  translate: true, targetLanguage: "en"`. `sourceLanguage` is the dictation
+  language (`he`, `en`), or `null` for Detect automatically.
+- **Availability.** Each recording asks `get_dictation_refine_settings` while
+  you speak (cached per server, refreshed at most every 10 s; a failure to
+  ask is not cached). An older server answers 501 `not_implemented` (codeg's
+  answer to an unknown command), or 404: that is "not available", not an
+  error, and the strip hides its chip. `configured: false`, or a
+  `configuration_missing` error from `refine_dictation`, is "not
+  configured": the notice says "Set up translation in codeg Settings on your
+  computer."
+- **Never losing the words.** Any error, an empty answer, or no answer within
+  12 seconds inserts the transcript as spoken, with a short notice. The
+  timeout doesn't wait for the request to wind down. The strip's X while
+  "Translating…" shows inserts the words as spoken at once. If Send is on, a
+  message kept as spoken is still sent, so nothing said into the Camera
+  Control silently stays behind; the notice says it wasn't cleaned up.
+- **UX.** Settings › Voice › Voice Typing › After transcribing: Insert as
+  spoken (default), Clean up, or Clean up and translate to English, with the
+  selected server's status (provider and model, not configured, too old,
+  unreachable). The recording strip's chip changes it for one message
+  (As spoken → Clean up → English). During the call the strip shows
+  "Cleaning up…" or "Translating…".
+- **Not yet tested against a live server.** The server side was written at
+  the same time; the client is tested with a mock transport
+  (`CodegiOSTests/DictationRefineTests.swift`).
 
 ### Language setting
 
@@ -464,6 +516,128 @@ The CLI runs the app's own `WhisperCppEngine`, `SileroVAD`, `DictationTrim`
 and `DictationText` code against the XCFramework's macOS slice. Usage is in the
 header of each file.
 
+## Camera Control to talk
+
+With a session open and the mode on, hold the Camera Control (iPhone 16 and
+later), speak, and let go. The recording is transcribed on the iPhone, cleaned
+up if that's on, and sent the way the message bar's Send sends: a plain
+prompt, delivered into a turn held for background work, or queued while the
+agent replies. Code: `Features/Dictation/CameraTalk.swift` (press state
+machine, when it may run, settings), `CameraTalkController.swift` (the
+capture session) and `CameraTalkViews.swift` (the interaction host, the
+indicator, the toolbar switch).
+
+### How iOS delivers the button
+
+The only API with press and release is `AVCaptureEventInteraction` (AVKit,
+iOS 17.2), phases `began`, `ended` and `cancelled`. From Apple's
+documentation and the WWDC25 session "Enhancing your camera experience with
+capture controls":
+
+- Events go only to an app that is in the foreground and has a running
+  `AVCaptureSession`. Otherwise a press does its usual thing: the Camera
+  Control opens Camera, the volume buttons change the volume.
+- The primary event comes from volume down, the Action button and the Camera
+  Control (and, from iOS 26, a click on an H2 AirPods stem). The secondary
+  event comes from volume up. The event doesn't say which button it was.
+- An enabled interaction takes over those buttons. Apple asks apps to
+  disable it (`isEnabled = false`) whenever they can't handle the events,
+  which gives the buttons back to the system.
+- Apple tells App Store apps to use it only for capture. This build goes only
+  to Jonathan through TestFlight internal testing, which has no App Review.
+
+### The capture session
+
+It exists only so that iOS delivers the button. Back wide camera, `.low`
+preset, 10 fps, one `AVCaptureVideoDataOutput` that drops every frame, no
+audio input, and `automaticallyConfiguresApplicationAudioSession = false`, so
+it never touches dictation's `.playAndRecord` session. It is configured,
+started and stopped on its own serial queue. The green camera dot shows while
+it runs.
+
+**Preview: unverified.** Apple documents no preview requirement: "actively
+use the camera" is the running session. Camera apps that get the events
+render their own view from a video data output, and the known workaround for
+the termination below keeps a session with a data output running and installs
+the interaction on a hidden view. So the default has no preview layer at all.
+This hasn't been tried on a device. If the Camera Control doesn't respond,
+Settings › Voice › Camera Control › "Show the camera in the indicator" adds a
+22-point live `AVCaptureVideoPreviewLayer` to the indicator, without a new
+build.
+
+### When it runs
+
+`CameraTalkGate`: the mode is on, the camera is allowed, the app is active,
+and a session's message bar is on screen in an active scene, with the photo
+camera (attachments) closed. With several session screens (a pushed session,
+iPad windows), the one that appeared last owns it. Leaving the session,
+backgrounding, the scene going inactive (Control Center, the app switcher, a
+system alert) or turning the mode off stops the session. The interaction is
+enabled only while the session runs for that screen; when iOS interrupts the
+session (a call, another app's camera, heat) it is disabled and the indicator
+says why. The session resumes by itself when the interruption ends.
+
+### Press mapping
+
+`CameraTalkPress`:
+
+| Event | Action |
+| ----- | ------ |
+| press (`began`) | start recording, with a haptic and the recording strip |
+| release (`ended`) after 0.3 s or more | stop, transcribe, clean up, send |
+| release before 0.3 s | throw away, "Hold the Camera Control while you speak" |
+| `cancelled` | throw away |
+| the other button pressed while one is held | throw away; nothing until both are up |
+
+**Volume buttons.** While the mode is on they are talk keys too, and they don't
+change the volume. Volume down sends the same primary event as the Camera
+Control, so the two can't be told apart. Volume up is the secondary event; it
+talks as well rather than doing nothing, and pressing it while holding the
+Camera Control is a quick way to throw a recording away. To change the volume,
+use Control Center or turn the mode off.
+
+**Sending.** The strip's Send switch starts on for a Camera Control recording,
+whatever the mic's Send setting, and switching it off keeps that one message
+in the bar. No speech: "No speech detected", nothing sent. Without the speech
+model, the press shows the same download prompt as the mic. A press while the
+last dictation is still being transcribed shows a notice.
+
+**Interruptions.** If the press can't end normally (the scene goes inactive,
+the camera stops, the session closes), the recording is transcribed into the
+message bar without being sent, with a notice. Camera interruptions don't
+touch the microphone: the capture session has no audio, and the mic button
+keeps working.
+
+### Setup and permission
+
+The toolbar's Camera Control button turns the mode on or off for every
+session (remembered). The first time, an explanation comes before iOS asks
+for the camera. Turning it on also asks for the microphone, so the first
+press doesn't stop at a prompt. `NSCameraUsageDescription` mentions the mode.
+Settings › Voice › Camera Control has the same switch, the preview switch and
+a short explanation. The section and the toolbar button are hidden on
+devices without a camera (the simulator).
+
+### "Capture Application Requirements Unmet"
+
+SpringBoard terminates an app with "Camera not actively used;
+AVCaptureEventInteraction not installed" (Apple forums thread 769024) when the
+app was launched through `CameraCaptureIntent` (from the Camera Control,
+Control Center or the Lock Screen, with LockedCameraCapture) and doesn't keep
+a camera running. Codeg Plus adopts neither `CameraCaptureIntent` nor
+LockedCameraCapture, so it can't be launched from the Camera Control and that
+watchdog doesn't apply: it is a plain foreground app with a capture session.
+
+### Diagnosing it on the phone
+
+Console.app on a Mac, with the iPhone connected: filter on subsystem
+`io.ashurov.codeg`, category `camera-talk` (clean-up logs to
+`dictation-refine`, the recording to `dictation`). Logged: the mode on and
+off; every session start and stop with the gate's inputs; configuration; the
+first camera frame; interruptions with their reason; runtime errors; the
+interaction installed, enabled and disabled; every capture event with its
+phase and primary or secondary; and what each press did.
+
 ## Upstream pull requests carried by the fork
 
 Applied on top of upstream `e2d75f9`, in this order. Each cherry-pick keeps its
@@ -495,7 +669,8 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
 
 - **`test`** runs the `CodegiOSTests` unit tests (session activity, push
   payload routing, Markdown-to-speech text, voice typing, the Activity order
-  and bottom pin) on an iPhone simulator, preferably an iPhone 17 Pro Max, in
+  and bottom pin, the Camera Control press and gating, dictation clean-up with
+  a mock server) on an iPhone simulator, preferably an iPhone 17 Pro Max, in
   parallel with `build`. It uploads the session list screenshots as the
   `session-list-screenshots` artifact.
 - **`build`** runs on every push and pull request on GitHub-hosted `macos-26`
