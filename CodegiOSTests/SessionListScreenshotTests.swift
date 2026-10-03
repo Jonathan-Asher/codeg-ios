@@ -17,6 +17,8 @@ import XCTest
 @MainActor
 final class SessionListScreenshotTests: XCTestCase {
     private let now = Date()
+    /// The session marked as the one you came from.
+    private let marked = 105
     private var sessions: [ConversationSummary] { SampleSessions.all(now: now) }
 
     override func setUp() async throws {
@@ -34,10 +36,10 @@ final class SessionListScreenshotTests: XCTestCase {
                     CodegBackground()
                     ScrollView {
                         VStack(spacing: 8) {
-                            ForEach(Array(sessions.prefix(8).enumerated()), id: \.element.id) { index, conv in
+                            ForEach(sessions.prefix(8)) { conv in
                                 SessionRow(
                                     conversation: conv,
-                                    isSelected: index == 4,
+                                    isSelected: conv.id == marked,
                                     folderName: SampleSessions.folders[conv.folderId],
                                     onTap: {}
                                 )
@@ -87,6 +89,7 @@ final class SessionListScreenshotTests: XCTestCase {
                                 SessionSectionCard(
                                     title: "Pinned", tint: Theme.accent, conversations: pinned,
                                     folderName: { SampleSessions.folders[$0.folderId] },
+                                    onOpen: { _ in }, onTogglePin: { _ in },
                                     onExpand: {}
                                 )
                                 .padding(.horizontal, Theme.Layout.screenHMargin)
@@ -95,6 +98,7 @@ final class SessionListScreenshotTests: XCTestCase {
                                         title: SampleSessions.folders[fid] ?? "",
                                         tint: Color(hexString: SampleSessions.folderColors[fid] ?? "") ?? Theme.accent,
                                         conversations: convs,
+                                        onOpen: { _ in }, onTogglePin: { _ in },
                                         onExpand: {}
                                     )
                                     .padding(.horizontal, Theme.Layout.screenHMargin)
