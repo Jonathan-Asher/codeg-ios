@@ -188,13 +188,23 @@ enum Shot {
     static func tabs<Content: View>(selected: Int, @ViewBuilder content: () -> Content) -> some View {
         let screen = NavigationStack { content() }
         TabView(selection: .constant(selected)) {
-            Tab("Chats", systemImage: "message", value: 0) { if selected == 0 { screen } }
-            Tab("Folders", systemImage: "folder", value: 1) { Color.clear }
-            Tab("Activity", systemImage: "waveform", value: 2) { if selected == 2 { screen } }
-            Tab("Search", systemImage: "magnifyingglass", value: 3) { Color.clear }
-            Tab("Settings", systemImage: "gearshape", value: 4) { Color.clear }
+            Tab(value: 0) { if selected == 0 { screen } } label: { tabLabel("Chats", "message") }
+            Tab(value: 1) { Color.clear } label: { tabLabel("Folders", "folder") }
+            Tab(value: 2) { if selected == 2 { screen } } label: { tabLabel("Activity", "waveform") }
+            Tab(value: 3) { Color.clear } label: { tabLabel("Search", "magnifyingglass") }
+            Tab(value: 4) { Color.clear } label: { tabLabel("Settings", "gearshape") }
         }
         .tint(Theme.accent)
+    }
+
+    /// Outline tab icons, as `RootView.linearTabLabel` draws them.
+    private static func tabLabel(_ title: LocalizedStringKey, _ systemImage: String) -> some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: systemImage)
+                .environment(\.symbolVariants, .none)
+        }
     }
 
     static var directory: URL {
