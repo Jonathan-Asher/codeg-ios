@@ -15,6 +15,9 @@ struct SessionSectionCard: View {
     var folderName: (ConversationSummary) -> String? = { _ in nil }
     /// How many rows to preview before the "Show all" affordance.
     var previewLimit: Int = 5
+    /// The session that is open (iPad) or was opened last (iPhone); its row is
+    /// marked.
+    var markedID: Int? = nil
     /// Opens a session from its preview row. Without it the rows are
     /// display-only.
     var onOpen: ((Int) -> Void)? = nil
@@ -47,7 +50,7 @@ struct SessionSectionCard: View {
                     }
                     SessionRow(
                         conversation: conv,
-                        isSelected: false,
+                        isSelected: conv.id == markedID,
                         folderName: folderName(conv),
                         onTap: onOpen.map { open in { open(conv.id) } },
                         onTogglePin: onTogglePin.map { toggle in { toggle(conv) } },
@@ -136,6 +139,8 @@ struct SessionSectionFullScreen: View {
     /// background refresh while this is open keeps the list current.
     let conversations: [ConversationSummary]
     var folderName: (ConversationSummary) -> String? = { _ in nil }
+    /// The session that is open (iPad) or was opened last (iPhone).
+    var markedID: Int? = nil
     let onOpen: (Int) -> Void
     var onTogglePin: ((ConversationSummary) -> Void)?
     /// Dismisses the fullscreen. The host drives this by clearing the cover's
@@ -161,7 +166,7 @@ struct SessionSectionFullScreen: View {
                 ForEach(conversations) { conv in
                     SessionRow(
                         conversation: conv,
-                        isSelected: false,
+                        isSelected: conv.id == markedID,
                         folderName: folderName(conv),
                         onTap: { onOpen(conv.id) },
                         onTogglePin: onTogglePin.map { toggle in { toggle(conv) } }

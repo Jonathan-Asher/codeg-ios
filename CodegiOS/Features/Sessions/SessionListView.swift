@@ -25,6 +25,9 @@ struct SessionListView: View {
     /// centered one). `nil` on iPad, where the sidebar owns server switching, so
     /// a plain title is shown there.
     var serverSwitcher: ServerSwitcher?
+    /// The session to mark as the one you came from (iPhone, where nothing
+    /// stays selected). iPad marks `selectedConversationID` instead.
+    var markedConversationID: Int?
 
     /// Configuration for the leading server-switcher title menu.
     struct ServerSwitcher {
@@ -48,7 +51,8 @@ struct SessionListView: View {
         selectedConversationID: Binding<Int?>,
         onOpen: ((Int) -> Void)? = nil,
         onNewSession: (() -> Void)? = nil,
-        serverSwitcher: ServerSwitcher? = nil
+        serverSwitcher: ServerSwitcher? = nil,
+        markedConversationID: Int? = nil
     ) {
         self.server = server
         self.client = client
@@ -56,8 +60,13 @@ struct SessionListView: View {
         self.onOpen = onOpen
         self.onNewSession = onNewSession
         self.serverSwitcher = serverSwitcher
+        self.markedConversationID = markedConversationID
         self._viewModel = State(initialValue: SessionListViewModel(client: client))
     }
+
+    /// The row drawn as the current one: the open session on iPad, the one
+    /// opened last on iPhone.
+    private var markedID: Int? { markedConversationID ?? selectedConversationID }
 
     private var searching: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -188,7 +197,7 @@ struct SessionListView: View {
             }
             .padding(.top, Theme.Layout.screenTopInset)
             .padding(.bottom, Theme.Layout.screenBottomInset)
-            .animation(Theme.Motion.chrome, value: selectedConversationID)
+            .animation(Theme.Motion.chrome, value: markedID)
         }
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.immediately)
@@ -235,6 +244,7 @@ struct SessionListView: View {
             tint: tint,
             conversations: conversations,
             folderName: { showFolder ? viewModel.folderNames[$0.folderId] : nil },
+            markedID: markedID,
             onOpen: { open(id: $0) },
             onTogglePin: { togglePin($0) },
             onExpand: { expandedSection = section }
@@ -258,7 +268,7 @@ struct SessionListView: View {
             ForEach(matches) { conv in
                 SessionRow(
                     conversation: conv,
-                    isSelected: conv.id == selectedConversationID,
+                    isSelected: conv.id == markedID,
                     folderName: viewModel.folderNames[conv.folderId],
                     onTap: { select(conv) },
                     onTogglePin: { togglePin(conv) }
@@ -280,6 +290,7 @@ struct SessionListView: View {
             tint: data.tint,
             conversations: data.conversations,
             folderName: { data.showFolder ? viewModel.folderNames[$0.folderId] : nil },
+            markedID: markedID,
             // Open first (pushes the detail onto the nav stack behind the cover),
             // then dismiss — so closing the cover reveals the detail directly
             // instead of zooming back to this list and pushing afterward.

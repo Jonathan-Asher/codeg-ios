@@ -11,6 +11,9 @@ import SwiftUI
 struct ActivityView: View {
     let activity: ActivityModel
     let client: CodegClient?
+    /// The session that is open (iPad) or was opened last (iPhone); its row is
+    /// marked.
+    var markedConversationID: Int? = nil
     let onOpen: (Int) -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -130,7 +133,7 @@ struct ActivityView: View {
     private func row(_ conversation: ConversationSummary) -> some View {
         SessionRow(
             conversation: conversation,
-            isSelected: false,
+            isSelected: conversation.id == markedConversationID,
             folderName: activity.folderNames[conversation.folderId],
             onTap: { onOpen(conversation.id) }
         )
