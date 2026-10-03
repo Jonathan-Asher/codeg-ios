@@ -30,6 +30,10 @@ struct SessionDetailView: View {
     @State private var showDeleteConfirm = false
     /// Between `onAppear` and `onDisappear`: drives the presence report.
     @State private var isVisible = false
+    /// The one-time explanation before Camera Control to talk asks for the camera.
+    @State private var showCameraTalkIntro = false
+
+    private var cameraTalk: CameraTalkController { CameraTalkController.shared }
 
     init(server: ServerProfile, client: CodegClient, conversationID: Int,
          onOpenSession: ((NewSessionRequest) -> Void)? = nil) {
@@ -56,74 +60,93 @@ struct SessionDetailView: View {
     }
 
     var body: some View {
+        screen
+            .alert("Camera Control to talk", isPresented: $showCameraTalkIntro) {
+                Button("Turn On") { Task { await enableCameraTalk() } }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("While a session is open, hold the Camera Control and speak, then let go: \(AppIdentity.displayName) transcribes it on this iPhone and sends it to the agent. iOS only gives the Camera Control to an app whose camera is running, so the camera runs at its lowest quality while this screen is open. Nothing is recorded or saved, and the green camera dot shows. The volume buttons also work as talk keys and don't change the volume while it's on.")
+            }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        // Title + what the session is doing ("Working", "Needs you",
+        // "Idle — 2 background tasks running", "Paused — limit resets at …").
+        ToolbarItem(placement: .principal) {
+            SessionTitleView(
+                title: navTitle,
+                activity: model.summary == nil ? nil : model.activity,
+                agentName: model.agentTypeForUI.displayName
+            )
+        }
+        // The agent avatar (formerly in the compose bar) sits to the right of
+        // the title. Shown once loaded; for an editable draft its sheet also
+        // hosts the Agent + Folder pickers, otherwise just Mode/config.
+        if case .loaded = model.phase {
+            // Walkie-talkie: hold the Camera Control to talk to this agent.
+            if CameraTalkController.isSupported {
+                ToolbarItem(placement: .topBarTrailing) {
+                    CameraTalkToolbarButton(isOn: cameraTalk.isEnabled, action: toggleCameraTalk)
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                AgentOptionsButton(
+                    agentType: model.agentTypeForUI,
+                    workingDir: model.folder?.path,
+                    isBusy: model.isInFlight,
+                    options: model.agentOptions,
+                    newSession: model.isDraftEditable ? NewSessionAgentConfig(
+                        availableAgents: model.availableAgents,
+                        selectedAgent: model.agentTypeForUI,
+                        onSelectAgent: { model.selectAgent($0) },
+                        availableFolders: model.availableFolders,
+                        selectedFolder: model.folder,
+                        onSelectFolder: { model.selectFolder($0) }
+                    ) : nil,
+                    branch: SessionBranchConfig(
+                        // Root repo name when this session lives in a worktree.
+                        folderName: model.displayFolderName,
+                        folderPath: model.folder?.path,
+                        current: model.currentBranch,
+                        load: { await model.loadBranches() },
+                        switchTo: { await model.switchBranch($0, isRemote: $1) },
+                        create: { await model.createBranch($0, from: $1) },
+                        onOpenSession: { folderID in
+                            onOpenSession?(NewSessionRequest(preselectedFolderID: folderID))
+                        }
+                    )
+                )
+            }
+            // A "…" actions menu sits just after the agent avatar, available
+            // once the conversation is server-linked. Hosts rename / pin /
+            // details / status / delete (mirrors codeg web's per-conversation
+            // menu). The session banner used to carry this identity inline;
+            // it now lives behind "Session Details".
+            if model.canManageConversation {
+                ToolbarItem(placement: .topBarTrailing) {
+                    SessionActionsMenu(
+                        model: model,
+                        onRename: {
+                            renameText = model.summary?.title ?? ""
+                            showRename = true
+                        },
+                        onShowDetails: { showDetails = true },
+                        onDelete: { showDeleteConfirm = true }
+                    )
+                }
+            }
+        }
+    }
+
+    private var screen: some View {
         ZStack {
             CodegBackground()
             content
         }
         .navigationTitle(navTitle)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            // Title + what the session is doing ("Working", "Needs you",
-            // "Idle — 2 background tasks running", "Paused — limit resets at …").
-            ToolbarItem(placement: .principal) {
-                SessionTitleView(
-                    title: navTitle,
-                    activity: model.summary == nil ? nil : model.activity,
-                    agentName: model.agentTypeForUI.displayName
-                )
-            }
-            // The agent avatar (formerly in the compose bar) sits to the right of
-            // the title. Shown once loaded; for an editable draft its sheet also
-            // hosts the Agent + Folder pickers, otherwise just Mode/config.
-            if case .loaded = model.phase {
-                ToolbarItem(placement: .topBarTrailing) {
-                    AgentOptionsButton(
-                        agentType: model.agentTypeForUI,
-                        workingDir: model.folder?.path,
-                        isBusy: model.isInFlight,
-                        options: model.agentOptions,
-                        newSession: model.isDraftEditable ? NewSessionAgentConfig(
-                            availableAgents: model.availableAgents,
-                            selectedAgent: model.agentTypeForUI,
-                            onSelectAgent: { model.selectAgent($0) },
-                            availableFolders: model.availableFolders,
-                            selectedFolder: model.folder,
-                            onSelectFolder: { model.selectFolder($0) }
-                        ) : nil,
-                        branch: SessionBranchConfig(
-                            // Root repo name when this session lives in a worktree.
-                            folderName: model.displayFolderName,
-                            folderPath: model.folder?.path,
-                            current: model.currentBranch,
-                            load: { await model.loadBranches() },
-                            switchTo: { await model.switchBranch($0, isRemote: $1) },
-                            create: { await model.createBranch($0, from: $1) },
-                            onOpenSession: { folderID in
-                                onOpenSession?(NewSessionRequest(preselectedFolderID: folderID))
-                            }
-                        )
-                    )
-                }
-                // A "…" actions menu sits just after the agent avatar, available
-                // once the conversation is server-linked. Hosts rename / pin /
-                // details / status / delete (mirrors codeg web's per-conversation
-                // menu). The session banner used to carry this identity inline;
-                // it now lives behind "Session Details".
-                if model.canManageConversation {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        SessionActionsMenu(
-                            model: model,
-                            onRename: {
-                                renameText = model.summary?.title ?? ""
-                                showRename = true
-                            },
-                            onShowDetails: { showDetails = true },
-                            onDelete: { showDeleteConfirm = true }
-                        )
-                    }
-                }
-            }
-        }
+        .toolbar { toolbarContent }
         .alert("Rename Session", isPresented: $showRename) {
             TextField("Title", text: $renameText)
             Button("Cancel", role: .cancel) { }
@@ -198,6 +221,27 @@ struct SessionDetailView: View {
             new != nil ? .warning : nil
         }
         .sensoryFeedback(.selection, trigger: model.userToggleTick)
+    }
+
+    private func toggleCameraTalk() {
+        if cameraTalk.isEnabled {
+            cameraTalk.setEnabled(false)
+        } else if cameraTalk.needsIntro {
+            showCameraTalkIntro = true
+        } else {
+            Task { await enableCameraTalk() }
+        }
+    }
+
+    private func enableCameraTalk() async {
+        switch await cameraTalk.enable() {
+        case .enabled:
+            break
+        case .cameraDenied:
+            model.notice = "Camera access is off for \(AppIdentity.displayName). Allow it in the Settings app to use the Camera Control to talk."
+        case .noCamera:
+            model.notice = "This device has no camera, so the Camera Control can't be used to talk."
+        }
     }
 
     /// Tell the server (and the app's banner logic) whether this session is

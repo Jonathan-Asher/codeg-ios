@@ -50,9 +50,23 @@ struct ComposeBar: View {
     @State private var dictationOwner = UUID()
     /// The speech model the download alert offers.
     @State private var modelToDownload: SpeechModelManifest.Model?
+    /// Between `onAppear` and `onDisappear`: Camera Control to talk runs only
+    /// while a session's composer is on screen.
+    @State private var isOnScreen = false
+    @State private var cameraPress = CameraTalkPress()
+    @State private var cameraPressHaptic = 0
+    @State private var cameraReleaseHaptic = 0
+    @Environment(\.scenePhase) private var scenePhase
 
     private var dictation: DictationController { DictationController.shared }
     private var isMyDictation: Bool { dictation.owner == dictationOwner && dictation.isBusy }
+    private var cameraTalk: CameraTalkController { CameraTalkController.shared }
+    /// This composer gets the Camera Control and volume buttons now.
+    private var cameraTalkLive: Bool { cameraTalk.isLive(owner: dictationOwner) }
+    /// The running dictation was started by this composer's Camera Control.
+    private var ownsCameraDictation: Bool {
+        dictation.owner == dictationOwner && dictation.source == .cameraControl && dictation.isBusy
+    }
 
     private var hasText: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -69,6 +83,10 @@ struct ComposeBar: View {
     }
 
     var body: some View {
+        withCameraTalk(composer)
+    }
+
+    private var composer: some View {
         VStack(spacing: 8) {
             if let notice {
                 NoticeBanner(message: notice, onDismiss: onDismissNotice)
@@ -79,6 +97,15 @@ struct ComposeBar: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
+            if cameraTalk.isActiveOwner(dictationOwner), !isMyDictation {
+                CameraTalkIndicator(
+                    status: cameraTalk.status,
+                    showPreview: cameraTalk.showPreview,
+                    session: cameraTalk.capture.session,
+                    onTurnOff: { cameraTalk.setEnabled(false) }
+                )
+            }
+
             if isMyDictation {
                 DictationStrip(
                     phase: dictation.phase,
@@ -86,7 +113,9 @@ struct ComposeBar: View {
                     elapsed: dictation.elapsed,
                     autoSend: Binding(get: { dictation.sendThisTime }, set: { send in
                         dictation.sendThisTime = send
-                        dictation.autoSend = send
+                        // The mic's switch is the "Send" setting; the Camera
+                        // Control always sends unless switched off for this one.
+                        if dictation.source == .mic { dictation.autoSend = send }
                     }),
                     refineMode: dictation.refineOffered == false || dictationRefiner == nil ? nil : Binding(
                         get: { dictation.refineThisTime },
@@ -122,7 +151,7 @@ struct ComposeBar: View {
                         isRecording: isMyDictation && dictation.phase == .recording,
                         isTranscribing: isMyDictation && (dictation.phase == .transcribing || dictation.phase == .refining),
                         isDisabled: dictation.isBusy && !isMyDictation,
-                        onStart: startDictation,
+                        onStart: { startDictation() },
                         onStop: { dictation.stop() }
                     )
 
@@ -329,7 +358,7 @@ struct ComposeBar: View {
 
     // MARK: - Dictation
 
-    private func startDictation() {
+    private func startDictation(source: DictationSource = .mic) {
         switch dictation.availability() {
         case .needsModel(let id):
             guard let model = SpeechModelCatalog.model(id: id) else {
@@ -346,11 +375,24 @@ struct ComposeBar: View {
         case .microphoneDenied:
             onNotice("Microphone access is off for \(AppIdentity.displayName). Turn it on in the Settings app, or use the mic key on the iOS keyboard.")
         case .ready:
+            guard !dictation.isBusy else {
+                if source == .cameraControl, !isMyDictation || dictation.phase != .recording {
+                    onNotice("Still working on the last dictation. Try again in a moment.")
+                }
+                return
+            }
             let owner = dictationOwner
             let postProcessor = dictationRefiner.map { TranscriptPostProcessor(transport: $0) }
             Task {
-                await dictation.start(owner: owner, context: dictationContext, postProcessor: postProcessor) { outcome in
+                await dictation.start(owner: owner, source: source, context: dictationContext,
+                                      postProcessor: postProcessor) { outcome in
                     applyDictation(outcome)
+                }
+                // The button came up while the recording was still starting.
+                if source == .cameraControl, !cameraPress.isHolding, dictation.owner == owner,
+                   dictation.source == .cameraControl, dictation.phase == .recording {
+                    CameraTalkController.log.info("Released before the recording started; discarded")
+                    dictation.cancel()
                 }
             }
         }
@@ -378,6 +420,90 @@ struct ComposeBar: View {
         guard hasText || !attachments.isEmpty else { return }
         sendHaptic &+= 1
         onSend()
+    }
+
+    // MARK: - Camera Control to talk
+
+    /// The hardware buttons, while Camera Control to talk is on for this
+    /// session (an invisible view behind the bar that never takes a touch),
+    /// and the reports that decide when the camera runs.
+    private func withCameraTalk<Content: View>(_ content: Content) -> some View {
+        content
+            .animation(Theme.Motion.expand, value: cameraTalk.isActiveOwner(dictationOwner))
+            .background {
+                CameraTalkEventHost(isEnabled: cameraTalkLive) { phase, source in
+                    handleCameraEvent(phase, from: source)
+                }
+            }
+            .onAppear {
+                isOnScreen = true
+                reportCameraPresence(visible: true)
+            }
+            .onDisappear {
+                isOnScreen = false
+                abandonCameraPress()
+                cameraTalk.remove(owner: dictationOwner)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { abandonCameraPress() }
+                reportCameraPresence()
+            }
+            .onChange(of: showCamera) { _, _ in reportCameraPresence() }
+            .onChange(of: cameraTalkLive) { _, live in
+                // The camera stopped under a held button (an interruption, the
+                // mode turned off): keep what was said, don't send it.
+                if !live { abandonCameraPress() }
+            }
+            .sensoryFeedback(.impact(weight: .medium, intensity: 0.9), trigger: cameraPressHaptic)
+            .sensoryFeedback(.impact(weight: .light, intensity: 0.7), trigger: cameraReleaseHaptic)
+    }
+
+    private func reportCameraPresence(visible: Bool? = nil) {
+        cameraTalk.update(owner: dictationOwner, presence: CameraTalkGate.Presence(
+            visible: visible ?? isOnScreen,
+            sceneActive: scenePhase == .active,
+            suspended: showCamera
+        ))
+    }
+
+    /// Press: record. Release: transcribe, clean up and send. A click, a
+    /// cancelled press, or the other button pressed meanwhile: throw it away.
+    private func handleCameraEvent(_ phase: CameraTalkPress.Phase, from source: CameraTalkPress.Source) {
+        let action = cameraPress.handle(phase, from: source, at: ProcessInfo.processInfo.systemUptime)
+        if action != .none {
+            CameraTalkController.log.info("Camera Control \(phase.rawValue, privacy: .public) (\(source.rawValue, privacy: .public)) -> \(String(describing: action), privacy: .public)")
+        }
+        switch action {
+        case .none:
+            break
+        case .start:
+            cameraPressHaptic &+= 1
+            startDictation(source: .cameraControl)
+        case .finish:
+            guard ownsCameraDictation, dictation.phase == .recording else { return }
+            cameraReleaseHaptic &+= 1
+            dictation.stop()
+        case .discard(let reason):
+            guard ownsCameraDictation, dictation.phase == .recording else { return }
+            dictation.cancel()
+            cameraReleaseHaptic &+= 1
+            switch reason {
+            case .tooShort: onNotice("Hold the Camera Control while you speak, then let go to send.")
+            case .otherButton: onNotice("Recording thrown away.")
+            case .cancelled: break
+            }
+        }
+    }
+
+    /// The press can't finish normally (the scene went inactive, the camera
+    /// stopped, the screen closed): keep the words in the composer, unsent.
+    private func abandonCameraPress() {
+        guard cameraPress.isHolding else { return }
+        cameraPress.reset()
+        CameraTalkController.log.notice("Camera Control press abandoned while held")
+        if ownsCameraDictation, dictation.phase == .recording {
+            dictation.stop(keepUnsent: "The Camera Control was interrupted, so the message wasn't sent.")
+        }
     }
 
     private static func megabytes(_ bytes: Int64) -> String {

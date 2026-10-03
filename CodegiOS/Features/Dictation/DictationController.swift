@@ -33,6 +33,13 @@ enum DictationPrefs {
     }
 }
 
+/// What started a dictation.
+enum DictationSource: Equatable, Sendable {
+    /// The mic button in the message bar.
+    case mic
+    /// Holding the Camera Control (or a volume button) in walkie-talkie mode.
+    case cameraControl
+}
 
 /// What the composer knows about where the dictation goes; it biases whisper.
 struct DictationContext: Equatable, Sendable {
@@ -74,13 +81,16 @@ final class DictationController {
     private(set) var elapsed: TimeInterval = 0
     /// The composer that owns the current dictation.
     private(set) var owner: UUID?
+    /// What started the current dictation.
+    private(set) var source: DictationSource = .mic
 
     var autoSend: Bool = DictationPrefs.autoSend {
         didSet { DictationPrefs.autoSend = autoSend }
     }
 
     /// Send this dictation once it is in the composer. Starts from the "Send"
-    /// setting; the strip's switch changes it.
+    /// setting for the mic, and on for the Camera Control; the strip's switch
+    /// changes it.
     var sendThisTime = false
     /// Clean-up for this dictation. Starts from Settings › Voice; the strip's
     /// chip changes it for this one message.
@@ -135,7 +145,9 @@ final class DictationController {
                 // recording now; its decode waits for the app to come back. A
                 // decode already running is stopped and run again then.
                 switch self.phase {
-                case .recording: self.stop()
+                case .recording:
+                    self.stop(keepUnsent: self.source == .cameraControl
+                        ? "The app left the screen while you held the Camera Control, so it wasn't sent." : nil)
                 case .transcribing:
                     self.decodeInterrupted = true
                     self.engine?.cancel()
@@ -171,7 +183,7 @@ final class DictationController {
     /// Start recording for `owner`. The outcome arrives through `completion`
     /// once recording stops, the decode finishes and, when clean-up is on,
     /// `postProcessor` has answered.
-    func start(owner: UUID, context: DictationContext,
+    func start(owner: UUID, source: DictationSource = .mic, context: DictationContext,
                postProcessor: TranscriptPostProcessor? = nil,
                completion: @escaping (DictationOutcome) -> Void) async {
         guard phase == .idle else { return }
@@ -204,10 +216,11 @@ final class DictationController {
 
         generation &+= 1
         self.owner = owner
+        self.source = source
         self.completion = completion
         self.postProcessor = postProcessor
         self.language = language
-        sendThisTime = autoSend
+        sendThisTime = source == .cameraControl ? true : autoSend
         refineThisTime = DictationPrefs.afterTranscribing
         pendingNote = nil
         refineOffered = postProcessor == nil ? false : nil
@@ -323,7 +336,9 @@ final class DictationController {
         }.value
         switch plan {
         case .tooShort:
-            return .nothing("Too short. Hold the mic while you speak, or tap once to start and again to stop.")
+            return .nothing(source == .cameraControl
+                ? "Too short. Hold the Camera Control while you speak."
+                : "Too short. Hold the mic while you speak, or tap once to start and again to stop.")
         case .noSpeech:
             return .nothing("No speech detected.")
         case .speech(let range):

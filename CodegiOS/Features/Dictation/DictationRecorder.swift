@@ -83,6 +83,9 @@ final class DictationRecorder: @unchecked Sendable {
     func start() throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothHFP, .defaultToSpeaker])
+        // The press and release haptics (mic button, Camera Control) would
+        // otherwise be muted while the microphone records.
+        try? session.setAllowHapticsAndSystemSoundsDuringRecording(true)
         try session.setActive(true)
 
         let input = engine.inputNode

@@ -1,14 +1,15 @@
 import SwiftUI
 
 /// Settings › Voice: voice typing (on-device whisper, see
-/// ``VoiceTypingSection``), then the on-device read-aloud voice (BlueTTS 2.5,
-/// Hebrew and English) — its 575 MB model download — plus the voice, the speed
-/// and what gets read.
+/// ``VoiceTypingSection``), Camera Control to talk, then the on-device
+/// read-aloud voice (BlueTTS 2.5, Hebrew and English) — its 575 MB model
+/// download — plus the voice, the speed and what gets read.
 struct VoiceSettingsView: View {
     /// The selected server, for dictation clean-up's status.
     var client: CodegClient? = nil
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var cameraTalkProblem: String?
     @State private var confirmDownload = false
     @State private var confirmDelete = false
     @State private var voice = VoicePrefs.voice
@@ -28,6 +29,9 @@ struct VoiceSettingsView: View {
             ScrollView {
                 VStack(spacing: 22) {
                     VoiceTypingSection(client: client)
+                    if CameraTalkController.isSupported {
+                        cameraTalkSection
+                    }
                     modelSection
                     voiceSection
                     readingSection
@@ -54,6 +58,46 @@ struct VoiceSettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Read aloud then uses the iPhone's own voice until you download it again.")
+        }
+    }
+
+    // MARK: - Camera Control
+
+    private var cameraTalk: CameraTalkController { CameraTalkController.shared }
+
+    private var cameraTalkSection: some View {
+        EditorSection(
+            title: "Camera Control",
+            footer: "With a session open, hold the Camera Control and speak, then let go: the message is transcribed on this iPhone, cleaned up if that's on, and sent to the session's agent. A quick click does nothing. iOS lets an app use the Camera Control only while its camera runs, so with this on, the camera runs at its lowest quality whenever a session is on screen; nothing is recorded or saved, and the green dot shows it. The volume buttons become talk keys as well, and pressing one while holding another throws the recording away. Change the volume from Control Center, or turn this off."
+        ) {
+            settingRow("Camera Control to talk", hint: cameraTalkProblem.map { LocalizedStringKey($0) }
+                        ?? "Also the button at the top of a session.") {
+                Toggle("", isOn: Binding(get: { cameraTalk.isEnabled }, set: { on in
+                    cameraTalkProblem = nil
+                    guard on else {
+                        cameraTalk.setEnabled(false)
+                        return
+                    }
+                    Task {
+                        switch await cameraTalk.enable() {
+                        case .enabled: break
+                        case .cameraDenied:
+                            cameraTalkProblem = "Camera access is off for \(AppIdentity.displayName). Allow it in the Settings app."
+                        case .noCamera:
+                            cameraTalkProblem = "This device has no camera."
+                        }
+                    }
+                }))
+                .labelsHidden()
+                .tint(Theme.accent)
+            }
+            rowDivider
+            settingRow("Show the camera in the indicator",
+                       hint: "A small live view next to \"Hold the Camera Control to talk\". Try it if the Camera Control doesn't respond.") {
+                Toggle("", isOn: Binding(get: { cameraTalk.showPreview }, set: { cameraTalk.showPreview = $0 }))
+                    .labelsHidden()
+                    .tint(Theme.accent)
+            }
         }
     }
 

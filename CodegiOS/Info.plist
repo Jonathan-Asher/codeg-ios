@@ -46,7 +46,7 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>$(CODEG_DISPLAY_NAME) uses the camera to take photos for your messages and to scan a server's QR code.</string>
+	<string>$(CODEG_DISPLAY_NAME) uses the camera to take photos for your messages and to scan a server's QR code. With Camera Control to talk on, it also keeps the camera running at its lowest quality while a session is open, because iOS only gives the Camera Control to an app whose camera is on. Nothing from it is recorded or saved.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>$(CODEG_DISPLAY_NAME) connects to your codeg server, which may run on your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>

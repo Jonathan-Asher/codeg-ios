@@ -124,7 +124,7 @@ targets:
           NSAllowsArbitraryLoads: true
         NSLocalNetworkUsageDescription: "$(CODEG_DISPLAY_NAME) connects to your codeg server, which may run on your local network."
         NSPhotoLibraryUsageDescription: "$(CODEG_DISPLAY_NAME) attaches photos you pick to your message to the agent."
-        NSCameraUsageDescription: "$(CODEG_DISPLAY_NAME) uses the camera to take photos for your messages and to scan a server's QR code."
+        NSCameraUsageDescription: "$(CODEG_DISPLAY_NAME) uses the camera to take photos for your messages and to scan a server's QR code. With Camera Control to talk on, it also keeps the camera running at its lowest quality while a session is open, because iOS only gives the Camera Control to an app whose camera is on. Nothing from it is recorded or saved."
         # Voice typing records on device and transcribes with whisper on this
         # iPhone; no speech-recognition permission (no Apple server speech).
         NSMicrophoneUsageDescription: "$(CODEG_DISPLAY_NAME) records your voice while you hold or tap the mic, and transcribes it on this iPhone into your message."
