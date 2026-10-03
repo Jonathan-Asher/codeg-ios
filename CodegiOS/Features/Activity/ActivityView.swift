@@ -5,18 +5,14 @@ import SwiftUI
 /// last 24 hours. Unlike the Chats list, rows are **directly tappable**: each
 /// opens its session in a single tap, with no App Store-style card/zoom drill-in
 /// in between (Activity favors immediacy — it's backed by a periodic poll that
-/// keeps the list live). It's one plain `List` (UICollectionView cell recycling,
-/// so a busy server's recent list scrolls smoothly) grouped under tinted section
-/// headers. (Pending approvals join this screen once the permission flow lands.)
+/// keeps the list live). The list itself is ``ActivityFeed``, which takes plain
+/// data so it can also be rendered with sample sessions.
 struct ActivityView: View {
     let activity: ActivityModel
     let client: CodegClient?
     let onOpen: (Int) -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    /// Bumped only when a user pull-to-refresh completes, so the soft landing
-    /// haptic fires on the pull — not on the initial programmatic load.
-    @State private var pullTick = 0
 
     var body: some View {
         ZStack {
@@ -50,33 +46,55 @@ struct ActivityView: View {
                     Task { await activity.refresh(client: client) }
                 }
             } else {
-                feed
+                ActivityFeed(
+                    running: activity.running,
+                    recent: activity.recent,
+                    folderNames: activity.folderNames,
+                    lastRefreshed: activity.lastRefreshed,
+                    error: activity.hasLoaded ? activity.error : nil,
+                    onOpen: onOpen,
+                    onRefresh: { await activity.refresh(client: client) },
+                    onDismissError: { activity.dismissError() }
+                )
             }
         }
         // Cross-fade the first load into the feed instead of a hard swap.
         .transition(.opacity)
         .animation(Theme.Motion.content, value: activity.hasLoaded)
     }
+}
 
-    // MARK: - Feed
+/// The Activity list: directly-tappable rows under tinted "Running" / "Last 24
+/// Hours" headers. Rows, the refresh-error banner, the idle empty state, and the
+/// "Updated …" footer are all borderless list rows over the screen's
+/// `CodegBackground`. Takes plain values (read live by ``ActivityView`` each
+/// render, so a background pulse keeps them fresh).
+struct ActivityFeed: View {
+    /// Running sessions, most recently updated first.
+    let running: [ConversationSummary]
+    /// Sessions touched in the last 24 hours, most recently updated first.
+    let recent: [ConversationSummary]
+    let folderNames: [Int: String]
+    let lastRefreshed: Date?
+    /// A failed refresh over a list that still has rows.
+    let error: String?
+    let onOpen: (Int) -> Void
+    let onRefresh: () async -> Void
+    let onDismissError: () -> Void
 
-    /// One plain `List` of directly-tappable rows under tinted "Running" /
-    /// "Last 24 Hours" headers (read live each render, so a background pulse keeps
-    /// them fresh). Rows, the refresh-error banner, the idle empty state, and the
-    /// "Updated …" footer are all borderless list rows over the `ZStack`'s
-    /// `CodegBackground`.
-    private var feed: some View {
-        let running = activity.running
-        let recent = activity.recent
+    /// Bumped only when a user pull-to-refresh completes, so the soft landing
+    /// haptic fires on the pull — not on the initial programmatic load.
+    @State private var pullTick = 0
 
-        return List {
+    var body: some View {
+        List {
             // A failed refresh over a list that still has rows: surface the error
             // inline above the sections rather than swallowing it.
-            if let error = activity.error, activity.hasLoaded {
+            if let error {
                 RefreshErrorBanner(
                     message: error,
-                    retry: { Task { await activity.refresh(client: client) } },
-                    dismiss: { activity.dismissError() }
+                    retry: { Task { await onRefresh() } },
+                    dismiss: onDismissError
                 )
                 .plainRow(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             }
@@ -102,8 +120,8 @@ struct ActivityView: View {
                 }
             }
 
-            if let refreshed = activity.lastRefreshed {
-                Text("Updated \(RelativeTime.string(from: refreshed))")
+            if let lastRefreshed {
+                Text("Updated \(RelativeTime.string(from: lastRefreshed))")
                     .font(.caption2)
                     .foregroundStyle(Theme.textTertiary)
                     .frame(maxWidth: .infinity)
@@ -114,7 +132,7 @@ struct ActivityView: View {
         .environment(\.defaultMinListRowHeight, 1)
         .scrollContentBackground(.hidden)
         .refreshable {
-            await activity.refresh(client: client)
+            await onRefresh()
             pullTick &+= 1
         }
         // Ease rows between Running ↔ Last-24h as the background poll reorders
@@ -132,7 +150,7 @@ struct ActivityView: View {
         SessionRow(
             conversation: conversation,
             isSelected: false,
-            folderName: activity.folderNames[conversation.folderId],
+            folderName: folderNames[conversation.folderId],
             onTap: { onOpen(conversation.id) }
         )
         .plainRow(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
