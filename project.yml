@@ -140,7 +140,8 @@ targets:
 
   # Unit tests for the pure logic: session activity, push payload routing,
   # Markdown-to-speech text, voice typing (VAD trimming, model manifest and
-  # checksum, text insertion). Hosted in the app (`@testable import Codeg`).
+  # checksum, text insertion). Hosted in the app (`@testable import Codeg`),
+  # which also lets them render the session lists to PNG with sample data.
   CodegiOSTests:
     type: bundle.unit-test
     platform: iOS

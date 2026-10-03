@@ -107,6 +107,8 @@ jobs:
       - name: Generate the Xcode project
         run: xcodegen generate
 
+      # The list screenshots are taken at the simulator's screen size, so an
+      # iPhone 17 Pro Max (Jonathan's phone) is preferred when the runtime has one.
       - name: Pick an iPhone simulator
         run: |
           udid="$(xcrun simctl list devices available -j | python3 -c '
@@ -115,10 +117,17 @@ jobs:
           def version(key):
               m = re.search(r"iOS-(\d+)-(\d+)", key)
               return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
-          for key in sorted((k for k in devices if "iOS" in k), key=version, reverse=True):
+          runtimes = sorted((k for k in devices if "iOS" in k), key=version, reverse=True)
+          picked = None
+          for key in runtimes:
               phones = [d for d in devices[key] if d["name"].startswith("iPhone")]
-              if phones:
-                  print(phones[0]["udid"]); break
+              preferred = [d for d in phones if d["name"] == "iPhone 17 Pro Max"]
+              if preferred:
+                  picked = preferred[0]; break
+              if phones and picked is None:
+                  picked = phones[0]
+          if picked:
+              print(picked["udid"])
           ')"
           if [[ -z "$udid" ]]; then echo "::error::no iPhone simulator available"; exit 1; fi
           echo "SIM_UDID=$udid" >>"$GITHUB_ENV"
@@ -127,6 +136,8 @@ jobs:
       - name: Run the unit tests
         run: |
           set -o pipefail
+          # Forwarded to the tests as LIST_SHOTS_DIR (the list screenshots).
+          export TEST_RUNNER_LIST_SHOTS_DIR="$PWD/build/list-shots"
           fmt=cat
           if command -v xcbeautify >/dev/null 2>&1; then fmt="xcbeautify --renderer github-actions"; fi
           xcodebuild test \
@@ -138,6 +149,15 @@ jobs:
             -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log" | $fmt
+
+      - name: Upload the session list screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-list-screenshots
+          path: build/list-shots
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Upload the test log
         if: failure()
