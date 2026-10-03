@@ -96,7 +96,7 @@ enum SettingsLeaf: String, Hashable, CaseIterable, Identifiable {
         case .notifications:
             NotificationsSettingsView(store: store)
         case .voice:
-            VoiceSettingsView()
+            VoiceSettingsView(client: client)
         }
     }
 }

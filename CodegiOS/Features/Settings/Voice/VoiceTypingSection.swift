@@ -1,9 +1,16 @@
 import SwiftUI
 
 /// Settings › Voice › Voice Typing: the on-device whisper models, the
-/// dictation language, and what happens after a transcript.
+/// dictation language, and what happens after a transcript: clean-up or
+/// translation through the codeg server, sending, the session context.
 struct VoiceTypingSection: View {
+    /// The selected server, which is asked whether clean-up is set up.
+    var client: CodegClient? = nil
+
     @State private var language = DictationPrefs.language
+    @State private var refineMode = DictationPrefs.afterTranscribing
+    /// The server's answer; `nil` while asking.
+    @State private var refineStatus: DictationRefineAvailability?
     @State private var autoSend = DictationPrefs.autoSend
     @State private var usePrompt = DictationPrefs.usePrompt
     @State private var confirmDownload: SpeechModelManifest.Model?
@@ -18,7 +25,7 @@ struct VoiceTypingSection: View {
         VStack(spacing: 22) {
             EditorSection(
                 title: "Voice Typing",
-                footer: "The mic in the message bar transcribes on this iPhone with whisper (ivrit.ai's Hebrew fine-tune of large-v3-turbo). Nothing is sent to a server. Without the model, use the mic key on the iOS keyboard."
+                footer: "The mic in the message bar transcribes on this iPhone with whisper (ivrit.ai's Hebrew fine-tune of large-v3-turbo); the audio never leaves it. Clean-up and translation send only the transcribed text to your codeg server, which passes it to the provider set up there. Without the model, use the mic key on the iOS keyboard."
             ) {
                 if let hebrewModel {
                     ModelPackRows(model: hebrewModel, store: SpeechModelStores.store(for: hebrewModel),
@@ -54,10 +61,33 @@ struct VoiceTypingSection: View {
                                   onDownload: { confirmDownload = multilingualModel },
                                   onDelete: { confirmDelete = multilingualModel })
                 }
+                rowDivider
+                settingRow("After transcribing", hint: LocalizedStringKey(refineHint)) {
+                    Menu {
+                        ForEach(DictationRefineMode.allCases) { option in
+                            Button {
+                                refineMode = option
+                                DictationPrefs.afterTranscribing = option
+                            } label: {
+                                if option == refineMode {
+                                    Label(option.title, systemImage: "checkmark")
+                                } else {
+                                    Text(verbatim: option.title)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(verbatim: refineMode.menuLabel).font(.subheadline)
+                            Image(systemName: "chevron.up.chevron.down").font(.caption2.weight(.semibold))
+                        }
+                        .foregroundStyle(Theme.accent)
+                    }
+                }
             }
 
             EditorSection(
-                title: "After Transcribing",
+                title: "Sending",
                 footer: "The session context gives whisper the workspace folder, the session title and a sentence of common code words, which helps it spell names and keep terms like commit or README in English letters."
             ) {
                 settingRow("Send right after transcribing", hint: "Also a switch on the recording bar.") {
@@ -84,6 +114,11 @@ struct VoiceTypingSection: View {
             autoSend = DictationController.shared.autoSend
             for model in SpeechModelCatalog.manifest.models { SpeechModelStores.store(for: model).refreshFromDisk() }
         }
+        .task(id: client?.baseURL) {
+            refineStatus = nil
+            guard let client else { return }
+            refineStatus = await TranscriptPostProcessor(transport: client).availability(maxAge: 0)
+        }
         .alert(
             "Download the speech model?",
             isPresented: Binding(get: { confirmDownload != nil }, set: { if !$0 { confirmDownload = nil } }),
@@ -106,6 +141,27 @@ struct VoiceTypingSection: View {
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("Voice typing needs it again before the next use.")
+        }
+    }
+
+    /// What the choice does, and whether the server can do it.
+    private var refineHint: String {
+        guard refineMode != .asSpoken else {
+            return "Exactly as transcribed. Clean-up and translation run on your codeg server; the chip on the recording bar changes it for one message."
+        }
+        guard client != nil else { return "Runs on your codeg server. Add or pick a server first." }
+        switch refineStatus {
+        case nil:
+            return "Checking your codeg server…"
+        case .ready(let settings)?:
+            let with = settings.summary.map { " with \($0)" } ?? ""
+            return "Runs on your codeg server\(with). If it fails or takes over 12 seconds, your words go in as spoken."
+        case .notConfigured?:
+            return "Set up translation in codeg Settings on your computer. Until then, your words go in as spoken."
+        case .notAvailable?:
+            return "This codeg server is too old to clean up dictation. Until it's updated, your words go in as spoken."
+        case .unknown(let message)?:
+            return "Couldn't ask your codeg server (\(message)). It's tried again with each message."
         }
     }
 

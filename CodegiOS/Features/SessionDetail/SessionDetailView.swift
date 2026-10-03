@@ -358,7 +358,8 @@ struct SessionDetailView: View {
                     onQueue: { model.queueDraft() },
                     onDismissNotice: { model.notice = nil },
                     insertModel: model.insertModel,
-                    dictationContext: DictationContext(folder: model.folder?.name, session: model.summary?.title)
+                    dictationContext: DictationContext(folder: model.folder?.name, session: model.summary?.title),
+                    dictationRefiner: client
                 )
             }
             .animation(.snappy(duration: 0.24), value: model.isPinnedToBottom)

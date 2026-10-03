@@ -89,21 +89,27 @@ struct DictationMicButton: View {
 }
 
 /// Above the composer while dictating: a live level meter, the elapsed time,
-/// the "send right after transcribing" switch, and cancel.
+/// what happens after transcribing (as spoken, clean up, translate) for this
+/// message, the "send right after transcribing" switch, and cancel. While the
+/// codeg server cleans up, cancel keeps the words as spoken instead.
 struct DictationStrip: View {
     let phase: DictationController.Phase
     let levels: [Float]
     let elapsed: TimeInterval
     @Binding var autoSend: Bool
+    /// This message's clean-up; `nil` hides the chip (no server, or one that
+    /// can't clean up).
+    var refineMode: Binding<DictationRefineMode>? = nil
     let onCancel: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            if phase == .transcribing {
+            if phase == .transcribing || phase == .refining {
                 ProgressView().controlSize(.small)
-                Text("Transcribing…")
+                Text(verbatim: progressLabel)
                     .font(.subheadline)
                     .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
                 Spacer(minLength: 4)
             } else {
                 Circle()
@@ -117,6 +123,9 @@ struct DictationStrip: View {
                 LevelMeter(levels: levels)
                     .frame(height: 22)
                     .frame(maxWidth: .infinity)
+            }
+            if let refineMode, phase != .refining {
+                RefineChip(mode: refineMode)
             }
             Button {
                 autoSend.toggle()
@@ -140,7 +149,7 @@ struct DictationStrip: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(Text("Cancel dictation"))
+            .accessibilityLabel(phase == .refining ? Text("Use as spoken") : Text("Cancel dictation"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
@@ -149,9 +158,41 @@ struct DictationStrip: View {
         .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 
+    private var progressLabel: String {
+        phase == .refining ? (refineMode?.wrappedValue ?? .cleanUp).progressLabel : "Transcribing…"
+    }
+
     static func format(_ seconds: TimeInterval) -> String {
         let total = max(0, Int(seconds))
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+/// Cycles this message's clean-up: as spoken, clean up, English.
+private struct RefineChip: View {
+    @Binding var mode: DictationRefineMode
+
+    var body: some View {
+        let active = mode != .asSpoken
+        Button {
+            mode = mode.next
+        } label: {
+            Label(mode.shortTitle, systemImage: mode.systemImage)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .foregroundStyle(active ? Color.white : Theme.textSecondary)
+                .background(active ? Theme.accent : Color.clear, in: Capsule())
+                .overlay(Capsule().strokeBorder(active ? Color.clear : Theme.hairline))
+                .contentTransition(.opacity)
+        }
+        .buttonStyle(.plain)
+        .animation(.snappy(duration: 0.18), value: mode)
+        .accessibilityLabel(Text("After transcribing"))
+        .accessibilityValue(Text(verbatim: mode.title))
+        .accessibilityHint(Text("Changes it for this message only."))
     }
 }
 

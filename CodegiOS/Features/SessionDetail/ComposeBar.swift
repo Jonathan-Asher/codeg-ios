@@ -32,6 +32,8 @@ struct ComposeBar: View {
     let insertModel: ComposeInsertModel
     /// Folder and session title, passed to whisper to bias voice typing.
     var dictationContext = DictationContext()
+    /// The session's codeg server, which cleans up or translates dictation.
+    var dictationRefiner: (any DictationRefineTransport)? = nil
 
     @FocusState private var focused: Bool
     /// Bumped on each send tap to fire a light "sent" impact immediately (rather
@@ -82,7 +84,14 @@ struct ComposeBar: View {
                     phase: dictation.phase,
                     levels: dictation.levels,
                     elapsed: dictation.elapsed,
-                    autoSend: Binding(get: { dictation.autoSend }, set: { dictation.autoSend = $0 }),
+                    autoSend: Binding(get: { dictation.sendThisTime }, set: { send in
+                        dictation.sendThisTime = send
+                        dictation.autoSend = send
+                    }),
+                    refineMode: dictation.refineOffered == false || dictationRefiner == nil ? nil : Binding(
+                        get: { dictation.refineThisTime },
+                        set: { dictation.refineThisTime = $0 }
+                    ),
                     onCancel: { dictation.cancel() }
                 )
             }
@@ -111,7 +120,7 @@ struct ComposeBar: View {
                     DictationMicButton(
                         owner: dictationOwner,
                         isRecording: isMyDictation && dictation.phase == .recording,
-                        isTranscribing: isMyDictation && dictation.phase == .transcribing,
+                        isTranscribing: isMyDictation && (dictation.phase == .transcribing || dictation.phase == .refining),
                         isDisabled: dictation.isBusy && !isMyDictation,
                         onStart: startDictation,
                         onStop: { dictation.stop() }
@@ -338,8 +347,9 @@ struct ComposeBar: View {
             onNotice("Microphone access is off for \(AppIdentity.displayName). Turn it on in the Settings app, or use the mic key on the iOS keyboard.")
         case .ready:
             let owner = dictationOwner
+            let postProcessor = dictationRefiner.map { TranscriptPostProcessor(transport: $0) }
             Task {
-                await dictation.start(owner: owner, context: dictationContext) { outcome in
+                await dictation.start(owner: owner, context: dictationContext, postProcessor: postProcessor) { outcome in
                     applyDictation(outcome)
                 }
             }
@@ -348,24 +358,26 @@ struct ComposeBar: View {
 
     private func applyDictation(_ outcome: DictationOutcome) {
         switch outcome {
-        case .text(let words, let sendNow):
+        case .text(let words, let sendNow, let notice):
             let result = DictationText.insert(words, into: text, selection: DictationText.utf16Range(of: selection, in: text))
             text = result.text
             selection = TextSelection(insertionPoint: String.Index(utf16Offset: result.cursor, in: result.text))
             if sendNow { sendAfterDictation() }
+            // After the send, which clears the previous notice.
+            if let notice { onNotice(notice) }
         case .nothing(let reason), .failed(let reason):
             onNotice(reason)
         }
     }
 
-    /// "Send right after transcribing": what the send button would do.
+    /// "Send right after transcribing": what the send button does now. The
+    /// session decides between a plain send, delivering into a held turn and
+    /// queueing, from its current state (this view's copy may be stale by the
+    /// time a transcript arrives).
     private func sendAfterDictation() {
-        if isInFlight {
-            sendHaptic &+= 1
-            if steering.deliverNow { onInsert() } else { onQueue() }
-        } else {
-            send()
-        }
+        guard hasText || !attachments.isEmpty else { return }
+        sendHaptic &+= 1
+        onSend()
     }
 
     private static func megabytes(_ bytes: Int64) -> String {

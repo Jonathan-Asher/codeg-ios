@@ -5,6 +5,9 @@ import SwiftUI
 /// Hebrew and English) — its 575 MB model download — plus the voice, the speed
 /// and what gets read.
 struct VoiceSettingsView: View {
+    /// The selected server, for dictation clean-up's status.
+    var client: CodegClient? = nil
+
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var confirmDownload = false
     @State private var confirmDelete = false
@@ -24,7 +27,7 @@ struct VoiceSettingsView: View {
             CodegBackground()
             ScrollView {
                 VStack(spacing: 22) {
-                    VoiceTypingSection()
+                    VoiceTypingSection(client: client)
                     modelSection
                     voiceSection
                     readingSection

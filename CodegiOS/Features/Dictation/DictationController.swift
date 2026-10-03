@@ -23,7 +23,16 @@ enum DictationPrefs {
         get { defaults.object(forKey: "codeg.dictation.usePrompt") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "codeg.dictation.usePrompt") }
     }
+
+    /// Insert as spoken, or clean up (and translate) through the codeg server.
+    static var afterTranscribing: DictationRefineMode {
+        get {
+            defaults.string(forKey: "codeg.dictation.afterTranscribing").flatMap(DictationRefineMode.init) ?? .asSpoken
+        }
+        set { defaults.set(newValue.rawValue, forKey: "codeg.dictation.afterTranscribing") }
+    }
 }
+
 
 /// What the composer knows about where the dictation goes; it biases whisper.
 struct DictationContext: Equatable, Sendable {
@@ -33,8 +42,9 @@ struct DictationContext: Equatable, Sendable {
 
 /// How a dictation ended, delivered to the composer that started it.
 enum DictationOutcome: Equatable {
-    /// Insert this text; send right after when `send` is true.
-    case text(String, send: Bool)
+    /// Insert this text; send right after when `send` is true. `notice` says
+    /// what went wrong on the way (the words were kept as spoken), if anything.
+    case text(String, send: Bool, notice: String? = nil)
     /// Nothing to insert, with a short reason for the notice line.
     case nothing(String)
     case failed(String)
@@ -52,6 +62,8 @@ final class DictationController {
         case idle
         case recording
         case transcribing
+        /// The codeg server is cleaning up or translating the transcript.
+        case refining
     }
 
     private(set) var phase: Phase = .idle
@@ -67,6 +79,16 @@ final class DictationController {
         didSet { DictationPrefs.autoSend = autoSend }
     }
 
+    /// Send this dictation once it is in the composer. Starts from the "Send"
+    /// setting; the strip's switch changes it.
+    var sendThisTime = false
+    /// Clean-up for this dictation. Starts from Settings › Voice; the strip's
+    /// chip changes it for this one message.
+    var refineThisTime: DictationRefineMode = .asSpoken
+    /// Whether the composer's server can clean up dictation: `false` for an
+    /// older server, `nil` while unknown. Hides the strip's chip when false.
+    private(set) var refineOffered: Bool?
+
     static let meterBars = 24
 
     private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "codeg", category: "dictation")
@@ -76,6 +98,11 @@ final class DictationController {
     private var vadModelPath: String?
     private var completion: ((DictationOutcome) -> Void)?
     private var options = TranscriptionOptions()
+    private var postProcessor: TranscriptPostProcessor?
+    private var language: DictationLanguage = .hebrew
+    /// Said with the inserted text when the dictation ended early (an
+    /// interruption), which also holds back the send.
+    private var pendingNote: String?
     private var meterTask: Task<Void, Never>?
     private var transcribeTask: Task<Void, Never>?
     private var unloadTask: Task<Void, Never>?
@@ -91,7 +118,9 @@ final class DictationController {
 
     private init() {
         recorder.onInterrupted = { [weak self] in
-            Task { @MainActor in self?.stop() }
+            // A call or Siri cut the recording short: transcribe it, but leave
+            // it in the composer rather than sending half a message.
+            Task { @MainActor in self?.stop(keepUnsent: "The recording was interrupted, so it wasn't sent.") }
         }
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil,
@@ -110,6 +139,9 @@ final class DictationController {
                 case .transcribing:
                     self.decodeInterrupted = true
                     self.engine?.cancel()
+                case .refining:
+                    // The server call finishes or times out when the app is back.
+                    break
                 case .idle: self.unloadIfIdle()
                 }
             }
@@ -137,8 +169,11 @@ final class DictationController {
     // MARK: - Start / stop
 
     /// Start recording for `owner`. The outcome arrives through `completion`
-    /// once recording stops and the decode finishes.
-    func start(owner: UUID, context: DictationContext, completion: @escaping (DictationOutcome) -> Void) async {
+    /// once recording stops, the decode finishes and, when clean-up is on,
+    /// `postProcessor` has answered.
+    func start(owner: UUID, context: DictationContext,
+               postProcessor: TranscriptPostProcessor? = nil,
+               completion: @escaping (DictationOutcome) -> Void) async {
         guard phase == .idle else { return }
         let language = DictationPrefs.language
         guard let model = SpeechModelCatalog.model(for: language) else {
@@ -170,6 +205,12 @@ final class DictationController {
         generation &+= 1
         self.owner = owner
         self.completion = completion
+        self.postProcessor = postProcessor
+        self.language = language
+        sendThisTime = autoSend
+        refineThisTime = DictationPrefs.afterTranscribing
+        pendingNote = nil
+        refineOffered = postProcessor == nil ? false : nil
         options = TranscriptionOptions(
             language: language.whisperCode,
             prompt: DictationPrefs.usePrompt
@@ -182,11 +223,17 @@ final class DictationController {
         unloadTask?.cancel()
         loadEngine(model: model, store: store)
         startMeter()
+        checkRefine(generation: generation)
     }
 
-    /// Stop recording and transcribe it.
-    func stop() {
+    /// Stop recording and transcribe it. With `keepUnsent`, a dictation that
+    /// would have been sent goes into the composer unsent, and the note says why.
+    func stop(keepUnsent note: String? = nil) {
         guard phase == .recording else { return }
+        if let note, sendThisTime {
+            sendThisTime = false
+            pendingNote = note
+        }
         meterTask?.cancel()
         let samples = recorder.stop()
         phase = .transcribing
@@ -195,15 +242,28 @@ final class DictationController {
         let generation = self.generation
         transcribeTask = Task { [weak self] in
             guard let self else { return }
-            let outcome = await self.transcribe(samples)
+            let transcript = await self.transcribe(samples)
+            guard generation == self.generation, self.phase == .transcribing else { return }
+            let outcome = await self.postProcess(transcript)
             self.finish(outcome, generation: generation)
         }
     }
 
-    /// Stop and throw the recording away (or abandon a running decode).
+    /// While the server cleans up: stop waiting and insert the words as spoken.
+    func skipRefine() {
+        guard phase == .refining else { return }
+        log.info("Clean-up skipped from the strip")
+        transcribeTask?.cancel()
+    }
+
+    /// Stop and throw the recording away (or abandon a running decode). While
+    /// the server cleans up, the words are kept as spoken instead.
     func cancel() {
         switch phase {
         case .idle:
+            return
+        case .refining:
+            skipRefine()
             return
         case .recording:
             meterTask?.cancel()
@@ -220,7 +280,7 @@ final class DictationController {
     }
 
     private func finish(_ outcome: DictationOutcome, generation: Int) {
-        guard phase == .transcribing, generation == self.generation else { return }
+        guard phase == .transcribing || phase == .refining, generation == self.generation else { return }
         let completion = self.completion
         self.completion = nil
         owner = nil
@@ -275,7 +335,7 @@ final class DictationController {
                 do {
                     let result = try await engine.transcribe(clip, options: options)
                     let text = DictationText.clean(result.text)
-                    return text.isEmpty ? .nothing("No speech detected.") : .text(text, send: autoSend)
+                    return text.isEmpty ? .nothing("No speech detected.") : .text(text, send: false)
                 } catch SpeechToTextError.cancelled {
                     if decodeInterrupted, !retried, phase == .transcribing {
                         decodeInterrupted = false
@@ -292,6 +352,40 @@ final class DictationController {
                     }
                     return .failed(error.localizedDescription)
                 }
+            }
+        }
+    }
+
+    /// Clean-up through the codeg server, then the send decision and any
+    /// note. Never drops the words: the processor falls back to them.
+    private func postProcess(_ transcript: DictationOutcome) async -> DictationOutcome {
+        guard case .text(let words, _, _) = transcript else { return transcript }
+        var text = words
+        var notes: [String] = []
+        let mode = refineThisTime
+        if mode != .asSpoken, let postProcessor {
+            phase = .refining
+            let result = await postProcessor.process(words, mode: mode, sourceLanguage: language.whisperCode)
+            text = result.text
+            if let notice = result.notice { notes.append(notice) }
+            if case .kept(.notAvailable) = result.status { refineOffered = false }
+        }
+        if let pendingNote { notes.append(pendingNote) }
+        return .text(text, send: sendThisTime, notice: notes.isEmpty ? nil : notes.joined(separator: " "))
+    }
+
+    /// Ask the composer's server, while the user speaks, whether it can clean
+    /// up dictation, so the strip knows whether to offer it and the answer
+    /// is cached by the time the transcript is ready.
+    private func checkRefine(generation: Int) {
+        guard let postProcessor else { return }
+        Task { [weak self] in
+            let availability = await postProcessor.availability()
+            guard let self, generation == self.generation else { return }
+            switch availability {
+            case .notAvailable: self.refineOffered = false
+            case .ready, .notConfigured: self.refineOffered = true
+            case .unknown: break
             }
         }
     }
