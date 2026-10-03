@@ -18,7 +18,7 @@ import XCTest
 final class SessionListScreenshotTests: XCTestCase {
     private let now = Date()
     /// The session marked as the one you came from.
-    private let marked = 105
+    private static let marked = 105
     private var sessions: [ConversationSummary] { SampleSessions.all(now: now) }
 
     override func setUp() async throws {
@@ -39,7 +39,7 @@ final class SessionListScreenshotTests: XCTestCase {
                             ForEach(sessions.prefix(8)) { conv in
                                 SessionRow(
                                     conversation: conv,
-                                    isSelected: conv.id == marked,
+                                    isSelected: conv.id == Self.marked,
                                     folderName: SampleSessions.folders[conv.folderId],
                                     onTap: {}
                                 )
@@ -89,7 +89,7 @@ final class SessionListScreenshotTests: XCTestCase {
                                 SessionSectionCard(
                                     title: "Pinned", tint: Theme.accent, conversations: pinned,
                                     folderName: { SampleSessions.folders[$0.folderId] },
-                                    markedID: marked, onOpen: { _ in }, onTogglePin: { _ in },
+                                    markedID: Self.marked, onOpen: { _ in }, onTogglePin: { _ in },
                                     onExpand: {}
                                 )
                                 .padding(.horizontal, Theme.Layout.screenHMargin)
@@ -98,7 +98,7 @@ final class SessionListScreenshotTests: XCTestCase {
                                         title: SampleSessions.folders[fid] ?? "",
                                         tint: Color(hexString: SampleSessions.folderColors[fid] ?? "") ?? Theme.accent,
                                         conversations: convs,
-                                        markedID: marked, onOpen: { _ in }, onTogglePin: { _ in },
+                                        markedID: Self.marked, onOpen: { _ in }, onTogglePin: { _ in },
                                         onExpand: {}
                                     )
                                     .padding(.horizontal, Theme.Layout.screenHMargin)
@@ -141,7 +141,7 @@ final class SessionListScreenshotTests: XCTestCase {
                     tint: Color(hexString: SampleSessions.folderColors[2] ?? "") ?? Theme.accent,
                     conversations: convs,
                     folderName: { SampleSessions.folders[$0.folderId] },
-                    markedID: marked,
+                    markedID: Self.marked,
                     onOpen: { _ in },
                     onTogglePin: { _ in },
                     onClose: {}
@@ -161,7 +161,7 @@ final class SessionListScreenshotTests: XCTestCase {
                             running: split.running,
                             recent: split.recent,
                             folderNames: SampleSessions.folders,
-                            markedID: marked,
+                            markedID: Self.marked,
                             lastRefreshed: now.addingTimeInterval(-20),
                             error: nil,
                             onOpen: { _ in },
