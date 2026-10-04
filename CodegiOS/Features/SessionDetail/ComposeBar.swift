@@ -363,7 +363,7 @@ struct ComposeBar: View {
 
     // MARK: - Dictation
 
-    private func startDictation(source: DictationSource = .mic) {
+    private func startDictation(source: DictationSource = .mic, pressUptime: TimeInterval? = nil) {
         switch dictation.availability() {
         case .needsModel(let id):
             guard let model = SpeechModelCatalog.model(id: id) else {
@@ -390,7 +390,7 @@ struct ComposeBar: View {
             let postProcessor = dictationRefiner.map { TranscriptPostProcessor(transport: $0) }
             Task {
                 await dictation.start(owner: owner, source: source, context: dictationContext,
-                                      postProcessor: postProcessor) { outcome in
+                                      postProcessor: postProcessor, pressUptime: pressUptime) { outcome in
                     applyDictation(outcome)
                 }
                 // The button came up while the recording was still starting.
@@ -474,7 +474,8 @@ struct ComposeBar: View {
     /// Press: record. Release: transcribe, clean up and send. A click, a
     /// cancelled press, or the other button pressed meanwhile: throw it away.
     private func handleCameraEvent(_ phase: CameraTalkPress.Phase, from source: CameraTalkPress.Source) {
-        let action = cameraPress.handle(phase, from: source, at: ProcessInfo.processInfo.systemUptime)
+        let now = ProcessInfo.processInfo.systemUptime
+        let action = cameraPress.handle(phase, from: source, at: now)
         if action != .none {
             CameraTalkController.log.info("Camera Control \(phase.rawValue, privacy: .public) (\(source.rawValue, privacy: .public)) -> \(String(describing: action), privacy: .public)")
         }
@@ -483,7 +484,7 @@ struct ComposeBar: View {
             break
         case .start:
             cameraPressHaptic &+= 1
-            startDictation(source: .cameraControl)
+            startDictation(source: .cameraControl, pressUptime: now)
         case .finish:
             guard ownsCameraDictation, dictation.phase == .recording else { return }
             cameraReleaseHaptic &+= 1

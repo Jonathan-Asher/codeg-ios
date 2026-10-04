@@ -92,6 +92,13 @@ struct VoiceSettingsView: View {
                 .tint(Theme.accent)
             }
             rowDivider
+            settingRow("Catch the first words (keeps the microphone ready)",
+                       hint: "Starting the microphone takes a moment, which cut off the first words. With this on, the microphone stays on while the mode runs for a session on screen, so the orange dot shows. It keeps only the last 1.5 seconds, in memory, and throws them away unless you press. It uses the iPhone's microphone, so AirPods keep playing in full quality, and it steps aside while a reply is read aloud.") {
+                Toggle("", isOn: Binding(get: { cameraTalk.catchFirstWords }, set: { cameraTalk.catchFirstWords = $0 }))
+                    .labelsHidden()
+                    .tint(Theme.accent)
+            }
+            rowDivider
             settingRow("Show the camera in the indicator",
                        hint: "A small live view next to \"Hold the Camera Control to talk\". Try it if the Camera Control doesn't respond.") {
                 Toggle("", isOn: Binding(get: { cameraTalk.showPreview }, set: { cameraTalk.showPreview = $0 }))

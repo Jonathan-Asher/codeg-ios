@@ -40,6 +40,14 @@ enum VoicePrefs {
     }
 }
 
+extension Notification.Name {
+    /// Read aloud is about to set the audio session to `.playback`. Posted on
+    /// the main thread, before the session changes.
+    static let readAloudWillClaimAudio = Notification.Name("codeg.readAloud.willClaimAudio")
+    /// Read aloud stopped and let go of the audio session. Main thread.
+    static let readAloudDidReleaseAudio = Notification.Name("codeg.readAloud.didReleaseAudio")
+}
+
 /// Reads agent replies aloud.
 ///
 /// With the BlueTTS models downloaded (``VoiceModelStore``), text goes
@@ -55,6 +63,10 @@ enum VoicePrefs {
 @Observable
 final class ReadAloudPlayer: NSObject {
     static let shared = ReadAloudPlayer()
+
+    /// Posted ``Notification/Name/readAloudWillClaimAudio`` and not yet the
+    /// matching release.
+    @ObservationIgnored private var claimsAudio = false
 
     enum State: Equatable {
         case idle
@@ -113,7 +125,8 @@ final class ReadAloudPlayer: NSObject {
     }
 
     func speak(id: String, title: String, text: String) {
-        stop()
+        // Keep the audio claimed from the reply being replaced, if any.
+        stopPlayback(releaseAudio: false)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             lastError = "Nothing to read in this reply."
@@ -166,6 +179,10 @@ final class ReadAloudPlayer: NSObject {
     }
 
     func stop() {
+        stopPlayback(releaseAudio: true)
+    }
+
+    private func stopPlayback(releaseAudio: Bool) {
         generation &+= 1
         synthesisTask?.cancel()
         synthesisTask = nil
@@ -178,6 +195,10 @@ final class ReadAloudPlayer: NSObject {
         state = .idle
         currentID = nil
         if wasActive { deactivateSession() }
+        if releaseAudio, claimsAudio {
+            claimsAudio = false
+            NotificationCenter.default.post(name: .readAloudDidReleaseAudio, object: self)
+        }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         scheduleUnload()
     }
@@ -334,6 +355,11 @@ final class ReadAloudPlayer: NSObject {
     // MARK: - Audio session, Now Playing, remote commands
 
     private func activateSession() throws {
+        if !claimsAudio {
+            claimsAudio = true
+            // The Camera Control's standing-by microphone steps aside first.
+            NotificationCenter.default.post(name: .readAloudWillClaimAudio, object: self)
+        }
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playback, mode: .spokenAudio, options: [])
         try session.setActive(true)

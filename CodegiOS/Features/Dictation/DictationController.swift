@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Observation
 import UIKit
@@ -149,6 +150,11 @@ final class DictationController {
     private var observers: [NSObjectProtocol] = []
     /// The app went to the background during a decode, which was cancelled.
     private var decodeInterrupted = false
+    /// Camera Control to talk wants the microphone standing by (pre-roll).
+    private var preRollWanted = false
+    /// Read aloud has the audio session; standby steps aside meanwhile.
+    private var readAloudActive = false
+    private var preRollRetry: Task<Void, Never>?
 
     /// Unload the model after this long without dictation.
     private static let idleUnload: Duration = .seconds(180)
@@ -159,7 +165,29 @@ final class DictationController {
             // it in the composer rather than sending half a message.
             Task { @MainActor in self?.stop(keepUnsent: "The recording was interrupted, so it wasn't sent.") }
         }
+        recorder.onStandbyLost = { [weak self] in
+            Task { @MainActor in self?.standbyLost() }
+        }
         let center = NotificationCenter.default
+        // Posted on the main thread, before read aloud changes the session.
+        observers.append(center.addObserver(forName: .readAloudWillClaimAudio, object: nil, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.readAloudActive = true
+                self?.updatePreRoll()
+            }
+        })
+        observers.append(center.addObserver(forName: .readAloudDidReleaseAudio, object: nil, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.readAloudActive = false
+                self?.updatePreRoll()
+            }
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil,
+                                            queue: .main) { [weak self] note in
+            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            guard raw.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) == .ended else { return }
+            Task { @MainActor in self?.updatePreRoll() }
+        })
         observers.append(center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil,
                                             queue: .main) { [weak self] _ in
             Task { @MainActor in self?.unloadIfIdle() }
@@ -189,6 +217,57 @@ final class DictationController {
 
     var isBusy: Bool { phase != .idle }
 
+    // MARK: - Pre-roll (Camera Control to talk)
+
+    /// Keep the microphone standing by with the last 1.5 s in memory, so a
+    /// Camera Control press starts with the words said as it went down.
+    /// ``CameraTalkController`` turns it on while the mode runs for a visible
+    /// session and "Catch the first words" is on, and off otherwise (mode
+    /// off, screen left, app in the background, camera interrupted).
+    func setPreRoll(_ wanted: Bool) {
+        guard preRollWanted != wanted else { return }
+        preRollWanted = wanted
+        preRollRetry?.cancel()
+        CameraTalkController.log.info("Pre-roll \(wanted ? "wanted" : "off", privacy: .public)")
+        updatePreRoll()
+    }
+
+    /// Start or stop standby to match what is wanted now.
+    private func updatePreRoll(attempt: Int = 0) {
+        let should = preRollWanted && !readAloudActive && DictationRecorder.permission == .granted
+            && UIApplication.shared.applicationState != .background
+        guard should else {
+            recorder.stopStandby()
+            return
+        }
+        guard !recorder.isStandingBy else { return }
+        do {
+            let started = ContinuousClock.now
+            try recorder.startStandby()
+            let ms = Int((ContinuousClock.now - started) / .milliseconds(1))
+            CameraTalkController.log.info("Microphone standing by (started in \(ms) ms)")
+        } catch {
+            CameraTalkController.log.error("Standby didn't start: \(error.localizedDescription, privacy: .public)")
+            retryPreRoll(attempt: attempt + 1)
+        }
+    }
+
+    /// Standby lost the microphone (a call, Siri, a route change).
+    private func standbyLost() {
+        CameraTalkController.log.notice("Standby lost the microphone")
+        retryPreRoll(attempt: 1)
+    }
+
+    private func retryPreRoll(attempt: Int) {
+        preRollRetry?.cancel()
+        guard preRollWanted, attempt <= 5 else { return }
+        preRollRetry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(attempt == 1 ? 1 : 3))
+            guard !Task.isCancelled else { return }
+            self?.updatePreRoll(attempt: attempt)
+        }
+    }
+
     // MARK: - Availability
 
     enum Availability: Equatable {
@@ -211,9 +290,10 @@ final class DictationController {
 
     /// Start recording for `owner`. The outcome arrives through `completion`
     /// once recording stops, the decode finishes and, when clean-up is on,
-    /// `postProcessor` has answered.
+    /// `postProcessor` has answered. `pressUptime` is when the Camera Control
+    /// went down (`ProcessInfo.systemUptime`), for the log.
     func start(owner: UUID, source: DictationSource = .mic, context: DictationContext,
-               postProcessor: TranscriptPostProcessor? = nil,
+               postProcessor: TranscriptPostProcessor? = nil, pressUptime: TimeInterval? = nil,
                completion: @escaping (DictationOutcome) -> Void) async {
         guard phase == .idle else { return }
         let language = DictationPrefs.language
@@ -239,7 +319,9 @@ final class DictationController {
 
         ReadAloudPlayer.shared.stop()
         do {
-            try recorder.start()
+            // A Camera Control press starts with the pre-roll, when the
+            // microphone was standing by: the words said as it went down.
+            try recorder.start(includePreRoll: source == .cameraControl, pressUptime: pressUptime)
         } catch {
             log.error("Recording failed to start: \(error.localizedDescription, privacy: .public)")
             completion(.failed("Couldn't start the microphone: \(error.localizedDescription)"))
@@ -281,6 +363,7 @@ final class DictationController {
         }
         meterTask?.cancel()
         let samples = recorder.stop()
+        updatePreRoll()
         phase = .transcribing
         level = 0
         decodeInterrupted = false
@@ -313,6 +396,7 @@ final class DictationController {
         case .recording:
             meterTask?.cancel()
             recorder.stop()
+            updatePreRoll()
         case .transcribing:
             engine?.cancel()
             transcribeTask?.cancel()

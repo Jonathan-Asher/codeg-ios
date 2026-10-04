@@ -105,11 +105,15 @@ enum VADGate {
 }
 
 /// What to decode out of a finished recording (Speakly's dictation finalise:
-/// trim around the speech with 150 ms of padding, then one decode over it).
+/// trim around the speech with some padding, then one decode over it).
 enum DictationTrim {
     static let sampleRate = 16_000
-    /// Padding kept around the detected speech.
+    /// Padding kept after the detected speech.
     static let padMs = 150
+    /// Padding kept before the first detected speech. Longer than Speakly's
+    /// 150 ms: the gate opens only once speech is clear, and a soft first
+    /// syllable before that was being cut.
+    static let leadPadMs = 300
     /// Recordings shorter than this are a mis-tap, not dictation.
     static let minRecordingMs = 400
     /// After trimming, less speech than this is not worth a decode.
@@ -124,15 +128,18 @@ enum DictationTrim {
         case speech(Range<Int>)
     }
 
-    /// Trim bounds around all detected speech, padded by `padMs`, in samples.
-    /// `nil` means no speech at all. Port of Speakly's `speech_bounds`.
-    static func speechBounds(_ output: VADGateOutput, totalSamples: Int, padMs: Int = padMs) -> Range<Int>? {
+    /// Trim bounds around all detected speech, padded by `leadPadMs` before
+    /// and `padMs` after, in samples. `nil` means no speech at all. Port of
+    /// Speakly's `speech_bounds`.
+    static func speechBounds(_ output: VADGateOutput, totalSamples: Int, leadPadMs: Int = leadPadMs,
+                             padMs: Int = padMs) -> Range<Int>? {
+        let lead = leadPadMs * sampleRate / 1000
         let pad = padMs * sampleRate / 1000
         let starts = [output.closed.first?.start, output.openStart].compactMap { $0 }
         guard let first = starts.min() else { return nil }
         let ends = [output.closed.last?.end, output.openStart.map { _ in totalSamples }].compactMap { $0 }
         let last = ends.max() ?? totalSamples
-        let lower = max(0, first - pad)
+        let lower = max(0, first - lead)
         let upper = min(totalSamples, last + pad)
         return lower < upper ? lower..<upper : nil
     }

@@ -72,11 +72,11 @@ final class VADGateTests: XCTestCase {
 final class DictationTrimTests: XCTestCase {
     func testSpeechBoundsPadsAndClamps() {
         let closed = VADGateOutput(closed: [VADSegment(start: 16_000, end: 32_000)], openStart: nil)
-        XCTAssertEqual(DictationTrim.speechBounds(closed, totalSamples: 40_000), 13_600..<34_400)
+        XCTAssertEqual(DictationTrim.speechBounds(closed, totalSamples: 40_000), 11_200..<34_400)
 
         // Speech still open runs to the end of the recording.
         let open = VADGateOutput(closed: [], openStart: 8_000)
-        XCTAssertEqual(DictationTrim.speechBounds(open, totalSamples: 20_000), 5_600..<20_000)
+        XCTAssertEqual(DictationTrim.speechBounds(open, totalSamples: 20_000), 3_200..<20_000)
 
         // Padding never reaches before the start.
         let early = VADGateOutput(closed: [VADSegment(start: 1_000, end: 9_000)], openStart: nil)
@@ -90,7 +90,8 @@ final class DictationTrimTests: XCTestCase {
         let p = Array(repeating: Float(0.05), count: 20) + Array(repeating: Float(0.95), count: 20)
             + Array(repeating: Float(0.05), count: 22)
         let plan = DictationTrim.plan(totalSamples: 62 * 512, probabilities: p)
-        XCTAssertEqual(plan, .speech((20 * 512 - 2_400)..<(40 * 512 + 2_400)))
+        // 300 ms kept before the speech, 150 ms after.
+        XCTAssertEqual(plan, .speech((20 * 512 - 4_800)..<(40 * 512 + 2_400)))
     }
 
     func testPlanRejectsMisTapsAndSilence() {

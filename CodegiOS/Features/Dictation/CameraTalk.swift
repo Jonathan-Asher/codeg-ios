@@ -25,6 +25,14 @@ enum CameraTalkPrefs {
         set { defaults.set(newValue, forKey: "codeg.cameraTalk.introShown") }
     }
 
+    /// "Catch the first words": while the mode runs, keep the microphone
+    /// on with the last 1.5 s in memory, so a press starts with what was said
+    /// as it went down. On by default.
+    static var catchFirstWords: Bool {
+        get { defaults.object(forKey: "codeg.cameraTalk.catchFirstWords") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "codeg.cameraTalk.catchFirstWords") }
+    }
+
     /// Show a small live camera preview in the indicator. Off by default; for
     /// the case where iOS turns out to deliver the buttons only to an app that
     /// shows its camera.

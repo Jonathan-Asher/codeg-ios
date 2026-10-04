@@ -35,6 +35,15 @@ final class CameraTalkController {
         didSet { CameraTalkPrefs.showPreview = showPreview }
     }
 
+    /// Keep the microphone standing by while the mode runs, so a press
+    /// starts with the words said as it went down (Settings › Voice).
+    var catchFirstWords: Bool = CameraTalkPrefs.catchFirstWords {
+        didSet {
+            CameraTalkPrefs.catchFirstWords = catchFirstWords
+            syncMicrophone()
+        }
+    }
+
     let capture = CameraTalkCapture()
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
 
@@ -180,9 +189,24 @@ final class CameraTalkController {
         default:
             break
         }
+        syncMicrophone()
+    }
+
+    /// The microphone side of the mode. With "Catch the first words" on, it
+    /// stands by while the camera runs for a visible session; it stops when
+    /// the mode goes off, the screen is left, the app goes to the background
+    /// or the camera is interrupted. With it off, only the audio category is
+    /// set ahead, which shortens the cold start a little.
+    private func syncMicrophone() {
+        let live = gate.shouldRun && (status == .running || status == .starting)
+        DictationController.shared.setPreRoll(live && catchFirstWords)
+        if live, !catchFirstWords, ReadAloudPlayer.shared.state == .idle, !DictationController.shared.isBusy {
+            DictationRecorder.prepareCategory()
+        }
     }
 
     private func captureChanged(_ event: CameraTalkCapture.Event) {
+        defer { syncMicrophone() }
         switch event {
         case .running:
             if gate.shouldRun {
