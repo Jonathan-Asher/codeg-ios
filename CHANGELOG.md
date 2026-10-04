@@ -118,6 +118,35 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- "Network error: The operation couldn't be completed. Message too long" on
+  send (1.3.4). The event socket kept `URLSessionWebSocketTask`'s 1 MiB frame
+  limit, and codeg sends bigger frames (a background-activity update re-sends
+  a whole growing turn; an attach snapshot carries a long turn's output). A
+  frame over the limit killed the socket while a send was attaching, and the
+  send was rolled back into the composer with that error. Both sockets now
+  accept 64 MiB frames, and a socket that drops during a send's attach is
+  opened again (three tries); if it still won't attach, the prompt goes
+  anyway and the stream recovers once the turn runs. A dropped socket never
+  fails a send.
+- A prompt or a message into the running turn whose response was lost (a
+  timeout, a dropped LTE connection) was reported as failed and handed back,
+  even when the server had it (1.3.4). The app now asks the server first: a
+  prompt counts when the stream echoed its client message id or the
+  connection's snapshot runs it; a message into the turn counts when the
+  snapshot lists it. Messages into the turn wait up to 90 seconds (was 30).
+- Sending while a turn the screen didn't know about was running gave "A turn
+  is already running" and handed the message back (1.3.4). It is queued now,
+  and the screen attaches to that turn so the message goes when it ends.
+- A session could show "Working" when opened while the session list said
+  idle (1.3.4). Output the agent produced after its turn ended (woken by a
+  background task) was read as a running turn. A turn runs only while the
+  connection is prompting or a card waits, as on the list, the server and the
+  codeg web client.
+- A turn that ended while the event socket was down stayed "working" for
+  good, with queued messages stuck behind it (1.3.4). A reconnect that finds
+  no turn running now settles it and sends the queue.
+- A socket that dropped before the first snapshot of a session opened while
+  its turn ran left the screen unattached (1.3.4); the attach is retried.
 - "Couldn't start the microphone: Session activation failed" stayed above a
   recording that worked (1.3.2). Microphone and audio errors now say what is
   wrong with Apple's code ("a call or another app is using the audio

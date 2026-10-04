@@ -150,6 +150,58 @@ remains.
   `awaiting_background`, `background_activity`, `feedback_submitted`,
   `feedback_consumed`.
 
+### The event socket and sending (1.3.4)
+
+`Networking/EventStream.swift`, `Features/SessionDetail/StreamRecovery.swift`
+and the send path of `SessionDetailViewModel`.
+
+- **Frame size.** Every socket is made by `EventStream.makeTask`, which sets
+  `maximumMessageSize` to 64 MiB. `URLSessionWebSocketTask` defaults to 1 MiB
+  and fails the receive with EMSGSIZE ("Message too long") above it, which
+  closes the socket. codeg sends bigger frames: `background_activity` re-sends
+  a whole growing out-of-turn turn on every update (1.3 to 1.5 MB were seen),
+  and an attach snapshot carries a long turn's whole live message.
+- **A dropped socket never fails a send.** A send opens its stream and waits
+  for the server's snapshot before it prompts. A socket that closes before
+  then (or a `lagged` / `server_shutdown` detach) is opened again, after
+  0.5 s and 1 s; after the third, or a 12 s timeout, the prompt goes without
+  a stream and the stream is reconnected once the turn runs. The reconnect's
+  snapshot carries the whole reply so far. Only `connection_gone` (retry on a
+  fresh connection) and the prompt's own failure can fail a send.
+- **Unclear prompts are confirmed.** The prompt carries a client message id,
+  which the server echoes as the `user_message` event's id and as the
+  snapshot's `pending_user_message.message_id`. When `acp_prompt` fails
+  without a clear answer (a transport error, a 5xx) or says a turn is running,
+  the app counts the prompt as sent if the stream echoed the id or
+  `acp_get_session_snapshot` runs it. A turn that isn't this send's queues the
+  message and attaches to that turn.
+- **Unclear inserts are confirmed.** `submit_session_feedback` takes no client
+  id and answers once the agent took the message, so it gets a 90 s timeout.
+  After a transport error the message counts as delivered if the stream's
+  `feedback_submitted` matched it, or the snapshot's `feedback` lists a note
+  with its text that no other message on screen claims (asked up to three
+  times). Otherwise it goes back to the composer, as before.
+- **What counts as a running turn.** Only a snapshot whose status is
+  `prompting`, or that has a permission, question or plan card, is a turn.
+  The server collects output the agent produces after its turn ended (when a
+  background task's notification wakes it) into `live_message` while the
+  connection is idle. Reading that as a turn showed "Working" on the screen
+  while the list, the server and the web client said idle.
+- **A turn that ended while the socket was down.** When a reconnect's
+  snapshot shows no turn running, the screen asks
+  `acp_get_session_snapshot` again a second later and then settles the turn
+  like `turn_complete` would (reconcile with the transcript, send the next
+  queued message), or reconciles-or-fails when the agent's connection is down.
+- **Opening a session whose turn runs.** A socket that drops before the first
+  snapshot is retried three times (0.5, 1, 2 s), so the screen doesn't stay
+  unattached.
+
+What the app can't fix: the session list only has `turn_state`, which stays
+`running` while a turn is held open for background work (the open session
+shows "Idle — background work running" from its live connection), and is
+null while the agent works out of turn. See the codeg server for the live
+status the list would need.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one
@@ -904,7 +956,9 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
 - **`test`** runs the `CodegiOSTests` unit tests (session activity, push
   payload routing, Markdown-to-speech text, voice typing, the Activity order
   and bottom pin, the Camera Control press and gating, dictation clean-up with
-  a mock server, the audio session owner and microphone hand-off) on an
+  a mock server, the audio session owner and microphone hand-off, and the
+  event socket's recovery and send confirmation against a mock server with
+  scripted sockets) on an
   iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
   `build`. It uploads the session list screenshots as the
   `session-list-screenshots` artifact and the compose area as
