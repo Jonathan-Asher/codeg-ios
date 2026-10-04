@@ -304,18 +304,24 @@ FLEURS WER from 23.7% to 40%.
    - speech shorter than 250 ms is dropped;
    - a segment is force-split at 25 s.
 
-   `DictationTrim.plan` keeps everything from the first to the last speech
-   with 150 ms of padding. A recording shorter than 0.4 s is a mis-tap. With
+   `DictationTrim.plan` keeps everything from the first to the last speech,
+   with 300 ms of padding before it and 150 ms after (Speakly pads 150 ms on
+   both sides; the gate opens only once speech is clear, and a soft first
+   syllable was being cut). A recording shorter than 0.4 s is a mis-tap. With
    no speech, or less than 250 ms, nothing is decoded, which avoids whisper's
    hallucinations on silence. If the VAD model fails to load, the whole
    recording is decoded.
-3. **Decode.** There is one decode over the trimmed audio, as in Speakly's
-   dictation. Output that is only non-speech markers (`[BLANK_AUDIO]`,
-   `(מוזיקה)`) is dropped.
-4. **Clean up.** With "After transcribing" set to clean up or translate, the
+3. **Language.** With "Hebrew or English" (the default), whisper tiny tells
+   the two apart on the trimmed audio first, leaning to Hebrew (see "Hebrew
+   or English" below). The strip's chip can fix it to Hebrew or English for
+   the message instead.
+4. **Decode.** There is one decode over the trimmed audio, as in Speakly's
+   dictation, with the language forced. Output that is only non-speech
+   markers (`[BLANK_AUDIO]`, `(מוזיקה)`) is dropped.
+5. **Clean up.** With "After transcribing" set to clean up or translate, the
    text goes to the codeg server first (see "Clean-up and translation"
    below). On any failure the words are kept as spoken.
-5. **Insert.** `DictationText.insert` puts the text at the field's cursor, or
+6. **Insert.** `DictationText.insert` puts the text at the field's cursor, or
    replaces the selection, using the iOS 18 `TextField(text:selection:)`
    binding. It adds a space where the transcript would touch a word, and the
    cursor ends after the inserted text. With "Send" on, the message is then
@@ -336,12 +342,13 @@ again. A decode that is already running is cancelled and run again then.
   VoiceOver activation toggles. While recording, the button turns into a red
   stop button. While transcribing, it shows a spinner.
 - **Recording strip** above the field: a pulsing dot, the elapsed time, a live
-  level meter, the clean-up chip for this message, a **Send** switch (send
-  right after transcribing, remembered), and cancel.
+  level meter, the language chip for this message (Auto, עב, EN; filled when
+  it differs from the setting), the clean-up chip for this message, a
+  **Send** switch (send right after transcribing, remembered), and cancel.
 - **Settings › Voice › Voice Typing**: the model download (download, pause,
   resume, delete, progress), Language, After transcribing, "Send right after
   transcribing" and "Use the session context".
-- **Without the model**, tapping the mic offers the download (875 MB) and
+- **Without the model**, tapping the mic offers the download (919 MB) and
   points to the mic key on the iOS keyboard, Apple's own dictation. During the
   download, a notice shows the progress. If the microphone is denied, a notice
   says where to allow it.
@@ -417,13 +424,102 @@ to the provider set up in codeg Settings on the computer (Groq and similar).
 
 | Setting | Model | Notes |
 | ------- | ----- | ----- |
-| Hebrew (default) | ivrit.ai turbo q8_0, `he` forced | English terms come out as the model writes them, often transliterated (ריבייס, טייפ סקריפט); the prompt keeps more of them in Latin letters |
+| Hebrew or English (automatic), default from 1.3.1 | whisper tiny q8_0 decides, then ivrit.ai turbo q8_0 with that language forced | See "Hebrew or English" below. Without the tiny model (an install from before 1.3.1 still fetching it), it is Hebrew |
+| Hebrew | ivrit.ai turbo q8_0, `he` forced | English terms come out as the model writes them, often transliterated (ריבייס, טייפ סקריפט); the prompt keeps more of them in Latin letters |
 | English | same model, `en` forced | WER 17.6% on the five English clips; the Hebrew-mode prompt keeps English speech English too (19.6%) |
 | Detect automatically | stock large-v3-turbo q5_0 (574 MB, separate download), `auto` | Detection works (25/25 Hebrew, 5/5 English). Hebrew is much weaker (FLEURS WER 33.6% vs 23.7%), and 3 of 8 Hebrew sentences full of code terms were detected as English and came out as English gibberish. Detection costs a second encoder pass (decode time ×1.9). Pure English is better (WER 7.8% vs 17.6%). |
 
 ivrit.ai's model card says its language detection was degraded by the
 fine-tune. Measured here, it called every English clip Hebrew (p ≈ 1.0), so
-Auto does not use it.
+no setting uses it.
+
+1.3.0 defaulted to Hebrew. A stored Hebrew moves to "Hebrew or English" once
+(`DictationPrefs.migrateLanguage`); picking Hebrew again afterwards sticks.
+The strip's chip changes only the language passed to the decode, never the
+model: with "Detect automatically", its Auto is the stock model's own
+detection, and עב or EN force that language on the stock model.
+
+### Hebrew or English
+
+The ivrit.ai model transcribes English well when told it is English (15% WER
+on the English clips, about the same as the alternatives below), but it can't
+tell which language it hears, and the stock multilingual turbo that can is
+574 MB more with clearly weaker Hebrew. So a small multilingual whisper only
+picks the language: whisper.cpp's `whisper_lang_auto_detect`, which is the
+encoder over one 30 s window and a single decoder step, no transcription
+(`WhisperLanguageIdentifier`). Its probabilities for Hebrew and English are
+renormalized over the two, and the decision (`SpokenLanguageDecision`) leans
+to Hebrew: English only when p(en) ≥ 0.9997. Then the ivrit.ai model decodes
+with that language forced. The log line `Language en: p(en) 0.99991 in 35 ms`
+(category `dictation`) shows each call.
+
+**Test set** (`scripts/stt-bench/lid-cli.swift` and `lid-score.py`, the app's
+own code, VAD-trimmed as in the app): 93 Hebrew clips, the 45 used above
+(FLEURS he 25, Carmit 12, and the 8 Hebrew BlueTTS sentences full of code
+terms, 3 of which the stock turbo had called English) plus 48 new ones: 16
+dictation sentences, many dense with code terms ("תריץ npm install ואז pnpm
+build", "מה הבעיה עם ה-TypeScript types ב-API client?") or very short ("כן,
+תמשיך", "אוקיי, מעולה"), read by Carmit and by two more BlueTTS voices. And
+132 English clips: FLEURS en (25 real speakers), the 5 Samantha and 2 BlueTTS
+clips, 10 dictation sentences read by eight `say` voices (US, UK, Irish,
+Australian, Indian, and the old Fred and Kathy) and by the two BlueTTS voices,
+the nearest thing here to English with a Hebrew accent.
+
+**Results** on Jonathan's Mac (M4 Max, Metal), whole clip. Each cell is
+Hebrew called English on the original 45 / on all 93, then English called
+Hebrew out of 132:
+
+| Model | Size | ms per call | p(en) ≥ 0.9 | ≥ 0.99 | ≥ 0.999 | ≥ 0.9995 | **≥ 0.9997** | ≥ 0.9999 |
+| ----- | ---- | ----------- | ----------- | ------ | ------- | -------- | ------------ | -------- |
+| tiny q5_1 | 32 MB | 10 | 1 / 19 / 0 | 0 / 9 / 0 | 0 / 5 / 3 | 0 / 3 / 6 | 0 / 1 / 8 | 0 / 0 / 24 |
+| **tiny q8_0 (shipped)** | **44 MB** | **10** | 1 / 17 / 0 | 0 / 9 / 0 | 0 / 3 / 1 | 0 / 1 / 6 | **0 / 0 / 7** | 0 / 0 / 22 |
+| base q5_1 | 60 MB | 17 | 0 / 10 / 0 | 0 / 5 / 0 | 0 / 2 / 0 | 0 / 2 / 2 | 0 / 2 / 6 | 0 / 1 / 23 |
+| base q8_0 | 82 MB | 17 | 0 / 8 / 0 | 0 / 5 / 0 | 0 / 2 / 1 | 0 / 2 / 2 | 0 / 2 / 11 | 0 / 0 / 26 |
+| small q5_1 | 190 MB | 50 | 0 / 13 / 0 | 0 / 8 / 0 | 0 / 4 / 0 | 0 / 3 / 0 | 0 / 2 / 0 | 0 / 0 / 3 |
+| small q8_0 | 264 MB | 48 | 0 / 12 / 0 | 0 / 7 / 0 | 0 / 4 / 0 | 0 / 2 / 0 | 0 / 2 / 0 | 0 / 2 / 6 |
+| large-v3-turbo q5_0 (reference) | 574 MB | 249 | 0 / 18 / 0 | 0 / 13 / 0 | 0 / 9 / 1 | 0 / 8 / 1 | 0 / 7 / 1 | 0 / 4 / 1 |
+
+- Every English clip scored p(en) above 0.996 with every model (above 0.998
+  with tiny, base and small), so the threshold can sit very high. The errors are all Hebrew dense with code
+  terms, spoken as English by the BlueTTS voices, or one or two words.
+- On the original 45 Hebrew clips every model is right from p(en) ≥ 0.99
+  (tiny q8_0's worst was 0.94, on BlueTTS b01). The new clips are what
+  separate them.
+- **tiny q8_0 at 0.9997** is the smallest setup with every Hebrew clip
+  right. The 7 English clips it misses are all `say` voices: 4 Kathy, 2 Fred
+  and 1 Tara. Every FLEURS speaker, Samantha, and both BlueTTS voices reading
+  English stay English. In log-odds it also has the widest gap between the
+  hardest Hebrew (h03 "כן" by one BlueTTS voice, p 0.99951) and the hardest
+  English from people or natural voices (FLEURS and BlueTTS, p ≥ 0.99985).
+- small q5_1 gets every Hebrew clip right only at p ≥ 0.9999, with 3 English
+  misses, but its lowest FLEURS clip is 0.99992, so real English sits right
+  at the threshold, for 4× the size and 5× the time. base is better than tiny
+  in the middle range but can't get the sentence "מה הבעיה עם ה-TypeScript
+  types ב-API client?" right at any threshold that keeps English. The stock
+  turbo, as the reference, is the worst at this.
+
+**Only the first 3–5 s?** No. tiny q8_0's worst original Hebrew clip went from
+p(en) 0.94 on the whole clip to 0.9975 on the first 5 s and 0.999 on the
+first 3 s (BlueTTS b03), and it saves nothing: whisper.cpp always encodes a
+30 s window, so a call took 9.7 ms whatever the length. The app gives it the
+first 30 s of trimmed speech (`SpokenLanguageDecision.windowSeconds`).
+
+**Latency.** On the M4 Max a call is about 10 ms, against about 370 ms for the
+ivrit.ai decode of a short dictation. The model (44 MB) loads in 30 ms, while
+you speak, next to the big one. On an iPhone it hasn't been measured; the
+tiny encoder is about 1% of the turbo encoder's work, so it should stay in
+the tens of milliseconds next to the decode's seconds.
+
+**Fallbacks.** No tiny model on the phone, a failed load or a failed call:
+the dictation is Hebrew, as 1.3.0 did. Unit tests: `DictationLanguageTests`.
+
+**Download.** `ggml-tiny-q8_0.bin` is part of the Hebrew model's pack
+(`languageID` in `stt-models.json`), so one Download gets both (919 MB). On an
+install from 1.3.0, the weights and VAD are already verified by the earlier
+download's marker, so dictation keeps working (as Hebrew) while the app
+fetches only the 44 MB file, on its own at launch or with the next dictation;
+Settings shows "Adding the Hebrew-or-English model" meanwhile
+(`ModelPackStore.hasVerified`, `SpeechModelStores.completeIfUpdated`).
 
 ### Prompt biasing
 
@@ -467,7 +563,8 @@ Speed on an iPhone has not been measured.
 - **Hosting**: release
   [`models-v1`](https://github.com/Jonathan-Asher/codeg-ios/releases/tag/models-v1)
   of this repository, with the ivrit.ai model, the stock multilingual q5_0,
-  Silero VAD, `stt-models.json`, `SHA256SUMS`, `NOTICE.txt` (what was changed,
+  Silero VAD, whisper tiny q8_0 (byte-identical to ggerganov's, sha256
+  `c2085835…2d1cca`, from 1.3.1), `stt-models.json`, `SHA256SUMS`, `NOTICE.txt` (what was changed,
   as Apache-2.0 §4(b) requires) and the Apache-2.0 text. GitHub serves byte
   ranges with an ETag, so downloads resume.
 - **Manifest**: `CodegiOS/Resources/stt-models.json` is the same file as the
@@ -525,7 +622,8 @@ the phone, and try whisper's Core ML encoder first.
 ### Benchmark harness
 
 `scripts/stt-bench/` holds the macOS CLI, the WER scorer and the code-term
-scorer used for the numbers above.
+scorer used for the numbers above, and `lid-cli.swift` with `lid-score.py`
+for the language-ID tables.
 The CLI runs the app's own `WhisperCppEngine`, `SileroVAD`, `DictationTrim`
 and `DictationText` code against the XCFramework's macOS slice. Usage is in the
 header of each file.
@@ -618,9 +716,42 @@ last dictation is still being transcribed shows a notice.
 
 **Interruptions.** If the press can't end normally (the scene goes inactive,
 the camera stops, the session closes), the recording is transcribed into the
-message bar without being sent, with a notice. Camera interruptions don't
-touch the microphone: the capture session has no audio, and the mic button
-keeps working.
+message bar without being sent, with a notice. The capture session has no
+audio, and the mic button keeps working while the camera is interrupted.
+
+### Catching the first words (pre-roll)
+
+In 1.3.0 the recording started on `began`, and starting the microphone (the
+category switch from read aloud's `.playback`, `setActive`, the engine) took
+long enough that messages arrived starting mid-sentence. Now, while the mode
+runs for a session on screen, the microphone stands by:
+
+- `DictationRecorder` keeps the engine running and the last 1.5 s of 16 kHz
+  audio in an `AudioRingBuffer`, in memory only. A press starts the
+  recording with that audio and carries on live (`RecordingBuffer`), so the
+  words said while the press registered are there. A mic-button recording
+  doesn't take the pre-roll.
+- Standby stops, and the session is deactivated, when the mode goes off, the
+  session screen is left, the app goes inactive or to the background, the
+  photo camera opens, or the camera is interrupted (`CameraTalkController`
+  follows the gate). A call or Siri ends it; it starts again when the
+  interruption ends, with up to 5 retries.
+- Standby uses `.playAndRecord` with `.defaultToSpeaker`, `.allowBluetoothA2DP`
+  and `.mixWithOthers`, so it listens through the iPhone's microphone: AirPods
+  stay in high-quality A2DP and other apps' audio keeps playing. A
+  mic-button recording without standby still uses AirPods' microphone (HFP).
+- Read aloud posts `readAloudWillClaimAudio` before it sets `.playback`, and
+  standby steps aside until `readAloudDidReleaseAudio`. A press while a reply
+  is read stops it and records without pre-roll, so the reply's audio never
+  ends up in the message.
+- The VAD trim keeps 300 ms before the first detected speech (was 150 ms).
+- Settings › Voice › Camera Control › "Catch the first words (keeps the
+  microphone ready)", on by default. The orange microphone dot shows while it
+  stands by. Off, a press starts the microphone cold as before, and only the
+  `.playAndRecord` category is set ahead when the mode starts.
+- The log (`camera-talk`) says `First live audio N ms after the press; M ms of
+  pre-roll kept`, which measures the real gap on the phone, and when standby
+  starts, stops, or loses the microphone.
 
 ### Setup and permission
 
@@ -628,8 +759,8 @@ The toolbar's Camera Control button turns the mode on or off for every
 session (remembered). The first time, an explanation comes before iOS asks
 for the camera. Turning it on also asks for the microphone, so the first
 press doesn't stop at a prompt. `NSCameraUsageDescription` mentions the mode.
-Settings › Voice › Camera Control has the same switch, the preview switch and
-a short explanation. The section and the toolbar button are hidden on
+Settings › Voice › Camera Control has the same switch, "Catch the first
+words", the preview switch and a short explanation. The section and the toolbar button are hidden on
 devices without a camera (the simulator).
 
 ### "Capture Application Requirements Unmet"
@@ -650,7 +781,8 @@ Console.app on a Mac, with the iPhone connected: filter on subsystem
 off; every session start and stop with the gate's inputs; configuration; the
 first camera frame; interruptions with their reason; runtime errors; the
 interaction installed, enabled and disabled; every capture event with its
-phase and primary or secondary; and what each press did.
+phase and primary or secondary; what each press did; standby starting and
+stopping; and the milliseconds from the press to the first live audio.
 
 ## Upstream pull requests carried by the fork
 

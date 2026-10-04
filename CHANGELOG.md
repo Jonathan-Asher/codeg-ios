@@ -12,6 +12,21 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Hebrew or English dictation (1.3.1): the new default Language, "Hebrew or
+  English (automatic)", tells the two apart on the iPhone with whisper tiny
+  (44 MB, downloaded with the speech model) and then transcribes with the
+  ivrit.ai model in that language, leaning to Hebrew. An install that already
+  has the model fetches only the new file. A language chip on the recording
+  strip (Auto, עב, EN) sets it for one message. Hebrew, English and "Detect
+  automatically" are still in Settings, and a Hebrew left over from 1.3.0
+  moves to the new default once.
+- Camera Control "Catch the first words" (1.3.1, on by default): while the
+  mode runs, the microphone stands by with the last 1.5 seconds in memory, so
+  a press starts with what was said as it went down. Settings › Voice ›
+  Camera Control explains the orange dot. It uses the iPhone's microphone so
+  AirPods keep playing in full quality, and it steps aside while a reply is
+  read aloud.
+
 - Camera Control to talk (1.3.0): with a session open and the mode on, hold
   the Camera Control, speak and let go; the message is transcribed on the
   iPhone, cleaned up if that is on, and sent to the session's agent like the
@@ -82,6 +97,16 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- English dictation came out in Hebrew (1.3.1), because the only Hebrew
+  setting forced Hebrew.
+- Camera Control messages lost their first words (1.3.1): the recording now
+  starts from the pre-roll, the VAD trim keeps 300 ms before the first speech,
+  and the log shows the time from the press to the first live audio.
+- A queued message's "⋯" menu often didn't open (1.3.1): its button is now a
+  44-point target, the menu lists the same items while the turn streams ("Send
+  now" is disabled instead of hidden), and the rows only redraw when the queue
+  changes. Each row also has an ✕ to remove it in one tap, and a long press
+  opens the same menu.
 - Unknown and custom agent types no longer decode as Claude (upstream #4).
 - The live stream recovers after a drop or backgrounding, and the session
   resyncs when the app returns to the foreground (upstream #10, #17).
