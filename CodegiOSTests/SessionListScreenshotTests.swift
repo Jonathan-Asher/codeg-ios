@@ -243,12 +243,26 @@ enum Shot {
             .appendingPathComponent("build/list-shots", isDirectory: true)
     }
 
+    /// The compose-area renders: `$COMPOSE_SHOTS_DIR` (CI sets
+    /// `TEST_RUNNER_COMPOSE_SHOTS_DIR`), or `build/compose-shots/`.
+    static var composeDirectory: URL {
+        if let dir = ProcessInfo.processInfo.environment["COMPOSE_SHOTS_DIR"], !dir.isEmpty {
+            return URL(fileURLWithPath: dir, isDirectory: true)
+        }
+        return URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("build/compose-shots", isDirectory: true)
+    }
+
     /// Hosts `content` full screen in its own window, lets layout, scroll
     /// anchors and images settle, then writes `<name>-<light|dark>.png`.
     static func capture<Content: View>(
         _ name: String,
         _ style: UIUserInterfaceStyle,
         dynamicType: DynamicTypeSize = .large,
+        in directory: URL? = nil,
+        settle seconds: TimeInterval = 1.2,
         @ViewBuilder _ content: () -> Content
     ) throws {
         let scene = try XCTUnwrap(
@@ -266,7 +280,7 @@ enum Shot {
             window.isHidden = true
             window.rootViewController = nil
         }
-        settle(1.2)
+        settle(seconds)
 
         let format = UIGraphicsImageRendererFormat(for: window.traitCollection)
         format.scale = scene.screen.scale
@@ -274,13 +288,13 @@ enum Shot {
             _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
         }
         let data = try XCTUnwrap(image.pngData())
-        let dir = directory
+        let dir = directory ?? Self.directory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let suffix = style == .dark ? "dark" : "light"
         let url = dir.appendingPathComponent("\(name)-\(suffix).png")
         try data.write(to: url)
         let size = scene.screen.bounds.size
-        print("list-shot: \(url.path) (\(Int(size.width))x\(Int(size.height)) pt @\(Int(scene.screen.scale))x)")
+        print("shot: \(url.path) (\(Int(size.width))x\(Int(size.height)) pt @\(Int(scene.screen.scale))x)")
     }
 
     private static func settle(_ seconds: TimeInterval) {

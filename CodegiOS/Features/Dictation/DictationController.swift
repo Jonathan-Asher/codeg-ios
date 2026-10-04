@@ -629,6 +629,25 @@ final class DictationController {
         }
     }
 
+    #if DEBUG
+    /// Screenshot tests: show a dictation state without a microphone.
+    func showForScreenshot(_ phase: Phase, owner: UUID, source: DictationSource = .mic, elapsed: TimeInterval = 0,
+                           levels: [Float] = [], send: Bool = false, refine: DictationRefineMode = .asSpoken,
+                           refineOffered: Bool? = true, language: DictationLanguageChoice = .automatic,
+                           languageDefault: DictationLanguageChoice = .automatic) {
+        self.phase = phase
+        self.owner = phase == .idle ? nil : owner
+        self.source = source
+        self.elapsed = elapsed
+        if !levels.isEmpty { self.levels = levels }
+        sendThisTime = send
+        refineThisTime = refine
+        self.refineOffered = refineOffered
+        languageThisTime = language
+        self.languageDefault = languageDefault
+    }
+    #endif
+
     private func unloadIfIdle() {
         guard phase == .idle, let engine else { return }
         self.engine = nil

@@ -138,6 +138,8 @@ jobs:
           set -o pipefail
           # Forwarded to the tests as LIST_SHOTS_DIR (the list screenshots).
           export TEST_RUNNER_LIST_SHOTS_DIR="$PWD/build/list-shots"
+          # And as COMPOSE_SHOTS_DIR (the compose area in each dictation state).
+          export TEST_RUNNER_COMPOSE_SHOTS_DIR="$PWD/build/compose-shots"
           fmt=cat
           if command -v xcbeautify >/dev/null 2>&1; then fmt="xcbeautify --renderer github-actions"; fi
           xcodebuild test \
@@ -156,6 +158,15 @@ jobs:
         with:
           name: session-list-screenshots
           path: build/list-shots
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload the compose area screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-screenshots
+          path: build/compose-shots
           if-no-files-found: warn
           retention-days: 30
 

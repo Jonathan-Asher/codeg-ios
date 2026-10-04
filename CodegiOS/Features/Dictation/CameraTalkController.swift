@@ -161,6 +161,8 @@ final class CameraTalkController {
     // MARK: - Running the session
 
     private func apply() {
+        // Screenshot tests hold the state they set.
+        if screenshotStatus != nil { return }
         gate.cameraAuthorized = Self.cameraAuthorized
         if gate.enabled, !gate.cameraAuthorized, gate.activeOwner != nil {
             // Camera access was turned off in the Settings app.
@@ -191,6 +193,31 @@ final class CameraTalkController {
         }
         syncMicrophone()
     }
+
+    /// Screenshot tests: the state set by `showForScreenshot(_:owner:)`,
+    /// which nothing else changes meanwhile. Always nil in the app.
+    @ObservationIgnored private var screenshotStatus: Status?
+
+    #if DEBUG
+    /// Screenshot tests: show the mode on for `owner` with `status`, without
+    /// a camera; `nil` turns it back off.
+    func showForScreenshot(_ status: Status?, owner: UUID) {
+        screenshotStatus = status
+        guard let status else {
+            gate = CameraTalkGate()
+            self.status = .off
+            return
+        }
+        var gate = CameraTalkGate()
+        gate.enabled = true
+        gate.cameraAuthorized = true
+        // Not live: the hardware-button interaction stays uninstalled.
+        gate.appActive = false
+        gate.update(owner, CameraTalkGate.Presence(visible: true, sceneActive: true))
+        self.gate = gate
+        self.status = status
+    }
+    #endif
 
     /// The microphone side of the mode. With "Catch the first words" on, it
     /// stands by while the camera runs for a visible session; it stops when
