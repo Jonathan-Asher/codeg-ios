@@ -82,6 +82,24 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Changed
 
+- The recording strip has two rows (1.3.2): the dot, a timer that never
+  wraps, the level meter and cancel on top; the chips below, wrapping onto
+  another line at large text sizes. While recording, the mic button is the
+  one control that ends it (a paper plane when it sends, a check mark when
+  it goes into the message bar), and Send or the agent's Stop is dimmed and
+  inactive, so a reach for "stop" can't stop the agent.
+- The "after transcribing" chip on the recording strip is the setting
+  (1.3.2): picking "To English" there keeps every later dictation in English
+  until it is changed again, and the chip is filled while clean-up or
+  translation is on. The language chip stays for one message.
+- The "Hold the Camera Control to talk" pill shows for 4 seconds when the
+  mode turns on or a session opens with it on, then folds into a small
+  shutter badge on the mic (1.3.2). It opens in full again while the camera
+  is paused or failed, with the reason.
+- Every audio session activation goes through one owner (1.3.2): a
+  recording that starts while the Camera Control's microphone stands by
+  records from it without activating again, and a failed activation is
+  retried once after a clean deactivate.
 - Session lists are easier to read: each session is its own card (inset rows
   inside the Chats folder cards) with the title on up to two lines, the agent,
   the folder, the time and a status tag, and a press highlight. A row in a
@@ -97,6 +115,20 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- "Couldn't start the microphone: Session activation failed" stayed above a
+  recording that worked (1.3.2). Microphone and audio errors now say what is
+  wrong with Apple's code ("a call or another app is using the audio
+  (!pri)"), the log records the domain and code, and a recording that starts
+  fine clears the old error.
+- After a call or route change interrupted a recording made from the Camera
+  Control's standby, standby never restarted and later recordings heard
+  nothing (1.3.2).
+- The recording strip broke at larger text sizes (1.3.2): the timer wrapped,
+  the level meter ran over the language chip and Send became a tall pill.
+- Filled chips on the recording strip used white text, which disappeared on
+  the light accent in dark mode (1.3.2).
+- The queued-messages box was wider than the message bar (1.3.2); it now
+  lines up with it.
 - English dictation came out in Hebrew (1.3.1), because the only Hebrew
   setting forced Hebrew.
 - Camera Control messages lost their first words (1.3.1): the recording now

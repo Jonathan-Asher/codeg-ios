@@ -210,7 +210,14 @@ row in view; scrolled up, the list stays where it is.
 `CodegiOSTests/SessionListScreenshotTests.swift` renders the rows, the Chats
 cards, a folder's full list, Activity in both orders, a short Activity list and
 the Appearance settings with `CodegiOSTests/SampleSessions.swift`, in light
-and dark. `ImageRenderer` can't draw `List`, `ScrollView` or the navigation and
+and dark. `CodegiOSTests/ComposeScreenshotTests.swift` renders the compose
+area (queued messages, Continue, a notice, the Camera Control pill and its
+folded badge, the dictation strip and the message bar) idle, recording from
+the mic and from the Camera Control, transcribing, translating, with an
+error and with queued messages, in light and dark, plus large and
+accessibility text sizes, into the `compose-screenshots` artifact. The
+dictation and Camera Control states come from `showForScreenshot` hooks
+(Debug builds only); nothing records or opens the camera. `ImageRenderer` can't draw `List`, `ScrollView` or the navigation and
 tab bars, so each screen is hosted in its own window on the simulator and
 captured with `drawHierarchy`. The `test` job runs on an iPhone 17 Pro Max
 simulator (440 × 956 pt, @3x) and uploads the PNGs as the
@@ -337,14 +344,37 @@ again. A decode that is already running is cancelled and run again then.
 
 ### UX
 
-- **Mic button**, next to Send. Tap to start and tap again to stop, or hold to
-  talk and let go to stop (a press longer than 0.35 s counts as a hold).
-  VoiceOver activation toggles. While recording, the button turns into a red
-  stop button. While transcribing, it shows a spinner.
-- **Recording strip** above the field: a pulsing dot, the elapsed time, a live
-  level meter, the language chip for this message (Auto, עב, EN; filled when
-  it differs from the setting), the clean-up chip for this message, a
-  **Send** switch (send right after transcribing, remembered), and cancel.
+- **Mic button**, next to Send. Tap to start and tap again to finish, or hold
+  to talk and let go (a press longer than 0.35 s counts as a hold). VoiceOver
+  activation toggles. While recording it is the one control that ends the
+  recording: filled with the accent, with a paper plane when the message is
+  sent right after transcribing and a check mark when it only goes into the
+  message bar. Meanwhile Send, and the agent's Stop while a turn runs, are
+  dimmed and inactive, so a reach for "stop" can't stop the agent. While
+  transcribing, the mic shows a spinner. It keeps one button style in every
+  state, with the fill drawn in its label (anything drawn outside a glass
+  button renders under the glass), because swapping styles would replace the
+  view under a finger that is holding to talk.
+- **Recording strip** above the field, in two rows. The first row says what
+  is happening: a pulsing dot, the elapsed time (monospaced, never wraps), a
+  level meter of thin bars filling the rest, and cancel (✕); a shutter glyph marks a
+  Camera Control recording. While transcribing it shows a spinner and
+  "Transcribing…", "Cleaning up…" or "Translating…". The second row holds the
+  chips, which wrap onto another line at large text sizes (`FlowLayout`):
+  - the language for this message (Auto, עב, EN), filled when it differs
+    from the setting;
+  - After transcribing (As spoken, Clean up, To English), filled when it
+    cleans up or translates. This chip is the setting itself: picking "To
+    English" keeps every later dictation in English until it is changed
+    here or in Settings. The language chip stays per message, because a
+    sticky English would turn every later Hebrew dictation into English;
+  - **Send** (send right after transcribing; remembered for the mic).
+
+  While the server cleans up, "Use as spoken" stops waiting for it.
+- **Notices.** A dictation notice ("No speech detected", a microphone error)
+  is cleared as soon as a recording starts fine, so an old error never sits
+  above a working recording. The queued and inserted boxes above the bar
+  follow its side margins (36 pt at rest, 16 pt while typing).
 - **Settings › Voice › Voice Typing**: the model download (download, pause,
   resume, delete, progress), Language, After transcribing, "Send right after
   transcribing" and "Use the session context".
@@ -352,15 +382,35 @@ again. A decode that is already running is cancelled and run again then.
   points to the mic key on the iOS keyboard, Apple's own dictation. During the
   download, a notice shows the progress. If the microphone is denied, a notice
   says where to allow it.
-- **Audio session.** The session is set to `.playAndRecord` only while
-  recording, and Bluetooth HFP is allowed so AirPods work as the microphone.
-  Any reply being read aloud is stopped first. On stop, the session is
-  deactivated with `.notifyOthersOnDeactivation`, and Read aloud sets
-  `.playback` again the next time it starts. A call or Siri interruption, or a
-  route change that stops the engine, ends the recording and transcribes it
-  into the message bar without sending it, even with Send on. Haptics are
-  allowed during recording (`setAllowHapticsAndSystemSoundsDuringRecording`),
-  so the press and release are felt.
+- **Audio session.** One owner, `AudioSessionOwner`
+  (`Features/Voice/AudioSessionOwner.swift`), configures, activates and
+  deactivates the app's `AVAudioSession` for its three uses: Camera Control
+  standby, a recording, and read aloud (`SystemAudioSession` holds the
+  category and options for each). `MicrophoneState` decides what the
+  microphone engine needs:
+  - a recording that starts while the microphone stands by records from the
+    running engine, with no session call at all;
+  - one that starts while standby is wanted but down (being retried after an
+    interruption) starts the engine as standby, which then carries on;
+  - otherwise the recording sets `.playAndRecord` with Bluetooth HFP (AirPods
+    work as the microphone) and stops the engine at the end, deactivating
+    with `.notifyOthersOnDeactivation`.
+
+  If activation or the engine start fails, the owner deactivates cleanly,
+  waits 0.25 s and tries once more. A use can only release the session it
+  holds, so read aloud and the microphone can't deactivate each other. An
+  error is shown in words with Apple's code, for example "Couldn't start the
+  microphone: a call or another app is using the audio (!pri).", and the
+  `audio-session` and `dictation` logs carry the NSError domain, code,
+  four-character code and iOS's own description.
+
+  Any reply being read aloud is stopped before recording. A call or Siri
+  interruption, or a route change that stops the engine, ends the recording
+  and transcribes it into the message bar without sending it, even with Send
+  on; the engine is then marked stopped, so standby starts it again instead
+  of trusting a dead one. Haptics are allowed during recording
+  (`setAllowHapticsAndSystemSoundsDuringRecording`), so the press and release
+  are felt.
 
 ### Clean-up and translation (codeg server)
 
@@ -752,11 +802,25 @@ runs for a session on screen, the microphone stands by:
 - The log (`camera-talk`) says `First live audio N ms after the press; M ms of
   pre-roll kept`, which measures the real gap on the phone, and when standby
   starts, stops, or loses the microphone.
+- Any recording that starts while standby runs, the mic button's too, records
+  from that engine without activating the session again (see "Audio
+  session" above); the `dictation` log says `Recording from the standing-by
+  microphone`.
+
+### The pill above the message bar
+
+"Hold the Camera Control to talk" shows in full for 4 s when the mode turns
+on or a session screen opens with it on (8 s, with "Hold the Camera Control or
+a volume button, talk, and let go to send", the first time). It then folds
+toward the mic into a small shutter badge on the mic button: the mode is still
+on, and the toolbar button turns it off. The pill opens in full again only
+while the camera is paused or failed, with the reason; its ✕ turns the mode
+off. During a recording the strip takes its place.
 
 ### Setup and permission
 
 The toolbar's Camera Control button turns the mode on or off for every
-session (remembered). The first time, an explanation comes before iOS asks
+session (remembered); its shutter glyph is filled while the mode is on. The first time, an explanation comes before iOS asks
 for the camera. Turning it on also asks for the microphone, so the first
 press doesn't stop at a prompt. `NSCameraUsageDescription` mentions the mode.
 Settings › Voice › Camera Control has the same switch, "Catch the first
@@ -777,12 +841,34 @@ watchdog doesn't apply: it is a plain foreground app with a capture session.
 
 Console.app on a Mac, with the iPhone connected: filter on subsystem
 `io.ashurov.codeg`, category `camera-talk` (clean-up logs to
-`dictation-refine`, the recording to `dictation`). Logged: the mode on and
+`dictation-refine`, the recording to `dictation`, activations and their
+errors to `audio-session`). Logged: the mode on and
 off; every session start and stop with the gate's inputs; configuration; the
 first camera frame; interruptions with their reason; runtime errors; the
 interaction installed, enabled and disabled; every capture event with its
 phase and primary or secondary; what each press did; standby starting and
 stopping; and the milliseconds from the press to the first live audio.
+
+### "Couldn't start the microphone: Session activation failed" (1.3.1)
+
+Seen above a recording that was running. There is only one recorder, and a
+recording that starts while standby runs never activates the session, so the
+banner came from an earlier press made while standby was down, when the
+recording started the microphone cold: `setActive(true)` for a non-mixable
+`.playAndRecord` session with Bluetooth HFP. Standby goes down and comes back
+with every scene or app activation change, camera interruption, read-aloud
+claim and release, call and route change, and it was retried only 1 s and then
+3 s later. iOS refused that cold activation (the code wasn't logged: 1.3.1
+showed and logged only "Session activation failed"); the next press found
+standby back and recorded from it, and the banner stayed, because only a send
+or its ✕ cleared notices. A related bug: when a call or route change stopped
+the engine during a recording from standby, the engine stayed marked as
+running, so standby never restarted and later recordings heard nothing until
+the screen was left. 1.3.2 routes every activation through
+`AudioSessionOwner` with one retry after a clean deactivate, starts a
+recording as standby when standby is wanted but down, marks a stopped engine
+as stopped, clears the banner when a recording starts, and logs the domain,
+code and four-character code of any failure.
 
 ## Upstream pull requests carried by the fork
 
@@ -816,9 +902,11 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
 - **`test`** runs the `CodegiOSTests` unit tests (session activity, push
   payload routing, Markdown-to-speech text, voice typing, the Activity order
   and bottom pin, the Camera Control press and gating, dictation clean-up with
-  a mock server) on an iPhone simulator, preferably an iPhone 17 Pro Max, in
-  parallel with `build`. It uploads the session list screenshots as the
-  `session-list-screenshots` artifact.
+  a mock server, the audio session owner and microphone hand-off) on an
+  iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
+  `build`. It uploads the session list screenshots as the
+  `session-list-screenshots` artifact and the compose area as
+  `compose-screenshots`.
 - **`build`** runs on every push and pull request on GitHub-hosted `macos-26`
   with its default Xcode. It runs `brew install xcodegen`, `xcodegen generate`,
   then an unsigned `xcodebuild build` for `generic/platform=iOS Simulator`.
