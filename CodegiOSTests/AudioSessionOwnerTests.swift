@@ -253,3 +253,43 @@ final class AudioErrorTextTests: XCTestCase {
         XCTAssertEqual(failure.localizedDescription, "Another app's audio can't be interrupted right now (!int).")
     }
 }
+
+/// The strip's "after transcribing" chip is the setting; the language chip
+/// is for one message.
+@MainActor
+final class DictationChipPersistenceTests: XCTestCase {
+    private var savedRefine: DictationRefineMode = .asSpoken
+    private var savedLanguage: DictationLanguage = .default
+
+    override func setUp() async throws {
+        savedRefine = DictationPrefs.afterTranscribing
+        savedLanguage = DictationPrefs.language
+    }
+
+    override func tearDown() async throws {
+        DictationPrefs.afterTranscribing = savedRefine
+        DictationPrefs.language = savedLanguage
+    }
+
+    func testTheRefineChipIsSticky() {
+        DictationPrefs.afterTranscribing = .asSpoken
+        let dictation = DictationController.shared
+        dictation.chooseRefineMode(.translate)
+        XCTAssertEqual(dictation.refineThisTime, .translate)
+        XCTAssertEqual(DictationPrefs.afterTranscribing, .translate)
+        // Read back the way Settings › Voice and the next dictation read it.
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "codeg.dictation.afterTranscribing"), "translate")
+        dictation.chooseRefineMode(.cleanUp)
+        XCTAssertEqual(DictationPrefs.afterTranscribing, .cleanUp)
+        dictation.chooseRefineMode(.asSpoken)
+        XCTAssertEqual(DictationPrefs.afterTranscribing, .asSpoken)
+    }
+
+    func testTheLanguageChipIsForThisMessageOnly() {
+        DictationPrefs.language = .hebrewOrEnglish
+        let dictation = DictationController.shared
+        dictation.chooseLanguage(.english)
+        XCTAssertEqual(dictation.languageThisTime, .english)
+        XCTAssertEqual(DictationPrefs.language, .hebrewOrEnglish)
+    }
+}

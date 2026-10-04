@@ -217,6 +217,23 @@ final class DictationController {
 
     var isBusy: Bool { phase != .idle }
 
+    // MARK: - The strip's chips
+
+    /// The strip's "after transcribing" chip. It is the setting itself
+    /// (Settings › Voice › Voice Typing › After transcribing): picking
+    /// "To English" there keeps every later dictation in English until it is
+    /// changed again. It also applies to the dictation under way.
+    func chooseRefineMode(_ mode: DictationRefineMode) {
+        refineThisTime = mode
+        DictationPrefs.afterTranscribing = mode
+    }
+
+    /// The strip's language chip: this message only. A sticky English would
+    /// turn every later Hebrew dictation into English.
+    func chooseLanguage(_ choice: DictationLanguageChoice) {
+        languageThisTime = choice
+    }
+
     // MARK: - Pre-roll (Camera Control to talk)
 
     /// Keep the microphone standing by with the last 1.5 s in memory, so a

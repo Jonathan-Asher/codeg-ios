@@ -92,7 +92,7 @@ enum DictationRefineMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .asSpoken: "As spoken"
         case .cleanUp: "Clean up"
-        case .translate: "English"
+        case .translate: "To English"
         }
     }
 

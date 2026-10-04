@@ -209,7 +209,8 @@ private struct LanguageChip: View {
     }
 }
 
-/// Cycles this message's clean-up: as spoken, clean up, English.
+/// Cycles what happens after transcribing: as spoken, clean up, to English.
+/// It is the setting (Settings › Voice), so it stays for the next dictation.
 private struct RefineChip: View {
     @Binding var mode: DictationRefineMode
 
@@ -224,7 +225,7 @@ private struct RefineChip: View {
                 .fixedSize()
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
-                .foregroundStyle(active ? Color.white : Theme.textSecondary)
+                .foregroundStyle(active ? Theme.onAccent : Theme.textSecondary)
                 .background(active ? Theme.accent : Color.clear, in: Capsule())
                 .overlay(Capsule().strokeBorder(active ? Color.clear : Theme.hairline))
                 .contentTransition(.opacity)
@@ -233,7 +234,7 @@ private struct RefineChip: View {
         .animation(.snappy(duration: 0.18), value: mode)
         .accessibilityLabel(Text("After transcribing"))
         .accessibilityValue(Text(verbatim: mode.title))
-        .accessibilityHint(Text("Changes it for this message only."))
+        .accessibilityHint(Text("Changes the setting for this and later dictations."))
     }
 }
 

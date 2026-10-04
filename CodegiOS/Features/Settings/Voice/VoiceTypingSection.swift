@@ -112,6 +112,8 @@ struct VoiceTypingSection: View {
         }
         .onAppear {
             autoSend = DictationController.shared.autoSend
+            // The recording strip's chip changes this setting too.
+            refineMode = DictationPrefs.afterTranscribing
             for model in SpeechModelCatalog.manifest.models { SpeechModelStores.store(for: model).refreshFromDisk() }
         }
         .task(id: client?.baseURL) {

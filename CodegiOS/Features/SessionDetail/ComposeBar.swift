@@ -117,17 +117,20 @@ struct ComposeBar: View {
                         // Control always sends unless switched off for this one.
                         if dictation.source == .mic { dictation.autoSend = send }
                     }),
+                    // Sticky: the chip is the "After transcribing" setting.
                     refineMode: dictation.refineOffered == false || dictationRefiner == nil ? nil : Binding(
                         get: { dictation.refineThisTime },
-                        set: { dictation.refineThisTime = $0 }
+                        set: { dictation.chooseRefineMode($0) }
                     ),
+                    // This message only.
                     language: Binding(
                         get: { dictation.languageThisTime },
-                        set: { dictation.languageThisTime = $0 }
+                        set: { dictation.chooseLanguage($0) }
                     ),
                     languageDefault: dictation.languageDefault,
                     onCancel: { dictation.cancel() }
                 )
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
             GlassEffectContainer(spacing: 8) {
