@@ -24,6 +24,18 @@ protocol VoiceActivityDetector: AnyObject, Sendable {
     func speechProbabilities(_ samples: [Float]) -> [Float]?
 }
 
+/// Tells which language a recording is in. ``WhisperLanguageIdentifier`` runs
+/// a small multilingual whisper model for this: the encoder and one decoder
+/// step, no transcription.
+protocol SpokenLanguageIdentifier: AnyObject, Sendable {
+    func prepare() async throws
+    /// The probability of each of `candidates` (whisper codes such as "he"),
+    /// renormalized so that they add up to 1. A candidate whisper doesn't
+    /// know is left out.
+    func probabilities(_ samples: [Float], among candidates: [String]) async throws -> [String: Float]
+    func unload() async
+}
+
 struct TranscriptionOptions: Equatable, Sendable {
     /// Whisper language code, or `nil` to detect the language.
     var language: String?

@@ -8,8 +8,23 @@ enum DictationPrefs {
     private static let defaults = UserDefaults.standard
 
     static var language: DictationLanguage {
-        get { defaults.string(forKey: "codeg.dictation.language").flatMap(DictationLanguage.init) ?? .hebrew }
+        get {
+            migrateLanguage()
+            return defaults.string(forKey: "codeg.dictation.language").flatMap(DictationLanguage.init) ?? .default
+        }
         set { defaults.set(newValue.rawValue, forKey: "codeg.dictation.language") }
+    }
+
+    /// Up to 1.3.0, Hebrew was the default and the only way to get the
+    /// ivrit.ai model's Hebrew. "Hebrew or English" does the same for Hebrew
+    /// and also catches English, so a stored Hebrew moves to it, once.
+    private static func migrateLanguage() {
+        let key = "codeg.dictation.languageMigrated"
+        guard !defaults.bool(forKey: key) else { return }
+        defaults.set(true, forKey: key)
+        if defaults.string(forKey: "codeg.dictation.language") == DictationLanguage.hebrew.rawValue {
+            defaults.set(DictationLanguage.hebrewOrEnglish.rawValue, forKey: "codeg.dictation.language")
+        }
     }
 
     /// Send the message as soon as the transcript is in the composer.
@@ -98,6 +113,11 @@ final class DictationController {
     /// Whether the composer's server can clean up dictation: `false` for an
     /// older server, `nil` while unknown. Hides the strip's chip when false.
     private(set) var refineOffered: Bool?
+    /// Language for this dictation. Starts from Settings › Voice; the strip's
+    /// chip changes it for this one message.
+    var languageThisTime: DictationLanguageChoice = .automatic
+    /// Where `languageThisTime` started, so the strip can show an override.
+    private(set) var languageDefault: DictationLanguageChoice = .automatic
 
     static let meterBars = 24
 
@@ -106,10 +126,17 @@ final class DictationController {
     private var engine: SpeechToText?
     private var vad: VoiceActivityDetector?
     private var vadModelPath: String?
+    /// The small model that tells Hebrew from English, when it's downloaded.
+    private var languageID: SpokenLanguageIdentifier?
+    private var languageIDPath: String?
     private var completion: ((DictationOutcome) -> Void)?
-    private var options = TranscriptionOptions()
+    private var context = DictationContext()
+    private var usePrompt = true
     private var postProcessor: TranscriptPostProcessor?
-    private var language: DictationLanguage = .hebrew
+    private var language: DictationLanguage = .default
+    /// The language the transcript was decoded in, for the clean-up request;
+    /// `nil` when the stock model detected it.
+    private var decodedLanguage: String?
     /// Said with the inserted text when the dictation ended early (an
     /// interruption), which also holds back the send.
     private var pendingNote: String?
@@ -173,7 +200,9 @@ final class DictationController {
 
     func availability(language: DictationLanguage = DictationPrefs.language) -> Availability {
         guard let model = SpeechModelCatalog.model(for: language) else { return .needsModel(id: "") }
-        guard SpeechModelStores.store(for: model).isReady else { return .needsModel(id: model.id) }
+        guard SpeechModelStores.store(for: model).hasVerified(model.requiredPaths) else {
+            return .needsModel(id: model.id)
+        }
         if DictationRecorder.permission == .denied { return .microphoneDenied }
         return .ready
     }
@@ -193,10 +222,13 @@ final class DictationController {
             return
         }
         let store = SpeechModelStores.store(for: model)
-        guard store.isReady else {
+        guard store.hasVerified(model.requiredPaths) else {
             completion(.failed("Download the speech model in Settings › Voice first."))
             return
         }
+        // A file added to the model since it was downloaded (the language-ID
+        // model): fetch just that, and work without it meanwhile.
+        SpeechModelStores.completeIfUpdated(model)
         if DictationRecorder.permission != .granted {
             guard await DictationRecorder.requestPermission() else {
                 completion(.failed("Allow the microphone for \(AppIdentity.displayName) in the Settings app."))
@@ -222,13 +254,13 @@ final class DictationController {
         self.language = language
         sendThisTime = source == .cameraControl ? true : autoSend
         refineThisTime = DictationPrefs.afterTranscribing
+        languageDefault = language.defaultChoice
+        languageThisTime = languageDefault
+        decodedLanguage = nil
         pendingNote = nil
         refineOffered = postProcessor == nil ? false : nil
-        options = TranscriptionOptions(
-            language: language.whisperCode,
-            prompt: DictationPrefs.usePrompt
-                ? DictationText.prompt(folder: context.folder, session: context.session, language: language)
-                : nil)
+        self.context = context
+        usePrompt = DictationPrefs.usePrompt
         phase = .recording
         startedAt = Date()
         elapsed = 0
@@ -316,12 +348,48 @@ final class DictationController {
             vad = vadPath.flatMap { SileroVAD(modelURL: URL(fileURLWithPath: $0)) }
             if vadPath != nil, vad == nil { log.error("Silero VAD failed to load; decoding untrimmed audio") }
         }
+        // The language-ID model only counts once its download was verified.
+        let languageIDPath = model.languageID.flatMap { path in
+            store.hasVerified([path]) ? store.url(forPath: path).path : nil
+        }
+        if languageIDPath != self.languageIDPath {
+            let old = languageID
+            Task { await old?.unload() }
+            self.languageIDPath = languageIDPath
+            languageID = languageIDPath.map { WhisperLanguageIdentifier(modelURL: URL(fileURLWithPath: $0)) }
+        }
         // Load the weights while the user speaks.
         let engine = self.engine
+        let languageID = language.plan(choice: languageThisTime) == .hebrewOrEnglish ? self.languageID : nil
         Task.detached(priority: .userInitiated) {
+            do { try await languageID?.prepare() } catch {
+                // identifyLanguage() falls back to Hebrew.
+            }
             do { try await engine?.prepare() } catch {
                 // transcribe() reports it.
             }
+        }
+    }
+
+    /// Hebrew or English for "Hebrew or English": the language-ID model's
+    /// call, leaning to Hebrew. Without the model, or if it fails, Hebrew.
+    private func identifyLanguage(_ clip: [Float]) async -> String {
+        guard let languageID else {
+            log.info("No language-ID model; transcribing as Hebrew")
+            return "he"
+        }
+        let started = ContinuousClock.now
+        do {
+            let probabilities = try await languageID.probabilities(
+                SpokenLanguageDecision.window(of: clip), among: SpokenLanguageDecision.candidates)
+            let code = SpokenLanguageDecision.language(for: probabilities)
+            let english = probabilities["en"] ?? 0
+            let ms = Int((ContinuousClock.now - started) / .milliseconds(1))
+            log.info("Language \(code, privacy: .public): p(en) \(english, format: .fixed(precision: 5)) in \(ms) ms")
+            return code
+        } catch {
+            log.error("Language ID failed (\(error.localizedDescription, privacy: .public)); transcribing as Hebrew")
+            return "he"
         }
     }
 
@@ -330,7 +398,6 @@ final class DictationController {
     private func transcribe(_ samples: [Float]) async -> DictationOutcome {
         guard let engine else { return .failed("The speech engine isn't loaded.") }
         let vad = self.vad
-        let options = self.options
         let plan = await Task.detached(priority: .userInitiated) {
             DictationTrim.plan(totalSamples: samples.count, probabilities: vad?.speechProbabilities(samples))
         }.value
@@ -344,9 +411,24 @@ final class DictationController {
         case .speech(let range):
             let clip = Array(samples[range])
             var retried = false
+            var spoken: String?
             while true {
                 await waitUntilActive()
                 if Task.isCancelled { return .nothing("Cancelled.") }
+                // Read the chip now: it may have changed while recording.
+                switch language.plan(choice: languageThisTime) {
+                case .forced(let code): spoken = code
+                case .detectAny: spoken = nil
+                case .hebrewOrEnglish:
+                    if spoken == nil { spoken = await identifyLanguage(clip) }
+                }
+                if Task.isCancelled { return .nothing("Cancelled.") }
+                decodedLanguage = spoken
+                let options = TranscriptionOptions(
+                    language: spoken,
+                    prompt: usePrompt
+                        ? DictationText.prompt(folder: context.folder, session: context.session, language: spoken)
+                        : nil)
                 do {
                     let result = try await engine.transcribe(clip, options: options)
                     let text = DictationText.clean(result.text)
@@ -380,7 +462,7 @@ final class DictationController {
         let mode = refineThisTime
         if mode != .asSpoken, let postProcessor {
             phase = .refining
-            let result = await postProcessor.process(words, mode: mode, sourceLanguage: language.whisperCode)
+            let result = await postProcessor.process(words, mode: mode, sourceLanguage: decodedLanguage)
             text = result.text
             if let notice = result.notice { notes.append(notice) }
             if case .kept(.notAvailable) = result.status { refineOffered = false }
@@ -441,6 +523,10 @@ final class DictationController {
         guard phase == .idle, let engine else { return }
         self.engine = nil
         Task { await engine.unload() }
+        let languageID = self.languageID
+        self.languageID = nil
+        languageIDPath = nil
+        Task { await languageID?.unload() }
         vad = nil
         vadModelPath = nil
         log.info("Unloaded the speech model")

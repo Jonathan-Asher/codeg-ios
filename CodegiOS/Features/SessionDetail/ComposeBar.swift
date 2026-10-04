@@ -121,6 +121,11 @@ struct ComposeBar: View {
                         get: { dictation.refineThisTime },
                         set: { dictation.refineThisTime = $0 }
                     ),
+                    language: Binding(
+                        get: { dictation.languageThisTime },
+                        set: { dictation.languageThisTime = $0 }
+                    ),
+                    languageDefault: dictation.languageDefault,
                     onCancel: { dictation.cancel() }
                 )
             }

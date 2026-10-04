@@ -31,7 +31,14 @@ struct SpeechModelManifest: Codable, Sendable {
         let weights: String
         /// The Silero VAD ggml model (one of `files`), if any.
         let vad: String?
+        /// A small multilingual whisper model (one of `files`) that tells
+        /// Hebrew from English before this model transcribes, if any. Not
+        /// needed to transcribe: without it, "Hebrew or English" is Hebrew.
+        let languageID: String?
         let files: [File]
+
+        /// The files transcription can't do without: the weights and the VAD.
+        var requiredPaths: [String] { [weights] + (vad.map { [$0] } ?? []) }
 
         var totalBytes: Int64 { files.reduce(0) { $0 + $1.size } }
     }
@@ -62,6 +69,9 @@ struct SpeechModelManifest: Codable, Sendable {
             }
             if let vad = model.vad, !model.files.contains(where: { $0.path == vad }) {
                 problems.append("\(model.id): vad \(vad) is not one of its files")
+            }
+            if let languageID = model.languageID, !model.files.contains(where: { $0.path == languageID }) {
+                problems.append("\(model.id): languageID \(languageID) is not one of its files")
             }
             for file in model.files {
                 if file.sha256.count != 64 || !file.sha256.allSatisfy(hex.contains) {
@@ -99,7 +109,8 @@ enum SpeechModelCatalog {
         manifest.models.first { $0.id == id }
     }
 
-    /// The model a language setting uses.
+    /// The model a language setting uses. "Hebrew or English" uses the
+    /// ivrit.ai model, plus the language-ID model downloaded with it.
     static func model(for language: DictationLanguage) -> SpeechModelManifest.Model? {
         model(id: language == .auto ? multilingualID : hebrewID)
     }
@@ -135,11 +146,26 @@ enum SpeechModelStores {
         return store(for: model)
     }
 
-    /// Reconnect downloads that were running when the app last quit.
+    /// Reconnect downloads that were running when the app last quit, and
+    /// fetch files added to an already downloaded model.
     static func resumeActiveDownloads() {
-        for model in SpeechModelCatalog.manifest.models
-        where UserDefaults.standard.bool(forKey: SpeechModelCatalog.pack(for: model).activeKey) {
-            _ = store(for: model)
+        for model in SpeechModelCatalog.manifest.models {
+            let pack = SpeechModelCatalog.pack(for: model)
+            if UserDefaults.standard.bool(forKey: pack.activeKey) {
+                _ = store(for: model)
+            } else if FileManager.default.fileExists(atPath: pack.directory.path) {
+                completeIfUpdated(model)
+            }
         }
+    }
+
+    /// A model downloaded before a file was added to it (the language-ID
+    /// model, in 1.3.1) has everything it needs to transcribe: download just
+    /// the new file, without asking, since the model was already chosen. A
+    /// paused or failed download is left alone until the next launch.
+    static func completeIfUpdated(_ model: SpeechModelManifest.Model) {
+        let store = store(for: model)
+        guard store.state == .notDownloaded, store.hasVerified(model.requiredPaths) else { return }
+        store.start()
     }
 }

@@ -1,38 +1,6 @@
 import Foundation
 import SwiftUI
 
-/// The language whisper is told to transcribe.
-enum DictationLanguage: String, CaseIterable, Identifiable, Sendable {
-    /// Hebrew, with English technical words written as the model writes them.
-    /// Uses the ivrit.ai model with the language forced, because its own
-    /// language detection was degraded by the Hebrew fine-tune.
-    case hebrew
-    /// English only, with the same ivrit.ai model.
-    case english
-    /// Whisper detects the language. Uses the stock multilingual model,
-    /// whose detection works, at the cost of weaker Hebrew.
-    case auto
-
-    var id: String { rawValue }
-
-    /// The whisper language code, or `nil` to detect it.
-    var whisperCode: String? {
-        switch self {
-        case .hebrew: "he"
-        case .english: "en"
-        case .auto: nil
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .hebrew: "Hebrew"
-        case .english: "English"
-        case .auto: "Detect automatically"
-        }
-    }
-}
-
 /// Pure text handling for dictation: cleaning whisper's output, inserting it
 /// at the cursor, and the prompt that biases whisper toward the session's
 /// vocabulary.
@@ -124,14 +92,16 @@ enum DictationText {
     static let maxPromptLength = 240
 
     /// The initial prompt: the workspace folder and session title, then a
-    /// style sentence with common code words.
-    static func prompt(folder: String?, session: String?, language: DictationLanguage) -> String {
+    /// style sentence with common code words. `language` is the whisper code
+    /// the decode uses ("en" gets the English sentence; Hebrew and detection
+    /// get the mixed one).
+    static func prompt(folder: String?, session: String?, language: String?) -> String {
         var context: [String] = []
         for part in [folder, session] {
             let trimmed = (part ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty, !context.contains(trimmed) { context.append(String(trimmed.prefix(80))) }
         }
-        let style = language == .english ? englishStyle : hebrewStyle
+        let style = language == "en" ? englishStyle : hebrewStyle
         let head = context.isEmpty ? "" : context.joined(separator: " · ") + ". "
         let prompt = head + style
         return prompt.count <= maxPromptLength ? prompt : String(prompt.suffix(maxPromptLength))

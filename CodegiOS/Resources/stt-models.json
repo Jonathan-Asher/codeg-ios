@@ -5,16 +5,17 @@
     {
       "id": "he-turbo",
       "title": "ivrit.ai Hebrew whisper",
-      "summary": "Hebrew with English terms, or English. large-v3-turbo fine-tuned by ivrit.ai, q8_0.",
+      "summary": "Hebrew with English terms, or English. large-v3-turbo fine-tuned by ivrit.ai, q8_0, with whisper tiny to tell Hebrew from English.",
       "languages": [
         "he",
         "en"
       ],
       "detectsLanguage": false,
       "license": "Apache-2.0",
-      "source": "ivrit-ai/whisper-large-v3-turbo-ggml ggml-model.bin (sha256 c8090411113357097bfafc2b8e228ec1639fa7f5fe4ecb5d054ac0ccef8641b1), quantized to q8_0 with whisper.cpp v1.9.1 whisper-quantize. VAD: ggml-org/whisper-vad ggml-silero-v5.1.2.bin (MIT).",
+      "source": "ivrit-ai/whisper-large-v3-turbo-ggml ggml-model.bin (sha256 c8090411113357097bfafc2b8e228ec1639fa7f5fe4ecb5d054ac0ccef8641b1), quantized to q8_0 with whisper.cpp v1.9.1 whisper-quantize. VAD: ggml-org/whisper-vad ggml-silero-v5.1.2.bin (MIT). Language ID: ggerganov/whisper.cpp ggml-tiny-q8_0.bin (byte-identical, revision 5359861c739e955e79d9a303bcbc70fb988958b1; MIT, OpenAI whisper tiny).",
       "weights": "ggml-ivrit-large-v3-turbo-q8_0.bin",
       "vad": "ggml-silero-v5.1.2.bin",
+      "languageID": "ggml-tiny-q8_0.bin",
       "files": [
         {
           "path": "ggml-ivrit-large-v3-turbo-q8_0.bin",
@@ -27,6 +28,12 @@
           "url": "https://github.com/Jonathan-Asher/codeg-ios/releases/download/models-v1/ggml-silero-v5.1.2.bin",
           "size": 885098,
           "sha256": "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf"
+        },
+        {
+          "path": "ggml-tiny-q8_0.bin",
+          "url": "https://github.com/Jonathan-Asher/codeg-ios/releases/download/models-v1/ggml-tiny-q8_0.bin",
+          "size": 43537433,
+          "sha256": "c2085835d3f50733e2ff6e4b41ae8a2b8d8110461e18821b09a15c40c42d1cca"
         }
       ]
     },

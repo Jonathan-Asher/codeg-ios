@@ -89,9 +89,10 @@ struct DictationMicButton: View {
 }
 
 /// Above the composer while dictating: a live level meter, the elapsed time,
-/// what happens after transcribing (as spoken, clean up, translate) for this
-/// message, the "send right after transcribing" switch, and cancel. While the
-/// codeg server cleans up, cancel keeps the words as spoken instead.
+/// the language of this message (Auto, Hebrew, English), what happens after
+/// transcribing (as spoken, clean up, translate) for this message, the "send
+/// right after transcribing" switch, and cancel. While the codeg server cleans
+/// up, cancel keeps the words as spoken instead.
 struct DictationStrip: View {
     let phase: DictationController.Phase
     let levels: [Float]
@@ -100,6 +101,11 @@ struct DictationStrip: View {
     /// This message's clean-up; `nil` hides the chip (no server, or one that
     /// can't clean up).
     var refineMode: Binding<DictationRefineMode>? = nil
+    /// This message's language; `nil` hides the chip.
+    var language: Binding<DictationLanguageChoice>? = nil
+    /// The language the setting starts each message with; the chip is
+    /// highlighted when this message differs from it.
+    var languageDefault: DictationLanguageChoice = .automatic
     let onCancel: () -> Void
 
     var body: some View {
@@ -123,6 +129,9 @@ struct DictationStrip: View {
                 LevelMeter(levels: levels)
                     .frame(height: 22)
                     .frame(maxWidth: .infinity)
+            }
+            if let language, phase == .recording {
+                LanguageChip(choice: language, highlighted: language.wrappedValue != languageDefault)
             }
             if let refineMode, phase != .refining {
                 RefineChip(mode: refineMode)
@@ -165,6 +174,38 @@ struct DictationStrip: View {
     static func format(_ seconds: TimeInterval) -> String {
         let total = max(0, Int(seconds))
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+/// Cycles this message's language: Auto (Hebrew or English, told apart on
+/// the phone), עב (Hebrew), EN (English).
+private struct LanguageChip: View {
+    @Binding var choice: DictationLanguageChoice
+    /// The message differs from the Language setting.
+    let highlighted: Bool
+
+    var body: some View {
+        Button {
+            choice = choice.next
+        } label: {
+            Text(verbatim: choice.shortTitle)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .fixedSize()
+                .frame(minWidth: 24)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .foregroundStyle(highlighted ? Color.white : Theme.textSecondary)
+                .background(highlighted ? Theme.accent : Color.clear, in: Capsule())
+                .overlay(Capsule().strokeBorder(highlighted ? Color.clear : Theme.hairline))
+                .contentTransition(.opacity)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .animation(.snappy(duration: 0.18), value: choice)
+        .accessibilityLabel(Text("Language for this message"))
+        .accessibilityValue(Text(verbatim: choice.accessibilityTitle))
+        .accessibilityHint(Text("Changes it for this message only."))
     }
 }
 

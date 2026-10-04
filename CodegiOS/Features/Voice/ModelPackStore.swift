@@ -82,6 +82,18 @@ final class ModelPackStore {
 
     var isReady: Bool { state == .ready }
 
+    /// Whether these files are on disk and were verified, even when the pack
+    /// as a whole isn't ready (it gained a file in an app update, say, and
+    /// only that file still has to download).
+    func hasVerified(_ paths: [String]) -> Bool {
+        isReady || paths.allSatisfy(verifiedPaths.contains)
+    }
+
+    /// Bytes still to download.
+    var bytesMissing: Int64 {
+        pack.files.filter { !completed.contains($0.path) }.reduce(0) { $0 + $1.size }
+    }
+
     var modelsDirectory: URL { pack.directory }
 
     private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "codeg", category: "model-download")
@@ -89,8 +101,11 @@ final class ModelPackStore {
     private let sessionDelegate = ModelPackDownloadDelegate()
     /// Per-file bytes for files still downloading (keyed by path).
     private var inFlightBytes: [String: Int64] = [:]
-    /// Files verified and in place.
+    /// Files in place: the right size, or verified by this run.
     private var completed: Set<String> = []
+    /// Files in place whose sha256 the marker (from the last complete
+    /// download) or this run vouches for.
+    private var verifiedPaths: Set<String> = []
     /// Files being hashed right now.
     private var verifying: Set<String> = []
     private var backgroundCompletion: (() -> Void)?
@@ -131,20 +146,25 @@ final class ModelPackStore {
             }
         }
         bytesDone = done
-        if completed.count == pack.files.count, markerMatches() {
+        let sums = markerSums()
+        verifiedPaths = Set(pack.files.filter { completed.contains($0.path) && sums[$0.path] == $0.sha256 }
+            .map(\.path))
+        if completed.count == pack.files.count, verifiedPaths.count == pack.files.count {
             state = .ready
         } else if state == .ready {
             state = .notDownloaded
         }
     }
 
-    private func markerMatches() -> Bool {
+    /// The checksums the last complete download wrote, by path.
+    private func markerSums() -> [String: String] {
         guard let data = try? Data(contentsOf: markerURL),
-              let sums = try? JSONDecoder().decode([String: String].self, from: data) else { return false }
-        return pack.files.allSatisfy { sums[$0.path] == $0.sha256 }
+              let sums = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+        return sums
     }
 
     private func writeMarker() {
+        verifiedPaths = Set(pack.files.map(\.path))
         let sums = Dictionary(uniqueKeysWithValues: pack.files.map { ($0.path, $0.sha256) })
         if let data = try? JSONEncoder().encode(sums) { try? data.write(to: markerURL, options: .atomic) }
     }
@@ -305,6 +325,7 @@ final class ModelPackStore {
                 do {
                     try fm.moveItem(at: staged, to: destination)
                     completed.insert(file.path)
+                    verifiedPaths.insert(file.path)
                     clearResumeData(for: file)
                 } catch {
                     fail("Couldn't save \(file.path): \(error.localizedDescription)")

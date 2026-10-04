@@ -25,7 +25,7 @@ struct VoiceTypingSection: View {
         VStack(spacing: 22) {
             EditorSection(
                 title: "Voice Typing",
-                footer: "The mic in the message bar transcribes on this iPhone with whisper (ivrit.ai's Hebrew fine-tune of large-v3-turbo); the audio never leaves it. Clean-up and translation send only the transcribed text to your codeg server, which passes it to the provider set up there. Without the model, use the mic key on the iOS keyboard."
+                footer: "The mic in the message bar transcribes on this iPhone with whisper (ivrit.ai's Hebrew fine-tune of large-v3-turbo, and whisper tiny to tell Hebrew from English); the audio never leaves it. Clean-up and translation send only the transcribed text to your codeg server, which passes it to the provider set up there. Without the model, use the mic key on the iOS keyboard."
             ) {
                 if let hebrewModel {
                     ModelPackRows(model: hebrewModel, store: SpeechModelStores.store(for: hebrewModel),
@@ -170,6 +170,8 @@ struct VoiceTypingSection: View {
 
     private var languageHint: LocalizedStringKey {
         switch language {
+        case .hebrewOrEnglish:
+            "Speak Hebrew or English. A small model included in the download tells them apart for each message, leaning to Hebrew, and the ivrit.ai model transcribes. The chip on the recording bar sets עב or EN for one message."
         case .hebrew:
             "Hebrew with English terms. The ivrit.ai model, language fixed to Hebrew."
         case .english:
@@ -249,9 +251,24 @@ struct ModelPackRows: View {
         actions
     }
 
+    /// Downloaded before the language-ID model was added to it: it works,
+    /// and only the new file is missing.
+    private var isUpdate: Bool { !store.isReady && store.hasVerified(model.requiredPaths) }
+
     private var statusText: String {
         let total = VoiceTypingSection.megabytes(model.totalBytes)
         let done = VoiceTypingSection.megabytes(store.bytesDone)
+        if isUpdate {
+            let missing = VoiceTypingSection.megabytes(store.bytesMissing)
+            switch store.state {
+            case .downloading, .verifying:
+                return "Ready. Adding the Hebrew-or-English model (\(missing) left)…"
+            case .failed(let message):
+                return "Ready, but the Hebrew-or-English model didn't download: \(message)"
+            default:
+                return "Ready. The Hebrew-or-English model (\(missing)) isn't here yet; until it is, Hebrew or English transcribes as Hebrew."
+            }
+        }
         switch store.state {
         case .notDownloaded:
             return store.bytesDone > 0 ? "Partly downloaded (\(done) of \(total))." : "Not downloaded (\(total))."
@@ -285,6 +302,10 @@ struct ModelPackRows: View {
     @ViewBuilder
     private var actions: some View {
         switch store.state {
+        case .notDownloaded where isUpdate:
+            action("Download \(VoiceTypingSection.megabytes(store.bytesMissing))", systemImage: "arrow.down.circle") {
+                store.start()
+            }
         case .notDownloaded:
             action("Download", systemImage: "arrow.down.circle", perform: onDownload)
         case .failed:

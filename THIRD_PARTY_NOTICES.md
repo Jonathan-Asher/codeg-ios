@@ -90,3 +90,6 @@ and the Apache-2.0 text.
   from `ggerganov/whisper.cpp` on Hugging Face, MIT.
 - `ggml-silero-v5.1.2.bin`: Silero VAD v5.1.2 (MIT, Copyright (c)
   2020-present Silero Team), ggml conversion from `ggml-org/whisper-vad`, MIT.
+- `ggml-tiny-q8_0.bin`: OpenAI whisper tiny (MIT, Copyright (c) 2022 OpenAI),
+  q8_0 ggml form from `ggerganov/whisper.cpp` on Hugging Face, MIT. Used only
+  to tell Hebrew from English.

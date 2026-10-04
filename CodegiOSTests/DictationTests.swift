@@ -130,12 +130,25 @@ final class SpeechModelManifestTests: XCTestCase {
     }
 
     func testLanguageChoosesTheModel() {
+        XCTAssertEqual(SpeechModelCatalog.model(for: .hebrewOrEnglish)?.id, SpeechModelCatalog.hebrewID)
         XCTAssertEqual(SpeechModelCatalog.model(for: .hebrew)?.id, SpeechModelCatalog.hebrewID)
         XCTAssertEqual(SpeechModelCatalog.model(for: .english)?.id, SpeechModelCatalog.hebrewID)
         XCTAssertEqual(SpeechModelCatalog.model(for: .auto)?.id, SpeechModelCatalog.multilingualID)
-        XCTAssertEqual(DictationLanguage.hebrew.whisperCode, "he")
-        XCTAssertEqual(DictationLanguage.english.whisperCode, "en")
-        XCTAssertNil(DictationLanguage.auto.whisperCode)
+    }
+
+    /// The language-ID model downloads with the Hebrew model, from the same
+    /// release, and transcription doesn't need it.
+    func testLanguageIDShipsWithTheHebrewModel() throws {
+        let hebrew = try XCTUnwrap(SpeechModelCatalog.model(id: SpeechModelCatalog.hebrewID))
+        let languageID = try XCTUnwrap(hebrew.languageID)
+        let file = try XCTUnwrap(hebrew.files.first { $0.path == languageID })
+        XCTAssertTrue(file.url.absoluteString.hasPrefix(
+            "https://github.com/Jonathan-Asher/codeg-ios/releases/download/models-v1/"), file.url.absoluteString)
+        XCTAssertLessThan(file.size, 100_000_000)
+        XCTAssertFalse(hebrew.requiredPaths.contains(languageID))
+        XCTAssertEqual(Set(hebrew.requiredPaths), Set([hebrew.weights, try XCTUnwrap(hebrew.vad)]))
+        let multilingual = try XCTUnwrap(SpeechModelCatalog.model(id: SpeechModelCatalog.multilingualID))
+        XCTAssertNil(multilingual.languageID)
     }
 
     func testPackLayout() throws {
@@ -151,7 +164,7 @@ final class SpeechModelManifestTests: XCTestCase {
         let json = """
         {"schema": 1, "release": "x", "models": [
           {"id": "a", "title": "A", "summary": "", "languages": ["he"], "detectsLanguage": false,
-           "license": "MIT", "source": "", "weights": "missing.bin", "vad": null,
+           "license": "MIT", "source": "", "weights": "missing.bin", "vad": null, "languageID": "lid.bin",
            "files": [{"path": "a.bin", "url": "http://example.com/a.bin", "size": 0, "sha256": "ABC"}]}
         ]}
         """
@@ -161,6 +174,7 @@ final class SpeechModelManifestTests: XCTestCase {
         XCTAssertTrue(problems.contains { $0.contains("sha256") }, "\(problems)")
         XCTAssertTrue(problems.contains { $0.contains("https") }, "\(problems)")
         XCTAssertTrue(problems.contains { $0.contains("size 0") }, "\(problems)")
+        XCTAssertTrue(problems.contains { $0.contains("languageID lid.bin") }, "\(problems)")
     }
 
     func testChecksumAcceptsTheFileAndRejectsACorruptOne() async throws {
@@ -252,19 +266,21 @@ final class DictationTextTests: XCTestCase {
     }
 
     func testPromptCarriesTheSessionContext() {
-        let prompt = DictationText.prompt(folder: "codeg-ios", session: "Voice typing", language: .hebrew)
+        let prompt = DictationText.prompt(folder: "codeg-ios", session: "Voice typing", language: "he")
         XCTAssertTrue(prompt.hasPrefix("codeg-ios · Voice typing. "), prompt)
         XCTAssertTrue(prompt.contains("README"))
         XCTAssertLessThanOrEqual(prompt.count, DictationText.maxPromptLength)
 
-        let english = DictationText.prompt(folder: nil, session: "  ", language: .english)
+        let english = DictationText.prompt(folder: nil, session: "  ", language: "en")
         XCTAssertEqual(english, DictationText.englishStyle)
 
-        let same = DictationText.prompt(folder: "x", session: "x", language: .hebrew)
+        let same = DictationText.prompt(folder: "x", session: "x", language: "he")
+        // Detection (the stock model) gets the mixed sentence too.
+        XCTAssertTrue(DictationText.prompt(folder: nil, session: nil, language: nil).contains("README"))
         XCTAssertTrue(same.hasPrefix("x. "), same)
 
         let long = DictationText.prompt(folder: String(repeating: "f", count: 300),
-                                        session: String(repeating: "s", count: 300), language: .hebrew)
+                                        session: String(repeating: "s", count: 300), language: "he")
         XCTAssertLessThanOrEqual(long.count, DictationText.maxPromptLength)
     }
 }
