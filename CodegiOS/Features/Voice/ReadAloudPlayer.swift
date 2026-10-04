@@ -140,7 +140,7 @@ final class ReadAloudPlayer: NSObject {
         do {
             try activateSession()
         } catch {
-            fail("Couldn't start audio: \(error.localizedDescription)")
+            fail(AudioErrorText(error).message("Couldn't start audio"))
             return
         }
         installRemoteCommands()
@@ -360,13 +360,11 @@ final class ReadAloudPlayer: NSObject {
             // The Camera Control's standing-by microphone steps aside first.
             NotificationCenter.default.post(name: .readAloudWillClaimAudio, object: self)
         }
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .spokenAudio, options: [])
-        try session.setActive(true)
+        try AudioSessionOwner.shared.acquire(.readAloud)
     }
 
     private func deactivateSession() {
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        AudioSessionOwner.shared.release(.readAloud)
     }
 
     private func fail(_ message: String) {

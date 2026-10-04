@@ -1,5 +1,6 @@
 import AVFoundation
 import Accelerate
+import os
 
 /// The last few seconds of microphone audio, oldest first, overwritten in
 /// place once full. Memory only.
@@ -94,19 +95,20 @@ struct RecordingBuffer: Equatable, Sendable {
 /// Captures the microphone as 16 kHz mono Float32, the input whisper wants,
 /// and keeps the current input level for the meter.
 ///
-/// A recording normally starts the microphone cold: the audio session is
-/// `.playAndRecord` while recording, so a reply being read aloud is stopped
-/// first (the read-aloud player switches the session back to `.playback`
-/// when it next starts), and it is deactivated with
-/// `.notifyOthersOnDeactivation` when recording ends, so other apps' audio
-/// resumes.
+/// The audio session belongs to ``AudioSessionOwner``; ``MicrophoneState``
+/// decides when the engine starts and stops. A recording normally starts the
+/// microphone cold (`.playAndRecord`, AirPods' microphone allowed) and stops
+/// it at the end, deactivating with `.notifyOthersOnDeactivation` so other
+/// apps' audio resumes. A reply being read aloud is stopped first.
 ///
 /// For Camera Control to talk the recorder can also stand by: the microphone
 /// runs and the last ``preRollSeconds`` stay in memory, so a recording that
 /// starts on a button press begins with the words said while the audio was
-/// still starting. Standby listens through the iPhone's microphone and mixes
-/// with other audio (`.mixWithOthers`, Bluetooth A2DP rather than HFP), so
-/// AirPods keep playing in full quality and music in other apps keeps going.
+/// still starting. Any recording that starts then (the mic button too)
+/// records from the running engine without activating the session again.
+/// Standby listens through the iPhone's microphone and mixes with other
+/// audio (`.mixWithOthers`, Bluetooth A2DP rather than HFP), so AirPods keep
+/// playing in full quality and music in other apps keeps going.
 final class DictationRecorder: @unchecked Sendable {
     static let sampleRate: Double = 16_000
     /// Longest recording kept (5 minutes); the controller stops at this length.
@@ -114,26 +116,15 @@ final class DictationRecorder: @unchecked Sendable {
     /// Audio kept from before a recording starts, in standby.
     static let preRollSeconds: Double = 1.5
 
-    /// The cold recording's session: AirPods (HFP) work as the microphone.
-    static let recordingOptions: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .defaultToSpeaker]
-    /// Standby's session: the iPhone's microphone, AirPods stay in A2DP, other
-    /// apps' audio keeps playing.
-    static let standbyOptions: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers]
-
     private let engine = AVAudioEngine()
+    private let audio: AudioSessionOwner
     private let lock = NSLock()
     private var buffer = RecordingBuffer(preRollSamples: Int(preRollSeconds * sampleRate),
                                          maxSamples: Int(maxSeconds * sampleRate))
     private var level: Float = 0
-    /// A recording is running (everything is kept).
-    private var running = false
-    /// The engine runs with the tap installed (recording or standby).
-    private var engineOn = false
-    /// Standby is wanted: after a recording, keep the microphone running.
-    private var standbyWanted = false
-    /// The engine was started for a recording, with the recording's session
-    /// options, not standby's.
-    private var startedCold = false
+    private var state = MicrophoneState()
+    /// The tap is installed on the input node.
+    private var tapInstalled = false
     /// Uptime of the button press the current recording started from, until
     /// its first live buffer arrives (logged, then cleared).
     private var pressUptime: TimeInterval?
@@ -149,20 +140,21 @@ final class DictationRecorder: @unchecked Sendable {
 
     private var observers: [NSObjectProtocol] = []
 
-    init() {
+    init(audio: AudioSessionOwner = .shared) {
+        self.audio = audio
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine,
                                             queue: nil) { [weak self] _ in
             // Activating the session can post one of these while the engine
             // keeps running; only a change that stopped the engine matters.
             guard let self, !self.engine.isRunning else { return }
-            self.interrupted()
+            self.engineStoppedByItself("the audio route or configuration changed")
         })
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil,
                                             queue: nil) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
-            self?.interrupted()
+            self?.engineStoppedByItself("an interruption began (a call, Siri, an alarm)")
         })
     }
 
@@ -188,7 +180,7 @@ final class DictationRecorder: @unchecked Sendable {
     var isStandingBy: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return engineOn && standbyWanted
+        return state.isStandingBy
     }
 
     // MARK: - Permission
@@ -210,9 +202,7 @@ final class DictationRecorder: @unchecked Sendable {
     /// Set the recording category without activating the session, so a later
     /// cold start skips the category switch. Cheap; changes nothing audible.
     static func prepareCategory() {
-        let session = AVAudioSession.sharedInstance()
-        guard session.category != .playAndRecord || session.categoryOptions != recordingOptions else { return }
-        try? session.setCategory(.playAndRecord, mode: .default, options: recordingOptions)
+        AudioSessionOwner.shared.prepare(.recording)
     }
 
     // MARK: - Standby
@@ -221,72 +211,57 @@ final class DictationRecorder: @unchecked Sendable {
     /// memory. Does nothing while a recording runs (it carries on in standby
     /// afterwards) or if standby is already on.
     func startStandby() throws {
-        lock.lock()
-        standbyWanted = true
-        let on = engineOn
-        lock.unlock()
-        guard !on else { return }
-        lock.lock()
-        startedCold = false
-        lock.unlock()
-        do {
-            try startEngine(options: Self.standbyOptions)
-        } catch {
-            lock.lock()
-            standbyWanted = false
-            lock.unlock()
-            throw error
-        }
+        let step = withLock { state.wantStandby() }
+        try perform(step, recordingStarts: false)
     }
 
     /// Stop standing by: the microphone stops and the session is
     /// deactivated, unless a recording runs, which then stops it when it ends.
     func stopStandby() {
-        lock.lock()
-        standbyWanted = false
-        let stopNow = engineOn && !running
-        lock.unlock()
-        if stopNow { stopEngine() }
+        let step = withLock { state.dropStandby() }
+        try? perform(step, recordingStarts: false)
     }
 
     // MARK: - Recording
+
+    /// How a recording started, for the log.
+    enum Start: Equatable {
+        /// From the standing-by engine: no activation.
+        case fromStandby
+        /// The engine started for it.
+        case started(AudioSessionUse)
+    }
 
     /// Start recording. In standby the recording begins with the pre-roll
     /// (unless `includePreRoll` is false) and the microphone is already
     /// running; otherwise the microphone starts now. `pressUptime` is when the
     /// button that started it went down, for the log.
-    func start(includePreRoll: Bool = true, pressUptime: TimeInterval? = nil) throws {
+    @discardableResult
+    func start(includePreRoll: Bool = true, pressUptime: TimeInterval? = nil) throws -> Start {
         lock.lock()
-        let warm = engineOn
-        if warm {
-            buffer.beginRecording(includePreRoll: includePreRoll)
-            preRollAtStart = Double(buffer.samples.count) / Self.sampleRate
-            running = true
-            self.pressUptime = pressUptime
-            level = 0
+        let running = state.engine
+        let step = state.beginRecording()
+        if running != nil {
+            buffer.beginRecording(includePreRoll: includePreRoll && running == .standby)
+        } else {
+            buffer.reset()
+            buffer.beginRecording(includePreRoll: false)
         }
-        lock.unlock()
-        guard !warm else { return }
-
-        lock.lock()
-        buffer.reset()
-        buffer.beginRecording(includePreRoll: false)
-        preRollAtStart = 0
-        startedCold = true
-        running = true
+        preRollAtStart = Double(buffer.samples.count) / Self.sampleRate
         self.pressUptime = pressUptime
         level = 0
         lock.unlock()
         do {
-            try startEngine(options: Self.recordingOptions)
+            try perform(step, recordingStarts: true)
         } catch {
             lock.lock()
-            running = false
             buffer.reset()
             self.pressUptime = nil
             lock.unlock()
             throw error
         }
+        if case .startEngine(let use) = step { return .started(use) }
+        return .fromStandby
     }
 
     /// Stop and return everything recorded. In standby the microphone keeps
@@ -294,80 +269,114 @@ final class DictationRecorder: @unchecked Sendable {
     @discardableResult
     func stop() -> [Float] {
         lock.lock()
-        let wasRunning = running
-        running = false
-        pressUptime = nil
+        let step = state.endRecording()
         let recorded = buffer.endRecording()
+        pressUptime = nil
         level = 0
-        // Standby restarts with its own session options after a cold recording.
-        let keepEngine = standbyWanted && engineOn && !startedCold
         lock.unlock()
-        if wasRunning, !keepEngine { stopEngine() }
+        do {
+            try perform(step, recordingStarts: false)
+        } catch {
+            // Standby couldn't take over after a cold recording; its retry does.
+            onStandbyLost?()
+        }
         return recorded
     }
 
     // MARK: - Engine
 
-    private func startEngine(options: AVAudioSession.CategoryOptions) throws {
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .default, options: options)
-        // The press and release haptics (mic button, Camera Control) would
-        // otherwise be muted while the microphone records.
-        try? session.setAllowHapticsAndSystemSoundsDuringRecording(true)
-        try session.setActive(true)
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
 
+    private func perform(_ step: MicrophoneState.Step, recordingStarts: Bool) throws {
+        switch step {
+        case .none:
+            return
+        case .startEngine(let use):
+            try startEngine(for: use, recordingStarts: recordingStarts)
+        case .stopEngine(let use):
+            stopEngine(releasing: use)
+        case .restartEngine(let from, let to):
+            stopEngine(releasing: from)
+            try startEngine(for: to, recordingStarts: false)
+        }
+    }
+
+    private func startEngine(for use: AudioSessionUse, recordingStarts: Bool) throws {
+        do {
+            let outcome = try audio.acquire(use) { try runEngine() }
+            withLock { state.engineStarted(use) }
+            if outcome == .activatedOnRetry {
+                DictationRecorder.log.notice("Microphone started for \(use.rawValue, privacy: .public) on the second try")
+            }
+        } catch {
+            withLock {
+                state.engineFailed(duringRecording: recordingStarts)
+                if !recordingStarts { buffer.reset() }
+            }
+            throw error
+        }
+    }
+
+    /// Install the tap and start the engine; undo both if it fails.
+    private func runEngine() throws {
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
               let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Self.sampleRate,
                                          channels: 1, interleaved: false),
               let converter = AVAudioConverter(from: inputFormat, to: target) else {
-            try? session.setActive(false, options: .notifyOthersOnDeactivation)
             throw RecorderError.noInput
         }
+        if tapInstalled { input.removeTap(onBus: 0) }
         input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, _ in
             self?.consume(buffer, converter: converter, target: target)
         }
+        tapInstalled = true
         engine.prepare()
         do {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
-            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+            tapInstalled = false
             throw error
         }
-        lock.lock()
-        engineOn = true
-        lock.unlock()
     }
 
-    private func stopEngine() {
-        lock.lock()
-        let wasOn = engineOn
-        engineOn = false
-        startedCold = false
-        buffer.reset()
-        level = 0
-        lock.unlock()
-        guard wasOn else { return }
-        engine.inputNode.removeTap(onBus: 0)
+    private func stopEngine(releasing use: AudioSessionUse) {
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
         engine.stop()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        withLock {
+            if !state.recording { buffer.reset() }
+            level = 0
+        }
+        audio.release(use)
     }
 
-    private func interrupted() {
+    /// The engine stopped under us (an interruption, a route change).
+    private func engineStoppedByItself(_ why: String) {
         lock.lock()
-        let wasRunning = running
-        let standingBy = engineOn && !running
+        let use = state.engineStopped()
+        let wasRecording = state.recording
+        let standbyWanted = state.standbyWanted
         lock.unlock()
-        if wasRunning {
+        guard let use else { return }
+        DictationRecorder.log.notice("Microphone stopped by itself: \(why, privacy: .public)")
+        stopEngine(releasing: use)
+        if wasRecording {
             onInterrupted?()
-        } else if standingBy {
-            // Standby lost the microphone (a call, Siri, a route change).
-            stopEngine()
+        } else if standbyWanted {
             onStandbyLost?()
         }
     }
+
+    static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "codeg", category: "dictation")
 
     /// On the audio thread: meter the buffer, convert it to 16 kHz mono, keep it.
     private func consume(_ input: AVAudioPCMBuffer, converter: AVAudioConverter, target: AVAudioFormat) {
@@ -397,7 +406,7 @@ final class DictationRecorder: @unchecked Sendable {
 
         lock.lock()
         buffer.receive(chunk)
-        let firstAfterPress = running ? pressUptime : nil
+        let firstAfterPress = state.recording ? pressUptime : nil
         if firstAfterPress != nil { pressUptime = nil }
         let preRoll = preRollAtStart
         // Fast attack, slower release, so the meter reads as speech, not flicker.
@@ -409,7 +418,7 @@ final class DictationRecorder: @unchecked Sendable {
         }
     }
 
-    enum RecorderError: LocalizedError {
+    enum RecorderError: PlainAudioError {
         case noInput
 
         var errorDescription: String? { "No microphone is available." }

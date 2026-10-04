@@ -247,7 +247,7 @@ final class DictationController {
             let ms = Int((ContinuousClock.now - started) / .milliseconds(1))
             CameraTalkController.log.info("Microphone standing by (started in \(ms) ms)")
         } catch {
-            CameraTalkController.log.error("Standby didn't start: \(error.localizedDescription, privacy: .public)")
+            CameraTalkController.log.error("Standby didn't start: \(AudioErrorText(error).logLine, privacy: .public)")
             retryPreRoll(attempt: attempt + 1)
         }
     }
@@ -317,14 +317,22 @@ final class DictationController {
         }
         guard phase == .idle else { return }
 
+        // Stopping a reply read aloud lets go of `.playback`; standby (when
+        // wanted) takes the session back at once, so the recording below
+        // starts from the running engine instead of activating again.
         ReadAloudPlayer.shared.stop()
         do {
             // A Camera Control press starts with the pre-roll, when the
             // microphone was standing by: the words said as it went down.
-            try recorder.start(includePreRoll: source == .cameraControl, pressUptime: pressUptime)
+            let started = try recorder.start(includePreRoll: source == .cameraControl, pressUptime: pressUptime)
+            switch started {
+            case .fromStandby: log.info("Recording from the standing-by microphone")
+            case .started(let use): log.info("Microphone started for the recording (\(use.rawValue, privacy: .public))")
+            }
         } catch {
-            log.error("Recording failed to start: \(error.localizedDescription, privacy: .public)")
-            completion(.failed("Couldn't start the microphone: \(error.localizedDescription)"))
+            let text = AudioErrorText(error)
+            log.error("Recording failed to start: \(text.logLine, privacy: .public)")
+            completion(.failed(text.message("Couldn't start the microphone")))
             return
         }
 
