@@ -4,7 +4,8 @@ import SwiftUI
 /// and let go to finish. While this composer's dictation records it is the
 /// one control that ends it: filled, with a paper plane when the dictation
 /// is sent right after transcribing and a check mark when it goes into the
-/// message bar. While it transcribes, a spinner.
+/// message bar. While it transcribes, a spinner. With Camera Control to talk
+/// on, a small shutter badge says the hardware button talks too.
 struct DictationMicButton: View {
     let owner: UUID
     let isRecording: Bool
@@ -13,6 +14,8 @@ struct DictationMicButton: View {
     let isDisabled: Bool
     /// Finishing sends the message (the strip's Send chip).
     var sendOnFinish = false
+    /// Camera Control to talk is on for this composer (its pill folded away).
+    var cameraBadge: CameraTalkBadge? = nil
     let onStart: () -> Void
     let onStop: () -> Void
 
@@ -44,12 +47,20 @@ struct DictationMicButton: View {
                     .padding(.vertical, -Self.glassPadding.height)
                     .opacity(isRecording ? 1 : 0)
             }
+            .overlay(alignment: .topTrailing) {
+                if let cameraBadge, !isRecording, !isTranscribing {
+                    CameraTalkBadgeView(badge: cameraBadge)
+                        .offset(x: Self.glassPadding.width + 3, y: -Self.glassPadding.height - 3)
+                        .transition(.scale(scale: 0.3).combined(with: .opacity))
+                }
+            }
         }
         // One style in every state: switching button styles would replace the
         // view under a finger that is holding to talk. No clip shape: the
-        // glass ignores it, and it would cut the fill.
+        // glass ignores it, and it would cut the fill and the badge.
         .buttonStyle(.glass)
         .tint(Theme.textSecondary)
+        .animation(.smooth(duration: 0.35), value: cameraBadge)
         .animation(.snappy(duration: 0.2), value: isRecording)
         .scaleEffect(pressed ? 1.12 : 1)
         .animation(.snappy(duration: 0.18), value: pressed)
@@ -74,6 +85,7 @@ struct DictationMicButton: View {
         }
         .sensoryFeedback(.impact(weight: .medium, intensity: 0.8), trigger: haptic)
         .accessibilityLabel(spokenLabel)
+        .accessibilityValue(cameraBadge == nil ? Text(verbatim: "") : Text("Camera Control to talk is on"))
         .accessibilityHint(Text("Tap to start and tap again to finish, or hold while you speak."))
     }
 

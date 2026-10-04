@@ -109,13 +109,56 @@ enum CameraTalkSymbols {
     }
 }
 
-/// Above the composer while the mode is on for this session: says what the
-/// Camera Control does now (the green camera dot is showing) and turns the
-/// mode off.
+/// How long the Camera Control pill stays open before it folds into the
+/// mic's badge.
+enum CameraTalkPill {
+    /// When the mode turns on, or a session screen opens with it on.
+    static var seconds: Double = 4
+    /// The first time ever, with the longer explanation.
+    static var firstSeconds: Double = 8
+    /// The fold: the pill shrinks toward the mic while the badge appears.
+    static let fold = Animation.smooth(duration: 0.45)
+    static let transition: AnyTransition = .asymmetric(
+        insertion: .opacity.combined(with: .move(edge: .bottom)),
+        removal: .scale(scale: 0.5, anchor: .bottomTrailing).combined(with: .opacity)
+    )
+}
+
+/// The folded state of the Camera Control pill: a small shutter badge on the
+/// mic button. The mode is still on; the toolbar button turns it off.
+enum CameraTalkBadge: Equatable {
+    /// The camera is starting.
+    case starting
+    /// The Camera Control talks to this session.
+    case running
+}
+
+struct CameraTalkBadgeView: View {
+    let badge: CameraTalkBadge
+
+    var body: some View {
+        Image(systemName: CameraTalkSymbols.on)
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(Theme.onAccent)
+            .frame(width: 16, height: 16)
+            .background(Circle().fill(badge == .running ? Theme.accent : Theme.textTertiary))
+            .overlay(Circle().strokeBorder(Theme.bg, lineWidth: 1.5))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Above the composer, in full, while there is something to say about the
+/// mode: for a few seconds when it turns on or the session opens with it on
+/// (with a longer explanation the first time), and while the camera is
+/// paused or failed, with the reason. Otherwise it folds into the mic's
+/// badge. Its ✕ turns the mode off.
 struct CameraTalkIndicator: View {
     let status: CameraTalkController.Status
     let showPreview: Bool
     let session: AVCaptureSession
+    /// The first time: say how it works, not just that it's on.
+    var explain = false
     let onTurnOff: () -> Void
 
     var body: some View {
@@ -126,8 +169,9 @@ struct CameraTalkIndicator: View {
             Text(verbatim: label)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(Theme.textSecondary)
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
             if showPreview, status == .running {
                 CameraTalkPreview(session: session)
@@ -149,16 +193,17 @@ struct CameraTalkIndicator: View {
         .padding(.leading, 12)
         .padding(.trailing, 6)
         .padding(.vertical, 4)
-        .glassEffect(.regular, in: Capsule())
-        .hairlineBorder(Theme.Radius.xl, color: tint.opacity(status == .running ? 0.35 : 0.15))
-        .transition(.opacity.combined(with: .move(edge: .bottom)))
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        .hairlineBorder(Theme.Radius.lg, color: tint.opacity(status == .running ? 0.35 : 0.15))
         .accessibilityElement(children: .combine)
     }
 
     private var label: String {
         switch status {
         case .off, .starting: "Starting the camera for the Camera Control…"
-        case .running: "Hold the Camera Control to talk"
+        case .running:
+            explain ? "Hold the Camera Control or a volume button, talk, and let go to send"
+                : "Hold the Camera Control to talk"
         case .interrupted(let reason): "Camera Control paused: \(reason)"
         case .failed(let message): "Camera Control isn't available: \(message)"
         }

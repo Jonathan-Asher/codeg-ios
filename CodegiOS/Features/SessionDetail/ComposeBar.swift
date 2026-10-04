@@ -55,6 +55,10 @@ struct ComposeBar: View {
     /// Identifies this composer's dictation to the shared controller.
     @State private var generatedOwner = UUID()
     private var dictationOwner: UUID { dictationOwnerOverride ?? generatedOwner }
+    /// The Camera Control pill is open in full; otherwise it is folded into
+    /// the mic's badge (unless the camera is paused or failed).
+    @State private var cameraPillOpen = false
+    @State private var cameraPillTask: Task<Void, Never>?
     /// The last notice this composer's dictation posted, cleared once a
     /// recording starts fine.
     @State private var dictationNotice: String?
@@ -79,6 +83,21 @@ struct ComposeBar: View {
     /// The running dictation was started by this composer's Camera Control.
     private var ownsCameraDictation: Bool {
         dictation.owner == dictationOwner && dictation.source == .cameraControl && dictation.isBusy
+    }
+    /// Camera Control to talk is on for this session's screen.
+    private var isCameraOwner: Bool { cameraTalk.isActiveOwner(dictationOwner) }
+    /// The pill in full: just turned on or opened, or something to report.
+    private var showsCameraPill: Bool {
+        guard isCameraOwner, !isMyDictation else { return false }
+        switch cameraTalk.status {
+        case .interrupted, .failed: return true
+        case .off, .starting, .running: return cameraPillOpen
+        }
+    }
+    /// The pill folded: a badge on the mic.
+    private var cameraBadge: CameraTalkBadge? {
+        guard isCameraOwner, !isMyDictation, !showsCameraPill else { return nil }
+        return cameraTalk.status == .running ? .running : .starting
     }
 
     private var hasText: Bool {
@@ -110,13 +129,15 @@ struct ComposeBar: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
-            if cameraTalk.isActiveOwner(dictationOwner), !isMyDictation {
+            if showsCameraPill {
                 CameraTalkIndicator(
                     status: cameraTalk.status,
                     showPreview: cameraTalk.showPreview,
                     session: cameraTalk.capture.session,
+                    explain: !CameraTalkPrefs.pillExplained,
                     onTurnOff: { cameraTalk.setEnabled(false) }
                 )
+                .transition(CameraTalkPill.transition)
             }
 
             if isMyDictation {
@@ -174,6 +195,7 @@ struct ComposeBar: View {
                         isTranscribing: isMyDictation && (dictation.phase == .transcribing || dictation.phase == .refining),
                         isDisabled: dictation.isBusy && !isMyDictation,
                         sendOnFinish: dictation.sendThisTime,
+                        cameraBadge: cameraBadge,
                         onStart: { startDictation() },
                         onStop: { dictation.stop() }
                     )
@@ -221,6 +243,7 @@ struct ComposeBar: View {
         .animation(Theme.Motion.expand, value: notice)
         .animation(Theme.Motion.expand, value: attachments)
         .animation(Theme.Motion.expand, value: isMyDictation)
+        .animation(CameraTalkPill.fold, value: showsCameraPill)
         .onChange(of: isRecordingHere) { _, recording in
             guard recording else { return }
             // The microphone works now, so an earlier dictation error or
@@ -486,6 +509,7 @@ struct ComposeBar: View {
             }
             .onDisappear {
                 isOnScreen = false
+                closeCameraPill()
                 abandonCameraPress()
                 cameraTalk.remove(owner: dictationOwner)
             }
@@ -494,6 +518,9 @@ struct ComposeBar: View {
                 reportCameraPresence()
             }
             .onChange(of: showCamera) { _, _ in reportCameraPresence() }
+            .onChange(of: isCameraOwner, initial: true) { _, owner in
+                if owner { openCameraPill() } else { closeCameraPill() }
+            }
             .onChange(of: cameraTalkLive) { _, live in
                 // The camera stopped under a held button (an interruption, the
                 // mode turned off): keep what was said, don't send it.
@@ -501,6 +528,26 @@ struct ComposeBar: View {
             }
             .sensoryFeedback(.impact(weight: .medium, intensity: 0.9), trigger: cameraPressHaptic)
             .sensoryFeedback(.impact(weight: .light, intensity: 0.7), trigger: cameraReleaseHaptic)
+    }
+
+    /// Open the pill in full for a few seconds (longer the first time),
+    /// then fold it into the mic's badge.
+    private func openCameraPill() {
+        cameraPillTask?.cancel()
+        let first = !CameraTalkPrefs.pillExplained
+        cameraPillOpen = true
+        cameraPillTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(first ? CameraTalkPill.firstSeconds : CameraTalkPill.seconds))
+            guard !Task.isCancelled else { return }
+            if first { CameraTalkPrefs.pillExplained = true }
+            withAnimation(CameraTalkPill.fold) { cameraPillOpen = false }
+        }
+    }
+
+    private func closeCameraPill() {
+        cameraPillTask?.cancel()
+        cameraPillTask = nil
+        cameraPillOpen = false
     }
 
     private func reportCameraPresence(visible: Bool? = nil) {

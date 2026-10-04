@@ -33,6 +33,14 @@ enum CameraTalkPrefs {
         set { defaults.set(newValue, forKey: "codeg.cameraTalk.catchFirstWords") }
     }
 
+    /// The pill above the message bar has shown its longer, first-time
+    /// explanation; after that it says "Hold the Camera Control to talk" for
+    /// a few seconds and folds into the mic's badge.
+    static var pillExplained: Bool {
+        get { defaults.bool(forKey: "codeg.cameraTalk.pillExplained") }
+        set { defaults.set(newValue, forKey: "codeg.cameraTalk.pillExplained") }
+    }
+
     /// Show a small live camera preview in the indicator. Off by default; for
     /// the case where iOS turns out to deliver the buttons only to an app that
     /// shows its camera.
