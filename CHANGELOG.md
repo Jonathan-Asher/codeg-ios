@@ -82,6 +82,9 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Changed
 
+- The ✕ on the Camera Control pill (1.3.3) only hides the pill now: it folds
+  into the mic's badge at once (or hides a pause or failure report until the
+  status changes) and the mode stays on. The toolbar button turns it off.
 - The recording strip has two rows (1.3.2): the dot, a timer that never
   wraps, the level meter and cancel on top; the chips below, wrapping onto
   another line at large text sizes. While recording, the mic button is the

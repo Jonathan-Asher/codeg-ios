@@ -814,8 +814,10 @@ on or a session screen opens with it on (8 s, with "Hold the Camera Control or
 a volume button, talk, and let go to send", the first time). It then folds
 toward the mic into a small shutter badge on the mic button: the mode is still
 on, and the toolbar button turns it off. The pill opens in full again only
-while the camera is paused or failed, with the reason; its ✕ turns the mode
-off. During a recording the strip takes its place.
+while the camera is paused or failed, with the reason. Its ✕ only hides the
+pill (folding it into the badge at once, or hiding that pause or failure
+report until the status changes); the mode stays on, and only the toolbar
+button turns it off. During a recording the strip takes its place.
 
 ### Setup and permission
 

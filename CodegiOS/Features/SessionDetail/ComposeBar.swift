@@ -59,6 +59,9 @@ struct ComposeBar: View {
     /// the mic's badge (unless the camera is paused or failed).
     @State private var cameraPillOpen = false
     @State private var cameraPillTask: Task<Void, Never>?
+    /// The paused / failed report the user hid with the pill's ✕. It shows
+    /// again when the status changes.
+    @State private var hiddenCameraIssue: CameraTalkController.Status?
     /// The last notice this composer's dictation posted, cleared once a
     /// recording starts fine.
     @State private var dictationNotice: String?
@@ -90,7 +93,7 @@ struct ComposeBar: View {
     private var showsCameraPill: Bool {
         guard isCameraOwner, !isMyDictation else { return false }
         switch cameraTalk.status {
-        case .interrupted, .failed: return true
+        case .interrupted, .failed: return hiddenCameraIssue != cameraTalk.status
         case .off, .starting, .running: return cameraPillOpen
         }
     }
@@ -135,7 +138,7 @@ struct ComposeBar: View {
                     showPreview: cameraTalk.showPreview,
                     session: cameraTalk.capture.session,
                     explain: !CameraTalkPrefs.pillExplained,
-                    onTurnOff: { cameraTalk.setEnabled(false) }
+                    onHide: hideCameraPill
                 )
                 .transition(CameraTalkPill.transition)
             }
@@ -541,6 +544,20 @@ struct ComposeBar: View {
             guard !Task.isCancelled else { return }
             if first { CameraTalkPrefs.pillExplained = true }
             withAnimation(CameraTalkPill.fold) { cameraPillOpen = false }
+        }
+    }
+
+    /// The pill's ✕: fold it into the mic's badge now. The mode stays on.
+    private func hideCameraPill() {
+        if !CameraTalkPrefs.pillExplained { CameraTalkPrefs.pillExplained = true }
+        cameraPillTask?.cancel()
+        cameraPillTask = nil
+        withAnimation(CameraTalkPill.fold) {
+            cameraPillOpen = false
+            switch cameraTalk.status {
+            case .interrupted, .failed: hiddenCameraIssue = cameraTalk.status
+            case .off, .starting, .running: break
+            }
         }
     }
 

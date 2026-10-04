@@ -152,14 +152,15 @@ struct CameraTalkBadgeView: View {
 /// mode: for a few seconds when it turns on or the session opens with it on
 /// (with a longer explanation the first time), and while the camera is
 /// paused or failed, with the reason. Otherwise it folds into the mic's
-/// badge. Its ✕ turns the mode off.
+/// badge. Its ✕ only hides the pill; the mode stays on (the toolbar button
+/// turns it off).
 struct CameraTalkIndicator: View {
     let status: CameraTalkController.Status
     let showPreview: Bool
     let session: AVCaptureSession
     /// The first time: say how it works, not just that it's on.
     var explain = false
-    let onTurnOff: () -> Void
+    let onHide: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -180,7 +181,7 @@ struct CameraTalkIndicator: View {
                     .overlay(Circle().strokeBorder(Theme.hairline))
                     .accessibilityHidden(true)
             }
-            Button(action: onTurnOff) {
+            Button(action: onHide) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(Theme.textTertiary)
@@ -188,7 +189,7 @@ struct CameraTalkIndicator: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(Text("Turn off Camera Control to talk"))
+            .accessibilityLabel(Text("Hide"))
         }
         .padding(.leading, 12)
         .padding(.trailing, 6)
