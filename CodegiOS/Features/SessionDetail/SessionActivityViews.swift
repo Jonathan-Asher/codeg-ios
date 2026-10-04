@@ -101,15 +101,54 @@ struct InsertedNotesView: View {
 
 /// Messages waiting for the running turn to end. Each can be sent now (into
 /// the turn when it can take it, or as the next prompt), edited, or dropped.
-struct QueuedMessagesView: View {
+///
+/// The rows sit above the message bar while a turn streams, so the view is
+/// rebuilt constantly. To keep an open menu from closing under the finger,
+/// the view is `Equatable` (its body only reruns when the queue or
+/// `canSendNow` changes) and every row's menu lists the same items in every
+/// state; "Send now" is disabled rather than hidden.
+struct QueuedMessagesView: View, Equatable {
     let items: [SessionDetailViewModel.QueuedMessage]
     let canSendNow: Bool
     let onSendNow: (UUID) -> Void
     let onEdit: (UUID) -> Void
     let onRemove: (UUID) -> Void
 
+    /// The actions behind a queued row: the ⋯ menu and the long-press menu.
+    /// The same list whether or not the message can be sent now.
+    enum Action: CaseIterable, Equatable {
+        case sendNow
+        case edit
+        case remove
+
+        var title: String {
+            switch self {
+            case .sendNow: "Send now"
+            case .edit: "Edit"
+            case .remove: "Remove"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .sendNow: "arrow.up.circle"
+            case .edit: "pencil"
+            case .remove: "trash"
+            }
+        }
+
+        func isEnabled(canSendNow: Bool) -> Bool { self != .sendNow || canSendNow }
+    }
+
+    /// A queued message never changes under its id (editing takes it out of
+    /// the queue), so the ids say whether the rows changed. The closures
+    /// belong to the session's view model, which outlives this view.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.items.map(\.id) == rhs.items.map(\.id) && lhs.canSendNow == rhs.canSendNow
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 5) {
                 Image(systemName: "clock")
                     .font(.system(size: 10, weight: .semibold))
@@ -118,41 +157,71 @@ struct QueuedMessagesView: View {
                     .font(.caption2.weight(.semibold))
             }
             .foregroundStyle(Theme.textTertiary)
-            ForEach(items) { item in
-                HStack(spacing: 8) {
-                    Text(verbatim: item.text.isEmpty ? "(\(item.attachments.count) image)" : item.text)
-                        .font(.caption)
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Menu {
-                        if canSendNow {
-                            Button { onSendNow(item.id) } label: {
-                                Label("Send now", systemImage: "arrow.up.circle")
-                            }
-                        }
-                        Button { onEdit(item.id) } label: {
-                            Label("Edit", systemImage: "pencil")
-                        }
-                        Button(role: .destructive) { onRemove(item.id) } label: {
-                            Label("Remove", systemImage: "trash")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .font(.system(size: 15))
-                            .foregroundStyle(Theme.textTertiary)
-                            .contentShape(Rectangle())
-                    }
-                    .accessibilityLabel("Queued message actions")
-                }
+            .padding(.bottom, 2)
+            ForEach(items, id: \.id) { item in
+                row(item)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.leading, 12)
+        .padding(.trailing, 2)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
         .hairlineBorder(Theme.Radius.md)
         .padding(.horizontal, 16)
         .padding(.bottom, 6)
+    }
+
+    private func row(_ item: SessionDetailViewModel.QueuedMessage) -> some View {
+        HStack(spacing: 0) {
+            Text(verbatim: item.text.isEmpty ? "(\(item.attachments.count) image)" : item.text)
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+                .contextMenu { actions(for: item) }
+            Menu {
+                actions(for: item)
+            } label: {
+                // A 15 pt glyph in a 44 pt target (Apple's minimum).
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Queued message actions")
+            Button { onRemove(item.id) } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove queued message")
+        }
+    }
+
+    @ViewBuilder
+    private func actions(for item: SessionDetailViewModel.QueuedMessage) -> some View {
+        ForEach(Action.allCases, id: \.self) { action in
+            Button(role: action == .remove ? .destructive : nil) {
+                perform(action, on: item.id)
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+            .disabled(!action.isEnabled(canSendNow: canSendNow))
+        }
+    }
+
+    private func perform(_ action: Action, on id: UUID) {
+        switch action {
+        case .sendNow: onSendNow(id)
+        case .edit: onEdit(id)
+        case .remove: onRemove(id)
+        }
     }
 }
 

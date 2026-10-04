@@ -365,6 +365,7 @@ struct SessionDetailView: View {
                         onEdit: { model.editQueued($0) },
                         onRemove: { model.removeQueued($0) }
                     )
+                    .equatable()
                     .transition(.opacity)
                 }
                 if model.canOfferContinue {
