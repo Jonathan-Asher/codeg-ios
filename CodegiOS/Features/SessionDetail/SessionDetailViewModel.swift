@@ -240,6 +240,8 @@ final class SessionDetailViewModel {
     /// frame). Past `maxStreamReconnects`, recovery gives up and reconciles.
     private var streamReconnects = 0
     private static let maxStreamReconnects = 6
+    /// Sends resolving their connection, attaching their stream or prompting.
+    private var sendsInProgress = 0
     /// The prompt is on its way to the server. A reconnect snapshot taken now
     /// can predate it, so it says nothing yet about whether this turn ended.
     private var promptInFlight = false
@@ -451,6 +453,10 @@ final class SessionDetailViewModel {
     /// e.g. a rename or a message sent from another client while we were away.
     func refreshOnForeground() async {
         guard case .existing(let id) = mode, phase == .loaded else { return }
+        // A send still attaching its stream owns its recovery (its handshake
+        // opens a fresh socket); discarding the live state here would cancel it
+        // and strand the message.
+        if sendsInProgress > 0, !isTurnActive { return }
         if isInFlight, isTurnActive, liveTurn != nil {
             resumeStreamAfterForeground()
             return
@@ -835,6 +841,8 @@ final class SessionDetailViewModel {
 
     private func runSend(text: String, attachments sending: [Attachment], live: LiveTurn, userTurnID: String) async {
         let clientMessageID = UUID().uuidString
+        sendsInProgress += 1
+        defer { sendsInProgress -= 1 }
         do {
             // For a brand-new draft, create the conversation row server-side BEFORE
             // prompting so every client (desktop / web) sees it immediately. No-op
