@@ -120,7 +120,8 @@ final class DictationController {
     /// Where `languageThisTime` started, so the strip can show an override.
     private(set) var languageDefault: DictationLanguageChoice = .automatic
 
-    static let meterBars = 24
+    /// Enough history for the widest meter (thin bars, newest at the trailing edge).
+    static let meterBars = 64
 
     private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "codeg", category: "dictation")
     private let recorder = DictationRecorder()

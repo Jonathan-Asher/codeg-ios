@@ -24,6 +24,9 @@ struct SessionDetailView: View {
     /// Set on any `.background` frame, consumed on the next `.active` — see the
     /// `onChange(of: scenePhase)` below for why this beats comparing adjacent phases.
     @State private var wasBackgrounded = false
+    /// The message field has focus: the compose bar is widened, and the boxes
+    /// above it follow.
+    @State private var composeFocused = false
     @State private var showRename = false
     @State private var renameText = ""
     @State private var showDetails = false
@@ -355,6 +358,7 @@ struct SessionDetailView: View {
                 }
                 if !model.insertedNotes.isEmpty {
                     InsertedNotesView(notes: model.insertedNotes)
+                        .padding(.horizontal, ComposeBar.sideMargin(focused: composeFocused))
                         .transition(.opacity)
                 }
                 if !model.queuedMessages.isEmpty {
@@ -366,6 +370,7 @@ struct SessionDetailView: View {
                         onRemove: { model.removeQueued($0) }
                     )
                     .equatable()
+                    .padding(.horizontal, ComposeBar.sideMargin(focused: composeFocused))
                     .transition(.opacity)
                 }
                 if model.canOfferContinue {
@@ -404,9 +409,11 @@ struct SessionDetailView: View {
                     onDismissNotice: { model.notice = nil },
                     insertModel: model.insertModel,
                     dictationContext: DictationContext(folder: model.folder?.name, session: model.summary?.title),
-                    dictationRefiner: client
+                    dictationRefiner: client,
+                    onFocusChange: { composeFocused = $0 }
                 )
             }
+            .animation(.snappy(duration: 0.26), value: composeFocused)
             .animation(.snappy(duration: 0.24), value: model.isPinnedToBottom)
             .animation(.snappy(duration: 0.24), value: model.queuedMessages)
             .animation(.snappy(duration: 0.24), value: model.insertedNotes)

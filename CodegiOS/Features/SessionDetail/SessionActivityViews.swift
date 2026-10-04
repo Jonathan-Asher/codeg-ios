@@ -94,7 +94,6 @@ struct InsertedNotesView: View {
         .padding(.vertical, 8)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
         .hairlineBorder(Theme.Radius.md)
-        .padding(.horizontal, 16)
         .padding(.bottom, 6)
     }
 }
@@ -168,7 +167,6 @@ struct QueuedMessagesView: View, Equatable {
         .padding(.bottom, 2)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
         .hairlineBorder(Theme.Radius.md)
-        .padding(.horizontal, 16)
         .padding(.bottom, 6)
     }
 

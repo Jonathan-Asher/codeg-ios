@@ -34,6 +34,12 @@ struct ComposeBar: View {
     var dictationContext = DictationContext()
     /// The session's codeg server, which cleans up or translates dictation.
     var dictationRefiner: (any DictationRefineTransport)? = nil
+    /// The field gained or lost focus (the bar widens while typing), so the
+    /// boxes above it can match its width.
+    var onFocusChange: (Bool) -> Void = { _ in }
+    /// Tests and previews: the id this composer's dictation runs under,
+    /// shared with ``DictationController`` and ``CameraTalkController``.
+    var dictationOwnerOverride: UUID? = nil
 
     @FocusState private var focused: Bool
     /// Bumped on each send tap to fire a light "sent" impact immediately (rather
@@ -47,7 +53,11 @@ struct ComposeBar: View {
     /// The field's cursor / selection, so dictated text lands at the cursor.
     @State private var selection: TextSelection?
     /// Identifies this composer's dictation to the shared controller.
-    @State private var dictationOwner = UUID()
+    @State private var generatedOwner = UUID()
+    private var dictationOwner: UUID { dictationOwnerOverride ?? generatedOwner }
+    /// The last notice this composer's dictation posted, cleared once a
+    /// recording starts fine.
+    @State private var dictationNotice: String?
     /// The speech model the download alert offers.
     @State private var modelToDownload: SpeechModelManifest.Model?
     /// Between `onAppear` and `onDisappear`: Camera Control to talk runs only
@@ -60,6 +70,9 @@ struct ComposeBar: View {
 
     private var dictation: DictationController { DictationController.shared }
     private var isMyDictation: Bool { dictation.owner == dictationOwner && dictation.isBusy }
+    /// This composer is recording: the mic is the one control that ends it,
+    /// and the send and agent-stop buttons stand aside.
+    private var isRecordingHere: Bool { isMyDictation && dictation.phase == .recording }
     private var cameraTalk: CameraTalkController { CameraTalkController.shared }
     /// This composer gets the Camera Control and volume buttons now.
     private var cameraTalkLive: Bool { cameraTalk.isLive(owner: dictationOwner) }
@@ -111,6 +124,7 @@ struct ComposeBar: View {
                     phase: dictation.phase,
                     levels: dictation.levels,
                     elapsed: dictation.elapsed,
+                    source: dictation.source,
                     autoSend: Binding(get: { dictation.sendThisTime }, set: { send in
                         dictation.sendThisTime = send
                         // The mic's switch is the "Send" setting; the Camera
@@ -156,9 +170,10 @@ struct ComposeBar: View {
 
                     DictationMicButton(
                         owner: dictationOwner,
-                        isRecording: isMyDictation && dictation.phase == .recording,
+                        isRecording: isRecordingHere,
                         isTranscribing: isMyDictation && (dictation.phase == .transcribing || dictation.phase == .refining),
                         isDisabled: dictation.isBusy && !isMyDictation,
+                        sendOnFinish: dictation.sendThisTime,
                         onStart: { startDictation() },
                         onStop: { dictation.stop() }
                     )
@@ -171,7 +186,7 @@ struct ComposeBar: View {
         // as a compact resting affordance. Focusing the field (keyboard up) widens
         // it to the transcript's 16pt gutter, so typing gets the same width as the
         // messages it answers. The change animates with the focus transition below.
-        .padding(.horizontal, focused ? 16 : 36)
+        .padding(.horizontal, Self.sideMargin(focused: focused))
         .padding(.top, 8)
         // Hosted in a bottom `safeAreaInset`. Keyboard DOWN: float a full
         // home-indicator inset (~34pt) above the edge; a small negative bottom
@@ -206,6 +221,13 @@ struct ComposeBar: View {
         .animation(Theme.Motion.expand, value: notice)
         .animation(Theme.Motion.expand, value: attachments)
         .animation(Theme.Motion.expand, value: isMyDictation)
+        .onChange(of: isRecordingHere) { _, recording in
+            guard recording else { return }
+            // The microphone works now, so an earlier dictation error or
+            // "No speech detected" is stale.
+            if let dictationNotice, notice == dictationNotice { onDismissNotice() }
+            dictationNotice = nil
+        }
         .alert(
             "Download the speech model?",
             isPresented: Binding(get: { modelToDownload != nil }, set: { if !$0 { modelToDownload = nil } }),
@@ -221,6 +243,7 @@ struct ComposeBar: View {
         // Width + keyboard-gap shift on focus change, kept just slightly slower
         // than the keyboard's own animation so the bar settles into place.
         .animation(.snappy(duration: 0.26), value: focused)
+        .onChange(of: focused) { _, isFocused in onFocusChange(isFocused) }
         .sensoryFeedback(.impact(weight: .light, intensity: 0.7), trigger: sendHaptic)
     }
 
@@ -266,9 +289,13 @@ struct ComposeBar: View {
         .accessibilityLabel("Add or insert")
     }
 
+    /// Send, or the agent's Stop while a turn runs. While this composer
+    /// records, both stand aside (dimmed, inactive): the mic is the one
+    /// control that ends the recording, so a reach for "stop" can't stop the
+    /// agent by mistake.
     @ViewBuilder
     private var actionButton: some View {
-        if hasDraftWhileBusy {
+        if hasDraftWhileBusy, !isRecordingHere {
             busySendButton
         }
         if isInFlight {
@@ -280,8 +307,11 @@ struct ComposeBar: View {
             .buttonStyle(.glassProminent)
             .tint(Theme.danger)
             .clipShape(Circle())
+            .disabled(isRecordingHere)
+            .opacity(isRecordingHere ? 0.3 : 1)
             .transition(.scale.combined(with: .opacity))
-            .accessibilityLabel("Stop")
+            .accessibilityLabel("Stop the agent")
+            .accessibilityHint(isRecordingHere ? Text("Finish or cancel the dictation first.") : Text(verbatim: ""))
         } else {
             Button(action: send) {
                 Image(systemName: "arrow.up")
@@ -291,8 +321,8 @@ struct ComposeBar: View {
             .buttonStyle(.glassProminent)
             .tint(Theme.accent)
             .clipShape(Circle())
-            .disabled(!canSend)
-            .opacity(canSend ? 1 : 0.5)
+            .disabled(!canSend || isRecordingHere)
+            .opacity(isRecordingHere ? 0.3 : (canSend ? 1 : 0.5))
             .transition(.scale.combined(with: .opacity))
             .accessibilityLabel("Send")
         }
@@ -376,16 +406,16 @@ struct ComposeBar: View {
             let store = SpeechModelStores.store(for: model)
             switch store.state {
             case .downloading, .verifying:
-                onNotice("The speech model is downloading (\(Int(store.progress * 100))%). Until it is ready, use the mic key on the iOS keyboard.")
+                dictationSays("The speech model is downloading (\(Int(store.progress * 100))%). Until it is ready, use the mic key on the iOS keyboard.")
             default:
                 modelToDownload = model
             }
         case .microphoneDenied:
-            onNotice("Microphone access is off for \(AppIdentity.displayName). Turn it on in the Settings app, or use the mic key on the iOS keyboard.")
+            dictationSays("Microphone access is off for \(AppIdentity.displayName). Turn it on in the Settings app, or use the mic key on the iOS keyboard.")
         case .ready:
             guard !dictation.isBusy else {
                 if source == .cameraControl, !isMyDictation || dictation.phase != .recording {
-                    onNotice("Still working on the last dictation. Try again in a moment.")
+                    dictationSays("Still working on the last dictation. Try again in a moment.")
                 }
                 return
             }
@@ -416,8 +446,15 @@ struct ComposeBar: View {
             // After the send, which clears the previous notice.
             if let notice { onNotice(notice) }
         case .nothing(let reason), .failed(let reason):
-            onNotice(reason)
+            dictationSays(reason)
         }
+    }
+
+    /// A notice from voice typing, remembered so a recording that then
+    /// starts fine can clear it.
+    private func dictationSays(_ message: String) {
+        dictationNotice = message
+        onNotice(message)
     }
 
     /// "Send right after transcribing": what the send button does now. The
@@ -497,8 +534,8 @@ struct ComposeBar: View {
             dictation.cancel()
             cameraReleaseHaptic &+= 1
             switch reason {
-            case .tooShort: onNotice("Hold the Camera Control while you speak, then let go to send.")
-            case .otherButton: onNotice("Recording thrown away.")
+            case .tooShort: dictationSays("Hold the Camera Control while you speak, then let go to send.")
+            case .otherButton: dictationSays("Recording thrown away.")
             case .cancelled: break
             }
         }
@@ -514,6 +551,11 @@ struct ComposeBar: View {
             dictation.stop(keepUnsent: "The Camera Control was interrupted, so the message wasn't sent.")
         }
     }
+
+    /// The bar's side margins: a narrower resting pill, the transcript's
+    /// gutter while typing. The queued and inserted boxes above it use the
+    /// same, so their edges line up.
+    static func sideMargin(focused: Bool) -> CGFloat { focused ? 16 : 36 }
 
     private static func megabytes(_ bytes: Int64) -> String {
         "\(Int((Double(bytes) / 1_000_000).rounded())) MB"
