@@ -46,6 +46,18 @@ struct CodegClient: Sendable {
         return URLSession(configuration: cfg)
     }()
 
+    /// For `submit_session_feedback`: the server answers once the agent has
+    /// taken the message, and a message into a turn held open for background
+    /// work can take a while to confirm. With the 30 s default a delivered
+    /// message came back as a "network error".
+    static let steeringSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 90
+        cfg.timeoutIntervalForResource = 120
+        cfg.waitsForConnectivity = true
+        return URLSession(configuration: cfg)
+    }()
+
     /// Very-long-timeout session for agent install/upgrade/uninstall: the server's
     /// `acp_download_agent_binary` / `acp_prepare_npx_agent` / `acp_install_uv_tool`
     /// handlers block until the install finishes (a cold npx/uv install can take
@@ -321,6 +333,19 @@ struct CodegClient: Sendable {
         return try Self.decodeSnapshot(data)
     }
 
+    /// The full live snapshot of one connection (`acp_get_session_snapshot`), or
+    /// nil when the connection is gone: whether a turn runs, the id of its
+    /// prompt and the messages delivered into it. Confirms a prompt or a
+    /// message into the turn whose response never arrived.
+    func liveSessionSnapshot(connectionId: String) async throws -> LiveSessionSnapshot? {
+        let data = try await send("acp_get_session_snapshot",
+                                  body: ConnectionIdBody(connectionId: connectionId),
+                                  session: Self.readSession)
+        if Self.isJSONNull(data) { return nil }
+        do { return try CodegJSON.decoder.decode(LiveSessionSnapshot.self, from: data) }
+        catch { throw APIError.decoding(String(describing: error)) }
+    }
+
     private static func decodeSnapshot(_ data: Data) throws -> SessionSnapshot? {
         if isJSONNull(data) { return nil }
         do { return try CodegJSON.decoder.decode(SessionSnapshot.self, from: data) }
@@ -353,7 +378,7 @@ struct CodegClient: Sendable {
             connectionId: connectionId,
             text: text,
             blocks: (blocks?.isEmpty ?? true) ? nil : blocks
-        ))
+        ), session: Self.steeringSession)
     }
 
     // MARK: - Compose "+" menu sources
@@ -420,7 +445,10 @@ struct CodegClient: Sendable {
     /// body — used for settings objects that must preserve snake_case keys the
     /// shared encoder/decoder would otherwise mangle (e.g. delegation settings).
     func send(_ path: String, rawBody: Data, session: URLSession? = nil) async throws -> Data {
-        let session = session ?? self.session
+        // The per-call sessions above are tuned for a real server. A client made
+        // with its own session (the unit tests' mock server) sends every call
+        // through that one.
+        let session = self.session === Self.defaultSession ? (session ?? self.session) : self.session
         let url = baseURL.appendingPathComponent("api").appendingPathComponent(path)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

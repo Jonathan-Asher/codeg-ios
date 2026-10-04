@@ -214,7 +214,9 @@ final class SessionDetailViewModel {
     /// rolled back before then, this row is deleted so no empty conversation
     /// lingers on other clients and the draft's pickers re-open.
     private var draftCreatedConversationID: Int?
-    private var stream: EventStream?
+    private var stream: (any SessionEventStream)?
+    /// Opens the event socket (an ``EventStream``; a scripted one in tests).
+    private let makeEventStream: @MainActor () -> any SessionEventStream
     /// The outer send pipeline (resolve connection → open stream → prompt).
     private var sendTask: Task<Void, Never>?
     /// The long-lived loop consuming `stream.frames`.
@@ -238,10 +240,32 @@ final class SessionDetailViewModel {
     /// frame). Past `maxStreamReconnects`, recovery gives up and reconciles.
     private var streamReconnects = 0
     private static let maxStreamReconnects = 6
+    /// The prompt is on its way to the server. A reconnect snapshot taken now
+    /// can predate it, so it says nothing yet about whether this turn ended.
+    private var promptInFlight = false
+    /// The socket dropped after the attach was confirmed but before the send
+    /// marked its turn active, so no reconnect was started; the send starts
+    /// one once the prompt is accepted.
+    private var streamLostBeforeTurn = false
+    /// `user_message` ids the stream echoed since the last send: the server
+    /// broadcasts each accepted prompt under the client message id it was
+    /// sent with, so an id here proves the prompt was taken.
+    private var echoedUserMessageIDs: Set<String> = []
+    /// A cold reattach whose socket dropped before its snapshot tries again.
+    private var reattachRetryTask: Task<Void, Never>?
+    /// Cold reattach attempts lost to a dropped socket since the last snapshot.
+    private var reattachDrops = 0
+    private static let maxReattachDrops = 3
 
-    private init(client: CodegClient, mode: Mode) {
+    private init(client: CodegClient, mode: Mode,
+                 makeEventStream: (@MainActor (CodegClient) -> any SessionEventStream)? = nil) {
         self.client = client
         self.mode = mode
+        if let makeEventStream {
+            self.makeEventStream = { makeEventStream(client) }
+        } else {
+            self.makeEventStream = { EventStream(baseURL: client.baseURL, token: client.token) }
+        }
         switch mode {
         case .existing(let id):
             self.conversationID = id
@@ -296,6 +320,14 @@ final class SessionDetailViewModel {
 
     convenience init(client: CodegClient, conversationID: Int) {
         self.init(client: client, mode: .existing(conversationID: conversationID))
+    }
+
+    /// An existing conversation whose event sockets come from `makeEventStream`
+    /// (the unit tests' scripted sockets).
+    convenience init(client: CodegClient, conversationID: Int,
+                     makeEventStream: @escaping @MainActor (CodegClient) -> any SessionEventStream) {
+        self.init(client: client, mode: .existing(conversationID: conversationID),
+                  makeEventStream: makeEventStream)
     }
 
     /// A brand-new task: `load()` immediately fires the first prompt composed
@@ -393,6 +425,7 @@ final class SessionDetailViewModel {
             // discovery miss; the snapshot then decides what's actually running.
             let serverSaysLive = detail.inFlightUserTurnId != nil
                 || detail.summary.status == .inProgress
+            reattachDrops = 0
             await reattachIfLive(serverSaysLive: serverSaysLive)
         } catch {
             // A foreground refresh failing silently leaves the existing transcript
@@ -784,6 +817,11 @@ final class SessionDetailViewModel {
         backgroundOutstanding = 0
         insertedNotes = []
         notice = nil
+        echoedUserMessageIDs = []
+        // This send attaches its own stream; a cold reattach still waiting to
+        // retry would only be superseded by it.
+        reattachRetryTask?.cancel()
+        reattachRetryTask = nil
         // The user's own send always re-pins, even if they'd scrolled up.
         requestStickToBottom()
 
@@ -807,37 +845,22 @@ final class SessionDetailViewModel {
             let conn = try await resolveConnection()
             connectionID = conn
 
-            // Open the event stream and wait until it is ready + attached.
-            try await openStream(connectionID: conn, live: live)
-            guard !Task.isCancelled else { return }
-
-            isTurnActive = true
-            if case .connecting = sendState { sendState = .thinking }
-
-            // Fire the prompt; the reply arrives over the stream. Once this
-            // returns, the server has accepted the turn — past this point a
-            // failure is a *stream* failure (handled by the consumer loop), not a
-            // send failure, so the optimistic turn must stay on screen.
-            try await sendPrompt(conn: conn, text: text, attachments: sending, clientMessageID: clientMessageID)
-            // Prompt accepted — the created conversation is now legitimately in use,
-            // so it must not be rolled back by a later stream failure.
-            draftCreatedConversationID = nil
-            attachPhase = nil
-            refreshSteeringAvailability(connectionID: conn)
+            try await attachAndPrompt(conn: conn, text: text, attachments: sending, live: live,
+                                      clientMessageID: clientMessageID)
         } catch let error as APIError where error.isStaleConnection {
             // Stale connection → drop it and retry once with a fresh spawn.
             connectionID = nil
             await retrySendOnce(text: text, attachments: sending, live: live, clientMessageID: clientMessageID, userTurnID: userTurnID)
         } catch APIError.turnInProgress {
-            notice = "A turn is already running on this session. Try again in a moment."
-            discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
+            parkBehindRunningTurn(userTurnID: userTurnID, live: live, text: text, attachments: sending)
         } catch is CancellationError {
             // Cancelled by the user / view teardown — handled in cancel().
         } catch {
-            // Reaching here means the prompt was never accepted (resolve/attach/
-            // prompt threw), so the optimistic user turn never made it to the
-            // server. Roll it back and surface why, instead of stranding a
-            // phantom "sent" message in the transcript.
+            // Reaching here means the prompt was never accepted (resolve or the
+            // prompt itself threw; a socket that won't attach no longer fails a
+            // send), so the optimistic user turn never made it to the server.
+            // Roll it back and surface why, instead of stranding a phantom
+            // "sent" message in the transcript.
             discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
             notice = Self.describe(error)
         }
@@ -855,23 +878,99 @@ final class SessionDetailViewModel {
                 preferredConfigValues: prefs.configValues
             )
             connectionID = conn
-            try await openStream(connectionID: conn, live: live)
-            guard !Task.isCancelled else { return }
-            isTurnActive = true
-            if case .connecting = sendState { sendState = .thinking }
-            try await sendPrompt(conn: conn, text: text, attachments: sending, clientMessageID: clientMessageID)
-            draftCreatedConversationID = nil
-            attachPhase = nil
-            refreshSteeringAvailability(connectionID: conn)
+            try await attachAndPrompt(conn: conn, text: text, attachments: sending, live: live,
+                                      clientMessageID: clientMessageID)
         } catch is CancellationError {
             // no-op
         } catch APIError.turnInProgress {
-            notice = "A turn is already running on this session. Try again in a moment."
-            discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
+            parkBehindRunningTurn(userTurnID: userTurnID, live: live, text: text, attachments: sending)
         } catch {
             discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
             notice = Self.describe(error)
         }
+    }
+
+    /// Attach the event stream, then fire the prompt. Only the prompt can fail
+    /// the send: a socket that drops before its attach is confirmed is opened
+    /// again, and when it still won't attach the prompt goes anyway and the
+    /// stream is recovered once the turn runs. The reconnect's snapshot carries
+    /// everything the agent streamed in the meantime.
+    private func attachAndPrompt(conn: String, text: String, attachments sending: [Attachment],
+                                 live: LiveTurn, clientMessageID: String) async throws {
+        let attached = try await openStream(connectionID: conn, live: live)
+        try Task.checkCancellation()
+
+        isTurnActive = true
+        if case .connecting = sendState { sendState = .thinking }
+
+        // Fire the prompt; the reply arrives over the stream. Once this
+        // returns, the server has accepted the turn — past this point a
+        // failure is a *stream* failure (handled by the consumer loop), not a
+        // send failure, so the optimistic turn must stay on screen.
+        promptInFlight = true
+        defer { promptInFlight = false }
+        try await sendPromptConfirmed(conn: conn, text: text, attachments: sending, clientMessageID: clientMessageID)
+        // Prompt accepted — the created conversation is now legitimately in use,
+        // so it must not be rolled back by a later stream failure.
+        draftCreatedConversationID = nil
+        attachPhase = nil
+        refreshSteeringAvailability(connectionID: conn)
+        if !attached || streamLostBeforeTurn {
+            streamLostBeforeTurn = false
+            reconnectStream(into: live, connectionID: conn, reason: nil)
+        }
+    }
+
+    /// `acp_prompt`, where an unclear failure is checked against the server
+    /// before it fails the send: a lost response (LTE), a timeout or a 5xx can
+    /// come back for a prompt the server took, and a retried request is told
+    /// a turn is already running — its own. The prompt counts as sent when the
+    /// stream echoed its client message id or the connection's snapshot shows
+    /// it as the running turn's prompt. Otherwise the error stands.
+    private func sendPromptConfirmed(conn: String, text: String, attachments sending: [Attachment],
+                                     clientMessageID: String) async throws {
+        do {
+            try await sendPrompt(conn: conn, text: text, attachments: sending, clientMessageID: clientMessageID)
+        } catch let error as APIError {
+            let unclear: Bool
+            if case .turnInProgress = error { unclear = true } else { unclear = error.isTransient }
+            guard unclear else { throw error }
+            let checks: Int
+            if case .turnInProgress = error { checks = 1 } else { checks = 3 }
+            let accepted = await promptWasAccepted(conn: conn, clientMessageID: clientMessageID, checks: checks)
+            if !accepted { throw error }
+        }
+    }
+
+    /// Whether the server took the prompt sent with `clientMessageID`. A server
+    /// that can't be reached now can't confirm anything, so the first failed
+    /// check ends the questions.
+    private func promptWasAccepted(conn: String, clientMessageID: String, checks: Int) async -> Bool {
+        for check in 0..<max(1, checks) {
+            if echoedUserMessageIDs.contains(clientMessageID) { return true }
+            let snap: LiveSessionSnapshot?
+            do { snap = try await client.liveSessionSnapshot(connectionId: conn) } catch { break }
+            if echoedUserMessageIDs.contains(clientMessageID)
+                || SendConfirmation.promptIsRunning(clientMessageID: clientMessageID, in: snap) {
+                return true
+            }
+            if check < checks - 1 { try? await Task.sleep(for: .milliseconds(700)) }
+        }
+        return echoedUserMessageIDs.contains(clientMessageID)
+    }
+
+    /// The server is running a turn this screen didn't know about: one started
+    /// from another client, or one it lost track of while its socket was down.
+    /// Keep the message instead of handing it back: queue it at the front, and
+    /// attach to that turn so the message goes when the turn ends (or at once,
+    /// when the turn is only held open for background work).
+    private func parkBehindRunningTurn(userTurnID: String, live: LiveTurn, text: String, attachments sending: [Attachment]) {
+        discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text,
+                              restoringAttachments: sending, restoreToComposer: false)
+        queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending,
+                                            holdUntilTurnEnd: false), at: 0)
+        notice = "A turn is already running on this session. Your message is queued and goes when it ends."
+        Task { [weak self] in await self?.reattachIfLive(serverSaysLive: true) }
     }
 
     /// The user's last-used mode/config for the active agent, sent on every
@@ -1001,15 +1100,43 @@ final class SessionDetailViewModel {
     /// `openStream` can return only after the stream is attached. Single-shot.
     private var readyContinuation: CheckedContinuation<Void, Error>?
 
-    /// Opens a fresh `EventStream`, spawns the single consumer loop, and suspends
-    /// until that loop has seen `.ready` and attached. There is exactly one
-    /// iterator over `frames` — the consumer loop — so frames are never dropped.
-    private func openStream(connectionID conn: String, live: LiveTurn) async throws {
-        closeStream()
+    /// Open the send's event stream: attach, and when the socket drops before
+    /// the server confirms the attach, open a fresh one (see
+    /// ``StreamHandshake``). Returns whether a stream is attached; `false` means
+    /// the caller prompts without one and recovers the stream afterwards.
+    /// Throws only `APIError.streamGone` (the connection is gone: retry with a
+    /// fresh one) and cancellation.
+    private func openStream(connectionID conn: String, live: LiveTurn) async throws -> Bool {
         streamReconnects = 0   // fresh send → fresh reconnect budget
+        streamLostBeforeTurn = false
+        var attempt = 0
+        while true {
+            attempt += 1
+            do {
+                try await attachStream(connectionID: conn, live: live)
+                return true
+            } catch let failure as StreamHandshake.Failure {
+                switch StreamHandshake.next(after: failure, attempt: attempt) {
+                case .retry(let delay):
+                    closeStream()
+                    try await Task.sleep(for: delay)
+                case .promptWithoutStream:
+                    closeStream()
+                    return false
+                }
+            }
+        }
+    }
+
+    /// Opens a fresh event stream, spawns the single consumer loop, and suspends
+    /// until that loop has seen `.ready` and the server confirmed the attach.
+    /// There is exactly one iterator over `frames` — the consumer loop — so
+    /// frames are never dropped.
+    private func attachStream(connectionID conn: String, live: LiveTurn) async throws {
+        closeStream()
         streamGeneration &+= 1
         let generation = streamGeneration
-        let newStream = EventStream(baseURL: client.baseURL, token: client.token)
+        let newStream = makeEventStream()
         stream = newStream
         newStream.start()
 
@@ -1019,14 +1146,11 @@ final class SessionDetailViewModel {
 
         // Safety net for a hung socket. A healthy server always answers `attach`
         // immediately — either a snapshot/replay frame (success) or a detached
-        // frame (connection gone). If neither arrives within the window, FAIL the
-        // send rather than prompting without a confirmed subscription: a blind
-        // `acp_prompt` could reach the server before the attach registers, so the
-        // reply's first events would be delivered to no subscriber and lost.
+        // frame (connection gone). Only this attempt's own timer may end it.
         let readyTimeout = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(12))
-            self?.resumeReady(throwing: APIError.transport(
-                "the live connection timed out — check the server and try again"))
+            do { try await Task.sleep(for: StreamHandshake.attachTimeout) } catch { return }
+            guard let self, self.streamGeneration == generation else { return }
+            self.resumeReady(throwing: StreamHandshake.Failure.timedOut)
         }
         defer { readyTimeout.cancel() }
 
@@ -1049,7 +1173,7 @@ final class SessionDetailViewModel {
     /// frames onto the live turn, and finalizes on terminal frames. A superseded
     /// consumer (its `generation` no longer current) ignores its terminal frames
     /// so it can't end a turn that a newer stream now owns.
-    private func consume(stream: EventStream, connectionID conn: String, live: LiveTurn, generation: Int) async {
+    private func consume(stream: any SessionEventStream, connectionID conn: String, live: LiveTurn, generation: Int) async {
         // The turn this consumer feeds. A mid-turn reconnect REPLACES it with the
         // turn rebuilt from the fresh attach snapshot (see `.snapshot` below), so
         // every frame after that point lands on the turn the transcript is showing
@@ -1065,7 +1189,7 @@ final class SessionDetailViewModel {
                 // prompt is fired. Otherwise acp_prompt (a separate HTTP request)
                 // can reach the server before the WS attach is registered, and the
                 // first streamed events would be delivered to no subscriber.
-                stream.attach(subscriptionId: subscriptionID, connectionId: conn)
+                stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
             case .snapshot(let snap):
                 // Attach confirmed — a healthy socket. Reset the reconnect budget
                 // and (for the initial connect) release the waiting send.
@@ -1079,33 +1203,47 @@ final class SessionDetailViewModel {
                 // with no way to approve. Mirrors `consumeReattach` + the web client.
                 // Skipped during the INITIAL attach handshake (readyContinuation set)
                 // — that snapshot is the pre-prompt state and carries no live card.
-                if isCurrent, readyContinuation == nil, isTurnActive {
-                    // The agent kept replying while the socket was down and those
-                    // events reached no subscriber. The snapshot's `live_message` is
-                    // the COMPLETE in-flight reply, so adopt it wholesale instead of
-                    // keeping the turn that stopped at the drop — otherwise whatever
-                    // was produced during the outage stays missing from the open
-                    // screen until the user leaves and re-enters the session (the
-                    // reply is there on re-entry, which is exactly the tell).
-                    //
-                    // Deliberately does NOT set `liveTurnFromReattach` — the one
-                    // thing `consumeReattach` does that must not be copied here. That
-                    // flag drops the persisted assistant turns trailing the last user
-                    // prompt, and on the send path those are the PREVIOUS turn's
-                    // finished reply: `turns` is never refetched mid-turn, so it
-                    // holds no partial copy of THIS reply to double-render.
-                    if let rebuilt = buildLiveTurn(from: snap) {
-                        live = rebuilt
-                        liveTurn = rebuilt
-                        // Recovery parked the status line on "connecting"; the reply
-                        // is streaming again, so say so (without stomping a tool run).
-                        if case .running = sendState {} else { sendState = .thinking }
-                        // Follow the new content only for a reader who is still
-                        // pinned — a socket blip must not yank someone who scrolled
-                        // up, unlike a fresh open or the user's own send.
-                        requestScrollToBottom()
+                //
+                // While the prompt is still on its way the snapshot can predate
+                // it, so it says nothing about this turn: keep the turn as is.
+                if isCurrent, readyContinuation == nil, isTurnActive, !promptInFlight {
+                    switch snap.turnPhase {
+                    case .running:
+                        // The agent kept replying while the socket was down and those
+                        // events reached no subscriber. The snapshot's `live_message` is
+                        // the COMPLETE in-flight reply, so adopt it wholesale instead of
+                        // keeping the turn that stopped at the drop — otherwise whatever
+                        // was produced during the outage stays missing from the open
+                        // screen until the user leaves and re-enters the session (the
+                        // reply is there on re-entry, which is exactly the tell).
+                        //
+                        // Deliberately does NOT set `liveTurnFromReattach` — the one
+                        // thing `consumeReattach` does that must not be copied here. That
+                        // flag drops the persisted assistant turns trailing the last user
+                        // prompt, and on the send path those are the PREVIOUS turn's
+                        // finished reply: `turns` is never refetched mid-turn, so it
+                        // holds no partial copy of THIS reply to double-render.
+                        if let rebuilt = buildLiveTurn(from: snap) {
+                            live = rebuilt
+                            liveTurn = rebuilt
+                            // Recovery parked the status line on "connecting"; the reply
+                            // is streaming again, so say so (without stomping a tool run).
+                            if case .running = sendState {} else { sendState = .thinking }
+                            // Follow the new content only for a reader who is still
+                            // pinned — a socket blip must not yank someone who scrolled
+                            // up, unlike a fresh open or the user's own send.
+                            requestScrollToBottom()
+                        }
+                        restorePending(from: snap)
+                    case .starting:
+                        // The agent is taking the prompt; its events follow on this socket.
+                        break
+                    case .ended, .connectionDown:
+                        // The turn ended while the socket was down, so its
+                        // `turn_complete` never reached this screen. Without this the
+                        // reply stays "working" for good and the queue never moves.
+                        settleIfTurnEnded(live: live, connectionID: conn, reading: snap.turnPhase)
                     }
-                    restorePending(from: snap)
                 }
                 if isCurrent { resumeReady(throwing: nil) }
             case .replay:
@@ -1117,20 +1255,27 @@ final class SessionDetailViewModel {
                 if isCurrent { handle(event: envelope.event, live: live) }
             case .detached(let reason):
                 guard isCurrent else { return }
-                // During the attach handshake (before the prompt is accepted),
-                // surface the detach so `runSend` retries with a fresh connection.
+                // During the attach handshake (before the prompt is accepted), a
+                // gone connection makes `runSend` retry with a fresh one; any other
+                // detach is a passing one and the handshake opens a fresh socket.
                 if readyContinuation != nil {
-                    let error: APIError = reason == "connection_gone"
-                        ? .streamGone
-                        : .transport(reason.isEmpty ? "The session detached." : reason)
-                    resumeReady(throwing: error)
+                    if reason == "connection_gone" {
+                        resumeReady(throwing: APIError.streamGone)
+                    } else {
+                        resumeReady(throwing: StreamHandshake.Failure.dropped(reason: reason))
+                    }
                     return
                 }
                 // Mid-turn detach. `connection_gone` is terminal (the connection
                 // was GC'd) — reconcile rather than blindly error, since the turn
                 // may have finished. `lagged` / `server_shutdown` are transient:
                 // re-attach silently, matching the web client.
-                guard isTurnActive else { return }
+                guard isTurnActive else {
+                    // Attached, but the send hasn't marked its turn active yet:
+                    // it recovers the stream once the prompt is accepted.
+                    if reason != "connection_gone" { streamLostBeforeTurn = true }
+                    return
+                }
                 if reason == "connection_gone" {
                     // Bind before the closure: `live` is a `var` now (a reconnect can
                     // adopt the snapshot's turn) and a `Task` may only capture an
@@ -1144,16 +1289,23 @@ final class SessionDetailViewModel {
                 return
             case .closed(let reason):
                 guard isCurrent else { return }
-                // Socket dropped during the attach handshake: fail the send (nothing
-                // streamed yet) so `runSend` can retry from a clean connection.
+                // Socket dropped during the attach handshake (a frame too large for
+                // it, a lost connection): nothing streamed yet, so the handshake
+                // opens a fresh socket. It never fails the send.
                 if readyContinuation != nil {
-                    resumeReady(throwing: APIError.transport(reason ?? "The event stream closed unexpectedly."))
+                    resumeReady(throwing: StreamHandshake.Failure.dropped(reason: reason))
                     return
                 }
                 // Past the handshake a turn is streaming. The ACP connection
                 // outlives the WebSocket, so a dropped socket is a transport blip:
                 // re-attach silently instead of erroring (web parity).
-                if isTurnActive { reconnectStream(into: live, connectionID: conn, reason: reason) }
+                if isTurnActive {
+                    reconnectStream(into: live, connectionID: conn, reason: reason)
+                } else {
+                    // Attached, but the send hasn't marked its turn active yet:
+                    // it recovers the stream once the prompt is accepted.
+                    streamLostBeforeTurn = true
+                }
                 return
             }
         }
@@ -1226,7 +1378,7 @@ final class SessionDetailViewModel {
         closeStream()
         streamGeneration &+= 1
         let generation = streamGeneration
-        let newStream = EventStream(baseURL: client.baseURL, token: client.token)
+        let newStream = makeEventStream()
         stream = newStream
         newStream.start()
         consumerTask = Task { [weak self] in
@@ -1253,7 +1405,7 @@ final class SessionDetailViewModel {
     /// continuation to release and it BUILDS the live turn from the attach snapshot
     /// rather than being handed one. If the snapshot shows nothing in flight, it
     /// closes the stream (idle connection — leave it alone).
-    private func consumeReattach(stream: EventStream, connectionID conn: String, generation: Int, serverSaysLive: Bool = false) async {
+    private func consumeReattach(stream: any SessionEventStream, connectionID conn: String, generation: Int, serverSaysLive: Bool = false) async {
         var live: LiveTurn?
         for await frame in stream.frames {
             if Task.isCancelled { return }
@@ -1261,10 +1413,14 @@ final class SessionDetailViewModel {
             guard generation == streamGeneration else { return }
             switch frame {
             case .ready:
-                stream.attach(subscriptionId: subscriptionID, connectionId: conn)
+                stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
             case .snapshot(let snap):
                 // A snapshot means the socket is healthy — reset the reconnect budget.
                 streamReconnects = 0
+                reattachDrops = 0
+                // A reconnect of a turn this screen already shows, as opposed to
+                // the cold attach that opened the session.
+                let resuming = isTurnActive && liveTurn != nil
                 applyLiveSignals(from: snap)
                 if let rebuilt = buildLiveTurn(from: snap) {
                     live = rebuilt
@@ -1277,6 +1433,13 @@ final class SessionDetailViewModel {
                     restorePending(from: snap)
                     sendState = .thinking
                     requestStickToBottom()
+                } else if resuming, let current = liveTurn {
+                    // The turn on screen ended while the socket was down, so its
+                    // `turn_complete` never arrived. Settle it rather than leave it
+                    // "working" for good with the queue stuck behind it. Frames
+                    // that still arrive feed it meanwhile.
+                    live = current
+                    settleIfTurnEnded(live: current, connectionID: conn, reading: snap.turnPhase)
                 } else {
                     // Idle connection: nothing in flight. Release it.
                     closeStream()
@@ -1295,21 +1458,30 @@ final class SessionDetailViewModel {
                 // The attach snapshot always precedes events, so `live` is set by now.
                 if let live { handle(event: envelope.event, live: live) }
             case .detached(let reason):
-                // Pre-snapshot drops have nothing on screen — stay quiet. Once a
-                // turn is live, recover transient detaches silently (web parity);
-                // only `connection_gone` reconciles/fails.
-                guard isTurnActive, let live else { return }
+                // Once a turn is live, recover transient detaches silently (web
+                // parity); only `connection_gone` reconciles/fails. A reconnected
+                // socket that drops before its snapshot still recovers the turn on
+                // screen. With no turn on screen yet, the cold attach tries again.
+                guard isTurnActive, let current = live ?? liveTurn else {
+                    retryReattachAfterDrop(serverSaysLive: serverSaysLive)
+                    return
+                }
                 if reason == "connection_gone" {
-                    Task { [weak self] in await self?.reconcileOrFail(live: live, reason: reason) }
+                    Task { [weak self] in await self?.reconcileOrFail(live: current, reason: reason) }
                 } else {
-                    reconnectStream(into: live, connectionID: conn, reason: reason, reattach: true)
+                    reconnectStream(into: current, connectionID: conn, reason: reason, reattach: true)
                 }
                 return
             case .closed(let reason):
                 // A socket drop while a turn is live is a transport blip — re-attach
-                // silently. (Before the snapshot there's nothing to recover.)
-                if isTurnActive, let live {
-                    reconnectStream(into: live, connectionID: conn, reason: reason, reattach: true)
+                // silently, also when the drop hit a reconnected socket before its
+                // snapshot. With no turn on screen yet, the cold attach tries again,
+                // so a session whose turn runs on the server doesn't stay
+                // unattached here.
+                if isTurnActive, let current = live ?? liveTurn {
+                    reconnectStream(into: current, connectionID: conn, reason: reason, reattach: true)
+                } else {
+                    retryReattachAfterDrop(serverSaysLive: serverSaysLive)
                 }
                 return
             }
@@ -1317,13 +1489,14 @@ final class SessionDetailViewModel {
     }
 
     /// Rebuild an in-flight assistant turn from a reattach snapshot. Returns nil
-    /// when the connection is idle (no live message, no plan, no pending card, and
-    /// not actively prompting).
+    /// when no turn runs: the connection isn't prompting and no card waits. A
+    /// `live_message` on an idle connection is out-of-turn output (the agent
+    /// woke up for a background task after its turn ended), not a turn: reading
+    /// it as one showed "Working" here while the session list, the server and
+    /// the web client all said idle, and the reply never ended.
     private func buildLiveTurn(from snap: LiveSessionSnapshot) -> LiveTurn? {
+        guard snap.isTurnInFlight else { return nil }
         let blocks = snap.liveMessage?.content ?? []
-        let hasPending = snap.pendingPermission != nil || snap.pendingQuestion != nil
-            || snap.pendingPlanApproval != nil
-        guard !blocks.isEmpty || hasPending || snap.status == .prompting else { return nil }
 
         let live = LiveTurn()
         let toolsById = Dictionary((snap.activeToolCalls ?? []).map { ($0.id, $0) },
@@ -1428,9 +1601,11 @@ final class SessionDetailViewModel {
         case .usageUpdate(let used, let size):
             applyUsage(used: used, size: size)
 
-        case .userMessage:
+        case .userMessage(let messageId, _):
             // The server echoes our own prompt; we already showed it optimistically.
-            break
+            // The echo carries the client message id it was sent with, which
+            // proves the prompt was accepted if its HTTP response goes missing.
+            if !messageId.isEmpty { echoedUserMessageIDs.insert(messageId) }
 
         case .turnComplete(let stopReason):
             finalize(live: live, stopReason: stopReason)
@@ -1585,9 +1760,11 @@ final class SessionDetailViewModel {
 
     /// Roll back an optimistic send that failed *before the server accepted the
     /// prompt*: tear down the stream, drop the pending user turn and its empty
-    /// live placeholder, and restore the user's text so they can retry. The
-    /// caller surfaces the reason via `notice`.
-    private func discardOptimisticSend(userTurnID: String, live: LiveTurn, restoringDraft text: String, restoringAttachments sent: [Attachment]) {
+    /// live placeholder, and restore the user's text so they can retry (unless
+    /// `restoreToComposer` is false: the caller keeps the message elsewhere).
+    /// The caller surfaces the reason via `notice`.
+    private func discardOptimisticSend(userTurnID: String, live: LiveTurn, restoringDraft text: String,
+                                       restoringAttachments sent: [Attachment], restoreToComposer: Bool = true) {
         isTurnActive = false
         clearInteractivePrompts()
         closeStream()
@@ -1611,13 +1788,15 @@ final class SessionDetailViewModel {
         // The send failed before the server accepted it, so no conversation was
         // created — re-open the draft's agent/folder pickers for an edited retry.
         if conversationID == nil { hasStartedFirstSend = false }
-        // Don't clobber a fresh draft the user may have started typing.
-        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            draft = text
-        }
-        // Restore the staged images too, unless the user has since added new ones.
-        if attachments.isEmpty, !sent.isEmpty {
-            attachments = sent
+        if restoreToComposer {
+            // Don't clobber a fresh draft the user may have started typing.
+            if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                draft = text
+            }
+            // Restore the staged images too, unless the user has since added new ones.
+            if attachments.isEmpty, !sent.isEmpty {
+                attachments = sent
+            }
         }
         requestScrollToBottom()
     }
@@ -1703,7 +1882,7 @@ final class SessionDetailViewModel {
             guard let self, !Task.isCancelled,
                   self.liveTurn === live, self.isTurnActive,
                   generation == self.streamGeneration else { return }
-            let newStream = EventStream(baseURL: self.client.baseURL, token: self.client.token)
+            let newStream = self.makeEventStream()
             self.stream = newStream
             newStream.start()
             self.consumerTask = Task { [weak self] in
@@ -1713,6 +1892,56 @@ final class SessionDetailViewModel {
                     await self?.consume(stream: newStream, connectionID: conn, live: live, generation: generation)
                 }
             }
+        }
+    }
+
+    /// A reconnect found no turn running on the connection while this screen
+    /// still shows one: it ended while the socket was down. Ask the server once
+    /// more after a moment (an attach can catch the instant before the agent
+    /// starts on a fresh prompt), then settle the turn the way its missed
+    /// `turn_complete` would have: finalize and reconcile with the transcript,
+    /// which also sends the next queued message. A connection that is down or
+    /// gone goes through ``reconcileOrFail(live:reason:)`` instead. `reading`
+    /// is the reconnect's own snapshot, used when the server can't be asked.
+    private func settleIfTurnEnded(live: LiveTurn, connectionID conn: String,
+                                   reading: LiveSessionSnapshot.TurnPhase = .ended) {
+        guard liveTurn === live, isTurnActive else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, self.liveTurn === live, self.isTurnActive, !self.promptInFlight else { return }
+            var phase: LiveSessionSnapshot.TurnPhase? = reading
+            do {
+                phase = try await self.client.liveSessionSnapshot(connectionId: conn)?.turnPhase
+            } catch {
+                // The server didn't answer: go by what the reconnect saw.
+            }
+            guard self.liveTurn === live, self.isTurnActive, !self.promptInFlight else { return }
+            switch phase {
+            case .running?, .starting?:
+                // A turn runs after all; its frames reach the attached socket.
+                return
+            case .ended?:
+                self.finalize(live: live, stopReason: "end_turn")
+            case .connectionDown?, nil:
+                await self.reconcileOrFail(live: live, reason: nil)
+            }
+        }
+    }
+
+    /// The socket of a cold reattach dropped before its snapshot, with no turn on
+    /// screen yet: try again a few times with a backoff, so a session whose turn
+    /// runs on the server doesn't stay unattached here for the screen's
+    /// lifetime (the dead socket also blocked every later reattach).
+    private func retryReattachAfterDrop(serverSaysLive: Bool) {
+        closeStream()
+        guard liveTurn == nil, reattachDrops < Self.maxReattachDrops else { return }
+        reattachDrops += 1
+        let delay = 0.5 * pow(2.0, Double(reattachDrops - 1))
+        reattachRetryTask?.cancel()
+        reattachRetryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            await self.reattachIfLive(serverSaysLive: serverSaysLive)
         }
     }
 
@@ -1738,8 +1967,13 @@ final class SessionDetailViewModel {
                 pendingUserTurns.removeAll()
                 liveTurn = nil
                 sendState = .idle
+                insertedNotes = []
+                awaitingBackground = false
+                backgroundOutstanding = 0
                 closeStream()
                 requestScrollToBottom()
+                // The turn is over: what waited for its end goes now.
+                sendNextQueued()
                 return
             }
         }
@@ -2107,13 +2341,25 @@ final class SessionDetailViewModel {
         if !sending.isEmpty {
             blocks = (text.isEmpty ? [] : [PromptInputBlock.text(text)]) + sending.map(\.promptInputBlock)
         }
+        var failure: Error?
         do {
             try await client.submitSessionFeedback(connectionId: conn, text: text, blocks: blocks)
-            // Native steering reaches the agent at once.
-            if let idx = insertedNotes.firstIndex(where: { $0.id == note.id }), nativeSteeringAvailable {
-                insertedNotes[idx].delivered = true
-            }
-        } catch let error as APIError where error.isNoActiveTurn {
+        } catch {
+            failure = error
+        }
+        // A lost response (a timeout, a dropped LTE connection) doesn't mean the
+        // message failed: a message into a turn held open for background work
+        // can take a while to confirm, and the server finishes a delivery it
+        // started. Ask it before handing back a message the agent already has.
+        if case .transport? = failure as? APIError,
+           await insertWasRecorded(noteID: note.id, text: text, connectionID: conn) {
+            failure = nil
+        }
+        guard let error = failure else {
+            markInsertDelivered(note.id)
+            return
+        }
+        if let api = error as? APIError, api.isNoActiveTurn {
             insertedNotes.removeAll { $0.id == note.id }
             // The turn finished meanwhile: this is simply the next prompt.
             if isInFlight {
@@ -2122,17 +2368,50 @@ final class SessionDetailViewModel {
             } else {
                 startSend(text: text, attachments: sending, fromComposer: false)
             }
-        } catch {
-            insertedNotes.removeAll { $0.id == note.id }
-            if restoreToComposer, draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                draft = text
-                if attachments.isEmpty { attachments = sending }
-            } else {
-                queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending,
-                                                    holdUntilTurnEnd: false), at: 0)
-            }
-            notice = Self.describe(error)
+            return
         }
+        insertedNotes.removeAll { $0.id == note.id }
+        if restoreToComposer, draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft = text
+            if attachments.isEmpty { attachments = sending }
+        } else {
+            queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending,
+                                                holdUntilTurnEnd: false), at: 0)
+        }
+        notice = Self.describe(error)
+    }
+
+    /// Native steering reaches the agent at once, so a message the server took
+    /// is delivered.
+    private func markInsertDelivered(_ noteID: UUID) {
+        if let idx = insertedNotes.firstIndex(where: { $0.id == noteID }), nativeSteeringAvailable {
+            insertedNotes[idx].delivered = true
+        }
+    }
+
+    /// Whether the server recorded a message sent into the turn whose response
+    /// never arrived. The stream's `feedback_submitted` echo already tied it to
+    /// a server note, or the connection's snapshot lists a note with its text
+    /// that no other message on screen claims. The server finishes a delivery
+    /// it started even after the request is gone, so it is asked a few times.
+    private func insertWasRecorded(noteID: UUID, text: String, connectionID conn: String) async -> Bool {
+        func echoed() -> Bool { insertedNotes.first(where: { $0.id == noteID })?.serverID != nil }
+        for check in 0..<3 {
+            if echoed() { return true }
+            // A server that can't be reached now can't confirm anything.
+            let snap: LiveSessionSnapshot?
+            do { snap = try await client.liveSessionSnapshot(connectionId: conn) } catch { break }
+            if echoed() { return true }
+            let claimed = Set(insertedNotes.compactMap { $0.id == noteID ? nil : $0.serverID })
+            if let recorded = SendConfirmation.recordedNote(text: text, in: snap?.feedback ?? [], excluding: claimed) {
+                if let idx = insertedNotes.firstIndex(where: { $0.id == noteID }) {
+                    insertedNotes[idx].serverID = recorded.id
+                }
+                return true
+            }
+            if check < 2 { try? await Task.sleep(for: .seconds(1)) }
+        }
+        return echoed()
     }
 
     /// The thread ends on the agent's reply (a finished live reply counts).
@@ -2220,6 +2499,8 @@ final class SessionDetailViewModel {
     func teardown() {
         isOnScreen = false
         presenceReporter.stop()
+        reattachRetryTask?.cancel()
+        reattachRetryTask = nil
         sendTask?.cancel()
         sendTask = nil
         consumerTask?.cancel()

@@ -271,11 +271,24 @@ struct LiveSessionSnapshot: Sendable, Decodable {
     /// Messages can be delivered into the running turn through the native
     /// `_session/steering` channel (fork). Absent means false.
     let nativeSteeringAvailable: Bool
+    /// The id of the prompt the turn in flight answers
+    /// (`pending_user_message.message_id`): the client message id of the send
+    /// that started it. Set when the agent takes the prompt, cleared when the
+    /// turn ends.
+    let pendingUserMessageId: String?
+    /// Messages delivered into the running turn (fork `feedback`), cleared by
+    /// the next turn's prompt.
+    let feedback: [FeedbackNoteSnapshot]
 
     private enum CodingKeys: String, CodingKey {
         case connectionId, conversationId, folderId, status, externalId, eventSeq
         case liveMessage, activeToolCalls, pendingPermission, pendingQuestion, pendingPlanApproval
         case awaitingBackground, backgroundOutstanding, nativeSteeringAvailable
+        case pendingUserMessage, feedback
+    }
+
+    private struct PendingUserMessageRef: Decodable {
+        let messageId: String?
     }
 
     init(from decoder: Decoder) throws {
@@ -294,6 +307,29 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         awaitingBackground = (try? c.decodeIfPresent(Bool.self, forKey: .awaitingBackground)) ?? false
         backgroundOutstanding = (try? c.decodeIfPresent(Int.self, forKey: .backgroundOutstanding)) ?? 0
         nativeSteeringAvailable = (try? c.decodeIfPresent(Bool.self, forKey: .nativeSteeringAvailable)) ?? false
+        pendingUserMessageId = ((try? c.decodeIfPresent(PendingUserMessageRef.self, forKey: .pendingUserMessage)) ?? nil)?
+            .messageId
+        feedback = ((try? c.decodeIfPresent([FeedbackNoteSnapshot].self, forKey: .feedback)) ?? nil) ?? []
+    }
+}
+
+/// One message delivered into the running turn, as the snapshot lists it
+/// (Rust `FeedbackItem`; only what the app matches on).
+struct FeedbackNoteSnapshot: Sendable, Decodable, Equatable {
+    let id: String
+    let text: String
+
+    init(id: String, text: String) {
+        self.id = id
+        self.text = text
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, text }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? ""
+        text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
     }
 }
 

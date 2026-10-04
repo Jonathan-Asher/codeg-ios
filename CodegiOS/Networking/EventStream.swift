@@ -128,6 +128,22 @@ final class EventStream: @unchecked Sendable {
     /// the socket is gone, and we surface that as a `.closed` frame.
     private static let pingInterval: TimeInterval = 20
 
+    /// The largest frame a socket accepts, in bytes. `URLSessionWebSocketTask`
+    /// defaults to 1 MiB, and codeg sends bigger frames: a `background_activity`
+    /// event re-sends a whole growing out-of-turn turn on every update (1.3 to
+    /// 1.5 MB were seen), and an attach snapshot carries a long turn's entire
+    /// live message. Past the limit the receive fails with EMSGSIZE ("Message
+    /// too long") and the socket is torn down, so this is set well above
+    /// anything the server sends.
+    static let maximumMessageSize = 64 * 1024 * 1024
+
+    /// Make a socket task with the limits every codeg socket needs.
+    static func makeTask(session: URLSession, url: URL, protocols: [String]) -> URLSessionWebSocketTask {
+        let task = session.webSocketTask(with: url, protocols: protocols)
+        task.maximumMessageSize = maximumMessageSize
+        return task
+    }
+
     init(baseURL: URL, token: String, session: URLSession = EventStream.streamSession) {
         self.token = token
         self.session = session
@@ -145,7 +161,7 @@ final class EventStream: @unchecked Sendable {
 
     func start() {
         let protocols = ["codeg-events", "codeg-token.\(EventStream.base64URLNoPad(token))", Self.iosClientProtocol]
-        let newTask = session.webSocketTask(with: url, protocols: protocols)
+        let newTask = Self.makeTask(session: session, url: url, protocols: protocols)
         lock.lock(); task = newTask; lock.unlock()
         newTask.resume()
         receiveLoop()

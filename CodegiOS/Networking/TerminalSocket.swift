@@ -46,7 +46,9 @@ final class TerminalSocket: @unchecked Sendable {
 
     func start() {
         let protocols = ["codeg-events", "codeg-token.\(EventStream.base64URLNoPad(token))"]
-        let newTask = session.webSocketTask(with: url, protocols: protocols)
+        // The same frame-size limit as the event stream: the socket carries the
+        // server's whole firehose, not only this terminal's output.
+        let newTask = EventStream.makeTask(session: session, url: url, protocols: protocols)
         lock.lock(); task = newTask; lock.unlock()
         newTask.resume()
         receiveLoop()
