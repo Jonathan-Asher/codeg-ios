@@ -22,7 +22,7 @@ enum SpeechText {
                 if !text.isEmpty { paragraphs.append(text) }
             case .toolUse(_, let name, _, _):
                 if options.includeToolOutput { paragraphs.append(sentence("Tool: \(name)")) }
-            case .toolResult(_, let output, _):
+            case .toolResult(_, let output, _, _):
                 guard options.includeToolOutput, let output else { continue }
                 let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }

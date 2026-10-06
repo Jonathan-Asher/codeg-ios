@@ -143,6 +143,7 @@ struct TranscriptView<Header: View>: View {
         var effectiveStart: Int
         var pendingIDs: [String]
         var suppressInFlight: Bool
+        var liveCoverage: TranscriptTimeline.LiveCoverage?
         var agent: AgentType
     }
     private final class PersistedMemo {
@@ -157,8 +158,18 @@ struct TranscriptView<Header: View>: View {
     /// originating question in-window (jump-to-question stays correct).
     private var effectiveStart: Int {
         if let s = windowStartTurn { return min(max(0, s), turns.count) }
-        guard turns.count > initialTurnWindow else { return 0 }
-        return snappedStart(turns.count - initialTurnWindow)
+        // While a reattached live turn stands in for the persisted copy of the
+        // running reply, that copy is hidden: count the window back from the
+        // reply's prompt. Counting from the end let a long running reply push
+        // everything the reader had on screen out of the window, leaving the
+        // prompt and the live turn alone on a screen too short to scroll.
+        var tailEnd = turns.count
+        if liveTurn != nil, liveOwnsInFlightReply,
+           let prompt = turns.lastIndex(where: { $0.role == .user }) {
+            tailEnd = prompt + 1
+        }
+        guard tailEnd > initialTurnWindow else { return 0 }
+        return snappedStart(tailEnd - initialTurnWindow)
     }
 
     /// Whether the window reaches the true start of the conversation (everything
@@ -184,11 +195,17 @@ struct TranscriptView<Header: View>: View {
     private var nodes: [TimelineNode] {
         let start = effectiveStart
         let suppressInFlight = liveTurn != nil && liveOwnsInFlightReply
+        // What the live turn holds, so the persisted copy is hidden only where
+        // the live one shows all of it (see `TranscriptTimeline.liveCovers`).
+        let coverage = suppressInFlight
+            ? liveTurn.map { TranscriptTimeline.LiveCoverage(toolIDs: $0.toolCallIDs, imageCount: $0.imageCount) }
+            : nil
         let key = PersistedKey(
             turnsVersion: turnsVersion,
             effectiveStart: start,
             pendingIDs: pendingUserTurns.map(\.id),
             suppressInFlight: suppressInFlight,
+            liveCoverage: coverage,
             agent: agent
         )
 
@@ -199,7 +216,7 @@ struct TranscriptView<Header: View>: View {
             let slice = start == 0 ? turns : Array(turns[start...])
             persisted = TranscriptTimeline.buildPersisted(
                 turns: slice, pending: pendingUserTurns, agent: agent,
-                suppressInFlight: suppressInFlight
+                suppressInFlight: suppressInFlight, liveCoverage: coverage
             )
             persistedMemo.key = key
             persistedMemo.nodes = persisted
@@ -250,6 +267,20 @@ struct TranscriptView<Header: View>: View {
                         .controlSize(.small)
                         .frame(maxWidth: .infinity)
                         .modifier(TimelineRowChrome(top: 14, leading: TimelineMetrics.rowTrailingInset))
+                } else {
+                    // Older turns normally load as the reader nears the top. A
+                    // window too short to scroll never gets near it, so the way
+                    // up is also a plain button.
+                    Button {
+                        loadEarlier()
+                    } label: {
+                        Label("Show earlier messages", systemImage: "arrow.up")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(maxWidth: .infinity)
+                    .modifier(TimelineRowChrome(top: 14, leading: TimelineMetrics.rowTrailingInset))
                 }
 
                 ForEach(nodes) { node in

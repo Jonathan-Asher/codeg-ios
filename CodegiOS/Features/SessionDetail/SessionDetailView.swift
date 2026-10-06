@@ -284,7 +284,7 @@ struct SessionDetailView: View {
             turns: model.turns,
             pendingUserTurns: model.pendingUserTurns,
             liveTurn: model.liveTurn,
-            liveOwnsInFlightReply: model.liveTurnFromReattach,
+            liveOwnsInFlightReply: model.liveTurnFromReattach && !model.liveCopyIncomplete,
             agent: model.agentTypeForUI,
             turnsVersion: model.turnsVersion,
             scrollTick: model.scrollTick,
@@ -317,6 +317,7 @@ struct SessionDetailView: View {
             .padding(.top, 4)
             .padding(.bottom, 6)
         }
+        .environment(\.codegImageSource, model.imageSource)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.snappy(duration: 0.28), value: model.pendingUserTurns)
         .animation(.snappy(duration: 0.28), value: model.liveTurn?.id)

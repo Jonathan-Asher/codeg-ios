@@ -118,6 +118,26 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- Pictures a tool returned never showed (1.3.5): the drawings an agent
+  rendered and read back, the screenshots it took. The transcript, the live
+  stream and a reattach's snapshot all carry them (`images` on a tool
+  result or tool call); each now shows right after its tool's card, and a
+  live reply keeps showing them through later updates and into the
+  transcript.
+- A session opened while its turn ran could hide part of its history (1.3.5).
+  The live turn rebuilt from the snapshot stands in for the persisted copy
+  of the running reply; it now does so only while it holds every tool call
+  and picture of that copy, so a trimmed snapshot, or a prompt not yet in the
+  transcript, never hides a reply (the previous one included). The 50-turn
+  window counts back from the running reply's prompt, so a long running
+  reply no longer pushes the rest of the history out of reach, and "Show
+  earlier messages" at the top loads older turns when the screen is too
+  short to scroll.
+- The event socket now tells the server it takes 64 MiB frames
+  (`codeg-max-frame`), so the server stops shrinking frames for it (1.3.5).
+  A frame an older server did shrink (`frame_cut`) makes the session reload
+  its transcript instead of keeping the incomplete copy, and an image sent
+  by reference (`data_ref`) loads from the server.
 - "Network error: The operation couldn't be completed. Message too long" on
   send (1.3.4). The event socket kept `URLSessionWebSocketTask`'s 1 MiB frame
   limit, and codeg sends bigger frames (a background-activity update re-sends

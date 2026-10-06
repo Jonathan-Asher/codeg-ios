@@ -23,8 +23,12 @@ final class LiveToolCall: Identifiable {
     /// terminal status the delegate card prefers over the running ack. Patched in
     /// place when a `tool_call_update` carries a newer meta.
     var meta: AnyJSON?
+    /// Pictures the tool returned (a Read of a PNG, a screenshot). Replaced by
+    /// an update that carries images, kept by one that carries none.
+    var images: [ImageData]
 
-    init(id: String, title: String, kind: String, status: String, rawInput: String?, rawOutput: String, content: String? = nil, meta: AnyJSON? = nil) {
+    init(id: String, title: String, kind: String, status: String, rawInput: String?, rawOutput: String,
+         content: String? = nil, meta: AnyJSON? = nil, images: [ImageData] = []) {
         self.id = id
         self.title = title
         self.kind = kind
@@ -33,6 +37,7 @@ final class LiveToolCall: Identifiable {
         self.rawOutput = rawOutput
         self.content = content
         self.meta = meta
+        self.images = images
     }
 
     /// True once the agent reports the call finished (success or failure).
@@ -221,7 +226,8 @@ final class LiveTurn: Identifiable {
         }
     }
 
-    func upsertToolCall(id: String, title: String, kind: String, status: String, rawInput: String?, rawOutput: String?, content: String?, meta: AnyJSON? = nil) {
+    func upsertToolCall(id: String, title: String, kind: String, status: String, rawInput: String?, rawOutput: String?,
+                        content: String?, meta: AnyJSON? = nil, images: [ImageData]? = nil) {
         if let existing = toolIndex[id] {
             existing.title = title.isEmpty ? existing.title : title
             if !kind.isEmpty { existing.kind = kind }
@@ -230,6 +236,7 @@ final class LiveTurn: Identifiable {
             if let rawOutput { existing.rawOutput = rawOutput }
             if let content { existing.content = content }
             if let meta { existing.meta = meta }
+            if let images, !images.isEmpty { existing.images = images }
         } else {
             let call = LiveToolCall(
                 id: id,
@@ -239,14 +246,16 @@ final class LiveTurn: Identifiable {
                 rawInput: rawInput,
                 rawOutput: rawOutput ?? "",
                 content: content,
-                meta: meta
+                meta: meta,
+                images: images ?? []
             )
             toolIndex[id] = call
             segments.append(.tool(call))
         }
     }
 
-    func updateToolCall(id: String, title: String?, status: String?, rawInput: String?, rawOutput: String?, content: String?, append: Bool, meta: AnyJSON? = nil) {
+    func updateToolCall(id: String, title: String?, status: String?, rawInput: String?, rawOutput: String?, content: String?,
+                        append: Bool, meta: AnyJSON? = nil, images: [ImageData]? = nil) {
         guard let call = toolIndex[id] else {
             // An update for a tool we never saw a `tool_call` for — materialize it
             // so its input/output is not lost.
@@ -258,7 +267,8 @@ final class LiveTurn: Identifiable {
                 rawInput: rawInput,
                 rawOutput: rawOutput,
                 content: content,
-                meta: meta
+                meta: meta,
+                images: images
             )
             return
         }
@@ -273,6 +283,20 @@ final class LiveTurn: Identifiable {
         if let meta { call.meta = meta }
         if let rawOutput {
             if append { call.rawOutput += rawOutput } else { call.rawOutput = rawOutput }
+        }
+        // Replace-on-update, like the server: an update carrying images replaces
+        // them, one carrying none keeps what was shown.
+        if let images, !images.isEmpty { call.images = images }
+    }
+
+    /// Ids of the tool calls this turn holds, and how many images they show —
+    /// what the transcript compares with the persisted copy of the same reply
+    /// before letting this one stand in for it.
+    var toolCallIDs: Set<String> { Set(toolIndex.keys) }
+    var imageCount: Int {
+        segments.reduce(0) { count, segment in
+            if case .tool(let call) = segment { return count + call.images.count }
+            return count
         }
     }
 
@@ -309,7 +333,8 @@ final class LiveTurn: Identifiable {
             case .tool(let call):
                 blocks.append(.toolUse(id: call.id, name: call.title, inputPreview: call.rawInput, meta: call.meta))
                 let output = call.rawOutput.isEmpty ? call.content : call.rawOutput
-                blocks.append(.toolResult(id: call.id, outputPreview: output, isError: call.isError))
+                blocks.append(.toolResult(id: call.id, outputPreview: output, isError: call.isError,
+                                          images: call.images))
             }
         }
         return MessageTurn(id: id, role: .assistant, blocks: blocks, timestamp: Date())

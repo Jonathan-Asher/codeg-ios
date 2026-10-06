@@ -78,6 +78,17 @@ final class SessionDetailViewModel {
     /// carries no trailing in-flight reply to hide. Reset on every send (the one
     /// chokepoint that creates a send live turn), set on every reattach build.
     private(set) var liveTurnFromReattach = false
+    /// The live turn came (partly) through a frame the server shrank to fit
+    /// this socket, so it is an incomplete copy: it must not stand in for the
+    /// persisted one, and the transcript is reloaded. Reset with every new
+    /// live turn.
+    private(set) var liveCopyIncomplete = false
+    /// When a shrunk frame last reloaded the transcript (see `noteCutFrame`).
+    private var cutReloadAt: Date?
+
+    /// Where the transcript's images load from when a frame carried one by
+    /// reference (`ImageData.dataRef`).
+    var imageSource: ImageSource { ImageSource(baseURL: client.baseURL, token: client.token) }
 
     /// A pending permission request — or ExitPlanMode — awaiting the user's
     /// choice. Rendered as a card above the compose bar; nil when none is pending.
@@ -817,6 +828,7 @@ final class SessionDetailViewModel {
         // in-flight reply to suppress. Clearing here is also the single point that
         // un-sticks a stale reattach flag once the user sends again.
         liveTurnFromReattach = false
+        liveCopyIncomplete = false
         sendState = .connecting
         attachPhase = nil
         awaitingBackground = false
@@ -1259,6 +1271,8 @@ final class SessionDetailViewModel {
                 if isCurrent { resumeReady(throwing: nil) }
             case .pong:
                 break
+            case .frameCut:
+                if isCurrent { noteCutFrame() }
             case .event(let envelope):
                 if isCurrent { handle(event: envelope.event, live: live) }
             case .detached(let reason):
@@ -1409,6 +1423,24 @@ final class SessionDetailViewModel {
         requestStickToBottom()
     }
 
+    /// A frame the server shrank to fit this socket just arrived (only an older
+    /// server, or one that did not hear this app's frame limit, does that): the
+    /// live copy it fed is incomplete. Stop letting it stand in for the
+    /// persisted reply, and reload the transcript — at most every 5 s, and
+    /// never to fewer turns than are shown.
+    private func noteCutFrame() {
+        liveCopyIncomplete = true
+        if let at = cutReloadAt, Date().timeIntervalSince(at) < 5 { return }
+        cutReloadAt = Date()
+        guard let id = conversationID else { return }
+        Task { [weak self] in
+            guard let self, let detail = try? await self.client.conversationDetail(id: id) else { return }
+            guard detail.turns.count >= self.turns.count else { return }
+            self.turns = detail.turns
+            self.sessionStats = detail.sessionStats ?? self.sessionStats
+        }
+    }
+
     /// Consumer for the reattach stream. Unlike `consume`, it has no `openStream`
     /// continuation to release and it BUILDS the live turn from the attach snapshot
     /// rather than being handed one. If the snapshot shows nothing in flight, it
@@ -1433,10 +1465,12 @@ final class SessionDetailViewModel {
                 if let rebuilt = buildLiveTurn(from: snap) {
                     live = rebuilt
                     liveTurn = rebuilt
-                    // This live turn is the snapshot's complete in-flight reply;
-                    // the transcript must hide any partial copy the agent has
-                    // begun persisting into `turns` so the reply isn't doubled.
+                    // This live turn is the snapshot's in-flight reply; the
+                    // transcript hides the partial copy the agent has begun
+                    // persisting into `turns` so the reply isn't doubled — but
+                    // only where this copy covers it (see `buildPersisted`).
                     liveTurnFromReattach = true
+                    liveCopyIncomplete = false
                     isTurnActive = true
                     restorePending(from: snap)
                     sendState = .thinking
@@ -1462,6 +1496,8 @@ final class SessionDetailViewModel {
                 if let live { for env in events { handle(event: env.event, live: live) } }
             case .pong:
                 break
+            case .frameCut:
+                noteCutFrame()
             case .event(let envelope):
                 // The attach snapshot always precedes events, so `live` is set by now.
                 if let live { handle(event: envelope.event, live: live) }
@@ -1523,7 +1559,8 @@ final class SessionDetailViewModel {
                     rawInput: st.inputPreview,
                     rawOutput: st.outputText,
                     content: st.content,
-                    meta: st.meta
+                    meta: st.meta,
+                    images: st.images
                 )
             case .plan(let entries):
                 live.updatePlan(PlanEntry.list(from: entries))
@@ -1582,13 +1619,15 @@ final class SessionDetailViewModel {
             if case .running = sendState {} else { sendState = .thinking }
             requestScrollToBottom()
 
-        case .toolCall(let id, let title, let kind, let status, let content, let rawInput, let rawOutput, let meta):
-            live.upsertToolCall(id: id, title: title, kind: kind, status: status, rawInput: rawInput, rawOutput: rawOutput, content: content, meta: meta)
+        case .toolCall(let id, let title, let kind, let status, let content, let rawInput, let rawOutput, let meta, let images):
+            live.upsertToolCall(id: id, title: title, kind: kind, status: status, rawInput: rawInput, rawOutput: rawOutput,
+                                content: content, meta: meta, images: images)
             sendState = .running(tool: title.isEmpty ? "tool" : title)
             requestScrollToBottom()
 
-        case .toolCallUpdate(let id, let title, let status, let content, let rawInput, let rawOutput, let append, let meta):
-            live.updateToolCall(id: id, title: title, status: status, rawInput: rawInput, rawOutput: rawOutput, content: content, append: append, meta: meta)
+        case .toolCallUpdate(let id, let title, let status, let content, let rawInput, let rawOutput, let append, let meta, let images):
+            live.updateToolCall(id: id, title: title, status: status, rawInput: rawInput, rawOutput: rawOutput,
+                                content: content, append: append, meta: meta, images: images)
             if let active = live.activeToolTitle {
                 sendState = .running(tool: active)
             } else {

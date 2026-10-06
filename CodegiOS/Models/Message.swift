@@ -27,6 +27,31 @@ struct ImageData: Codable, Hashable, Sendable {
     let data: String
     let mimeType: String
     let uri: String?
+    /// Where the server serves the real image when a live frame could not carry
+    /// it inline (`/api/live_image/<key>`, relative to the server). `data` is
+    /// then a small placeholder picture.
+    var dataRef: String? = nil
+}
+
+extension ImageData {
+    /// Decode a list of images under `key`, skipping any that are malformed
+    /// (and treating a missing or null list as empty) instead of failing the
+    /// value that holds them — one bad image must not cost a whole transcript.
+    static func lenientList<K: CodingKey>(_ c: KeyedDecodingContainer<K>, forKey key: K) -> [ImageData] {
+        guard c.contains(key), (try? c.decodeNil(forKey: key)) == false,
+              var list = try? c.nestedUnkeyedContainer(forKey: key) else { return [] }
+        /// Always decodes, so a bad element is stepped over rather than retried.
+        struct Skip: Decodable { init(from decoder: Decoder) {} }
+        var out: [ImageData] = []
+        while !list.isAtEnd {
+            if let image = try? list.decode(ImageData.self) {
+                out.append(image)
+            } else if (try? list.decode(Skip.self)) == nil {
+                break
+            }
+        }
+        return out
+    }
 }
 
 /// A polymorphic block of message content (Rust `ContentBlock`, internally
@@ -40,15 +65,17 @@ enum ContentBlock: Hashable, Sendable, Decodable {
     case image(ImageData)
     case imageGeneration(revisedPrompt: String?, image: ImageData?)
     case toolUse(id: String?, name: String, inputPreview: String?, meta: AnyJSON?)
-    case toolResult(id: String?, outputPreview: String?, isError: Bool)
+    /// `images`: what the tool returned as pictures — a Read of a PNG, a
+    /// screenshot — shown after the tool's card.
+    case toolResult(id: String?, outputPreview: String?, isError: Bool, images: [ImageData] = [])
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
         // NOTE: the decoder uses `.convertFromSnakeCase`, so wire keys arrive
         // here already camelCased — match them in camelCase.
-        case type, text, data, mimeType, uri, revisedPrompt, image
+        case type, text, data, mimeType, uri, dataRef, revisedPrompt, image
         case toolUseId, toolName, inputPreview, meta
-        case outputPreview, isError
+        case outputPreview, isError, images
     }
 
     init(from decoder: Decoder) throws {
@@ -63,7 +90,8 @@ enum ContentBlock: Hashable, Sendable, Decodable {
             self = .image(ImageData(
                 data: try c.decodeIfPresent(String.self, forKey: .data) ?? "",
                 mimeType: try c.decodeIfPresent(String.self, forKey: .mimeType) ?? "image/png",
-                uri: try c.decodeIfPresent(String.self, forKey: .uri)
+                uri: try c.decodeIfPresent(String.self, forKey: .uri),
+                dataRef: try c.decodeIfPresent(String.self, forKey: .dataRef)
             ))
         case "image_generation":
             self = .imageGeneration(
@@ -83,7 +111,9 @@ enum ContentBlock: Hashable, Sendable, Decodable {
             self = .toolResult(
                 id: try c.decodeIfPresent(String.self, forKey: .toolUseId),
                 outputPreview: try c.decodeIfPresent(String.self, forKey: .outputPreview),
-                isError: try c.decodeIfPresent(Bool.self, forKey: .isError) ?? false
+                isError: try c.decodeIfPresent(Bool.self, forKey: .isError) ?? false,
+                // Lenient: a malformed image must not fail the whole transcript.
+                images: ImageData.lenientList(c, forKey: .images)
             )
         default:
             self = .unknown(type: type)

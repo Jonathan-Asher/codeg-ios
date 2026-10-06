@@ -46,8 +46,10 @@ enum UserMessageBlock: Hashable, Sendable, Decodable {
 enum AcpEvent: Hashable, Sendable, Decodable {
     case contentDelta(text: String)
     case thinking(text: String)
-    case toolCall(id: String, title: String, kind: String, status: String, content: String?, rawInput: String?, rawOutput: String?, meta: AnyJSON?)
-    case toolCallUpdate(id: String, title: String?, status: String?, content: String?, rawInput: String?, rawOutput: String?, append: Bool, meta: AnyJSON?)
+    /// `images`: pictures the tool returned (a Read of a PNG); nil when the
+    /// event carries none, which keeps what an earlier event showed.
+    case toolCall(id: String, title: String, kind: String, status: String, content: String?, rawInput: String?, rawOutput: String?, meta: AnyJSON?, images: [ImageData]?)
+    case toolCallUpdate(id: String, title: String?, status: String?, content: String?, rawInput: String?, rawOutput: String?, append: Bool, meta: AnyJSON?, images: [ImageData]?)
     case turnComplete(stopReason: String)
     case sessionStarted(sessionId: String)
     case conversationLinked(conversationId: Int, folderId: Int)
@@ -102,6 +104,7 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         case requestId, toolCall, options, questionId, questions, entries
         case approvalId, planMarkdown
         case phase, elapsedMs, awaiting, nativeSteering, outstanding, item, ids
+        case images
     }
 
     init(from decoder: Decoder) throws {
@@ -121,7 +124,8 @@ enum AcpEvent: Hashable, Sendable, Decodable {
                 content: try c.decodeIfPresent(String.self, forKey: .content),
                 rawInput: try c.decodeIfPresent(String.self, forKey: .rawInput),
                 rawOutput: try c.decodeIfPresent(String.self, forKey: .rawOutput),
-                meta: try c.decodeIfPresent(AnyJSON.self, forKey: .meta)
+                meta: try c.decodeIfPresent(AnyJSON.self, forKey: .meta),
+                images: Self.images(c)
             )
         case "tool_call_update":
             self = .toolCallUpdate(
@@ -137,7 +141,8 @@ enum AcpEvent: Hashable, Sendable, Decodable {
                 append: try c.decodeIfPresent(Bool.self, forKey: .rawOutputAppend) ?? false,
                 // The delegate lifecycle patches `meta["codeg.delegation"]` to the
                 // terminal status on an update so the live card stops reading "running".
-                meta: try c.decodeIfPresent(AnyJSON.self, forKey: .meta)
+                meta: try c.decodeIfPresent(AnyJSON.self, forKey: .meta),
+                images: Self.images(c)
             )
         case "turn_complete":
             self = .turnComplete(stopReason: try c.decodeIfPresent(String.self, forKey: .stopReason) ?? "end_turn")
@@ -222,6 +227,12 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         default:
             self = .unknown(type: type)
         }
+    }
+
+    /// A tool event's images; nil when it carries none.
+    private static func images(_ c: KeyedDecodingContainer<CodingKeys>) -> [ImageData]? {
+        let images = ImageData.lenientList(c, forKey: .images)
+        return images.isEmpty ? nil : images
     }
 }
 
@@ -378,8 +389,10 @@ struct ToolCallStateSnapshot: Sendable, Decodable {
     let output: AnyJSON?
     let content: String?
     let meta: AnyJSON?
+    /// Pictures the call returned, so a reattach shows them like the stream did.
+    let images: [ImageData]
 
-    private enum CodingKeys: String, CodingKey { case id, kind, label, status, input, output, content, meta }
+    private enum CodingKeys: String, CodingKey { case id, kind, label, status, input, output, content, meta, images }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
@@ -390,6 +403,7 @@ struct ToolCallStateSnapshot: Sendable, Decodable {
         output = try c.decodeIfPresent(AnyJSON.self, forKey: .output)
         content = try c.decodeIfPresent(String.self, forKey: .content)
         meta = try c.decodeIfPresent(AnyJSON.self, forKey: .meta)
+        images = ImageData.lenientList(c, forKey: .images)
     }
 
     /// Flatten the `{kind,...}`-tagged output into plain text for the live card.

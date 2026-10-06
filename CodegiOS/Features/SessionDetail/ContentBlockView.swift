@@ -28,10 +28,15 @@ struct ContentBlockView: View {
             ToolCallCard(vm: ToolCallVM(
                 id: id ?? "tool", rawName: name, kind: "", state: .done,
                 input: inputPreview, output: nil, content: nil, isError: false, meta: meta))
-        case .toolResult(let id, let outputPreview, let isError):
-            ToolCallCard(vm: ToolCallVM(
-                id: id ?? "result", rawName: "result", kind: "", state: isError ? .error : .done,
-                input: nil, output: outputPreview, content: nil, isError: isError))
+        case .toolResult(let id, let outputPreview, let isError, let images):
+            VStack(alignment: .leading, spacing: 8) {
+                ToolCallCard(vm: ToolCallVM(
+                    id: id ?? "result", rawName: "result", kind: "", state: isError ? .error : .done,
+                    input: nil, output: outputPreview, content: nil, isError: isError))
+                ForEach(Array(images.enumerated()), id: \.offset) { _, image in
+                    InlineImageView(image: image, caption: nil)
+                }
+            }
         case .unknown(let type):
             UnsupportedBlock(type: type)
         }
@@ -101,6 +106,41 @@ struct ReasoningBlock: View {
     }
 }
 
+// MARK: - Image source
+
+/// The server an image's `dataRef` points into: a live frame too large for the
+/// socket carries a placeholder and the path that serves the real picture.
+struct ImageSource: Sendable, Equatable {
+    let baseURL: URL
+    let token: String
+
+    /// `ref` is a server path (`/api/live_image/<key>`); it is appended to the
+    /// configured base URL so a server behind a reverse-proxy path keeps it.
+    func url(for ref: String) -> URL? {
+        let path = ref.hasPrefix("/") ? String(ref.dropFirst()) : ref
+        guard !path.isEmpty, !path.contains("..") else { return nil }
+        return baseURL.appendingPathComponent(path)
+    }
+
+    func request(for ref: String) -> URLRequest? {
+        guard let url = url(for: ref) else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+}
+
+private struct ImageSourceKey: EnvironmentKey {
+    static let defaultValue: ImageSource? = nil
+}
+
+extension EnvironmentValues {
+    var codegImageSource: ImageSource? {
+        get { self[ImageSourceKey.self] }
+        set { self[ImageSourceKey.self] = newValue }
+    }
+}
+
 // MARK: - Inline image
 
 /// Decodes a base64 `ImageData` payload and renders it rounded, with an optional
@@ -113,6 +153,7 @@ struct InlineImageView: View {
     let image: ImageData
     let caption: String?
 
+    @Environment(\.codegImageSource) private var source
     @State private var decoded: UIImage?
     @State private var failed = false
 
@@ -143,7 +184,7 @@ struct InlineImageView: View {
             }
         }
         .animation(Theme.Motion.content, value: decoded == nil)
-        .task(id: image.data) { await decode() }
+        .task(id: image.dataRef ?? image.data) { await decode() }
     }
 
     /// A calm decoding box (or a decode-failure note) shown until the image lands.
@@ -164,6 +205,20 @@ struct InlineImageView: View {
     }
 
     private func decode() async {
+        // An image the live frame carried by reference: load the real one from
+        // the server, falling back to the placeholder `data` if it is gone.
+        if let ref = image.dataRef, let request = source?.request(for: ref) {
+            let refKey = ref as NSString
+            if let hit = Self.cache.object(forKey: refKey) { decoded = hit; failed = false; return }
+            if let loaded = try? await URLSession.shared.data(for: request),
+               (loaded.1 as? HTTPURLResponse)?.statusCode == 200,
+               let img = UIImage(data: loaded.0) {
+                Self.cache.setObject(img, forKey: refKey)
+                decoded = img
+                failed = false
+                return
+            }
+        }
         let key = image.data as NSString
         if let hit = Self.cache.object(forKey: key) { decoded = hit; failed = false; return }
         let raw = image.data

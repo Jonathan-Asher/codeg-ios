@@ -138,8 +138,9 @@ enum MessageRender {
                 let resultIdx = findResult(in: blocks, after: idx, toolID: toolID, consumed: consumed)
                 var output: String?
                 var isErr = false
-                if let r = resultIdx, case .toolResult(_, let outPreview, let e) = blocks[r] {
-                    output = outPreview; isErr = e; consumed.insert(r)
+                var resultImages: [ImageData] = []
+                if let r = resultIdx, case .toolResult(_, let outPreview, let e, let imgs) = blocks[r] {
+                    output = outPreview; isErr = e; resultImages = imgs; consumed.insert(r)
                 }
                 let state: ToolCallState = resultIdx == nil ? .running : (isErr ? .error : .done)
                 // A compaction is a boundary marker, not a call: it renders as a
@@ -154,11 +155,15 @@ enum MessageRender {
                 parts.append(.tool(ToolCallVM(
                     id: toolID ?? "tool-\(idx)", rawName: name, kind: "", state: state,
                     input: inputPreview, output: output, content: nil, isError: isErr, meta: meta)))
-            case .toolResult(let toolID, let outPreview, let e):
+                // What the tool returned as pictures (a Read of a PNG, a
+                // screenshot) shows right after its card.
+                for image in resultImages { parts.append(.image(image, caption: nil)) }
+            case .toolResult(let toolID, let outPreview, let e, let images):
                 // Orphan result (no preceding tool_use) — show it on its own.
                 parts.append(.tool(ToolCallVM(
                     id: toolID ?? "result-\(idx)", rawName: "result", kind: "", state: e ? .error : .done,
                     input: nil, output: outPreview, content: nil, isError: e)))
+                for image in images { parts.append(.image(image, caption: nil)) }
             case .unknown(let type):
                 parts.append(.unknown(type: type))
             }
@@ -200,6 +205,9 @@ enum MessageRender {
                     id: call.id, rawName: call.title, kind: call.kind, state: state,
                     input: call.rawInput, output: call.rawOutput, content: call.content, isError: call.isError,
                     meta: call.meta)))
+                // Same as the persisted path, so a reply shows its images while
+                // it streams and after a reattach rebuilt it from a snapshot.
+                for image in call.images { parts.append(.image(image, caption: nil)) }
             }
         }
         return group(parts)
@@ -313,7 +321,7 @@ enum MessageRender {
         // Prefer an exact id match anywhere later.
         if let toolID {
             for j in (idx + 1)..<blocks.count where !consumed.contains(j) {
-                if case .toolResult(let rid, _, _) = blocks[j], rid == toolID { return j }
+                if case .toolResult(let rid, _, _, _) = blocks[j], rid == toolID { return j }
             }
         }
         // Otherwise the next unconsumed result — but stop at the next tool_use so

@@ -110,15 +110,20 @@ enum TranscriptTimeline {
     ///   beside the live stream. Mirrors the web client's `getTimelineTurns`
     ///   in-flight suppression. A no-op on the send path (the optimistic prompt is in
     ///   `pending`, not `turns`, so there are no trailing persisted assistant turns).
-    static func buildPersisted(turns rawTurns: [MessageTurn], pending: [MessageTurn], agent: AgentType, suppressInFlight: Bool) -> [TimelineNode] {
+    static func buildPersisted(turns rawTurns: [MessageTurn], pending: [MessageTurn], agent: AgentType,
+                               suppressInFlight: Bool, liveCoverage: LiveCoverage? = nil) -> [TimelineNode] {
         var nodes: [TimelineNode] = []
 
         // Hide the persisted partial in-flight reply while the reattach live turn
         // (which carries the full reply) is in hand: drop the assistant turns that
-        // follow the most recent user prompt. Earlier replies stay untouched.
+        // follow the most recent user prompt. Earlier replies stay untouched —
+        // and so does this one unless the live turn holds everything it would
+        // hide (`liveCovers`): a live copy rebuilt from a trimmed snapshot, or an
+        // anchor that is not the running prompt, must never show less.
         let turns: [MessageTurn]
         if suppressInFlight,
-           let promptIdx = rawTurns.lastIndex(where: { $0.role == .user }) {
+           let promptIdx = rawTurns.lastIndex(where: { $0.role == .user }),
+           liveCovers(rawTurns[(promptIdx + 1)...], liveCoverage) {
             turns = rawTurns.enumerated()
                 .filter { $0.offset <= promptIdx || $0.element.role != .assistant }
                 .map(\.element)
@@ -160,6 +165,35 @@ enum TranscriptTimeline {
         }
 
         return nodes
+    }
+
+    /// What a live turn holds, to compare with the persisted turns it would hide.
+    struct LiveCoverage: Equatable {
+        let toolIDs: Set<String>
+        let imageCount: Int
+    }
+
+    /// Whether the live turn holds every tool call and image of the persisted
+    /// assistant turns it would hide. No coverage given: the caller vouches.
+    static func liveCovers(_ hidden: ArraySlice<MessageTurn>, _ coverage: LiveCoverage?) -> Bool {
+        guard let coverage else { return true }
+        var toolIDs = Set<String>()
+        var images = 0
+        for turn in hidden where turn.role == .assistant {
+            for block in turn.blocks {
+                switch block {
+                case .toolUse(let id, _, _, _):
+                    if let id { toolIDs.insert(id) }
+                case .toolResult(_, _, _, let resultImages):
+                    images += resultImages.count
+                case .image, .imageGeneration:
+                    images += 1
+                default:
+                    break
+                }
+            }
+        }
+        return toolIDs.isSubset(of: coverage.toolIDs) && images <= coverage.imageCount
     }
 
     /// A user turn's node: a message card, or a divider for a bare Continue.

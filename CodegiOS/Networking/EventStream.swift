@@ -95,6 +95,10 @@ final class EventStream: @unchecked Sendable {
         case detached(reason: String)
         case pong
         case closed(reason: String?)
+        /// The frame just delivered was shrunk by the server to fit this socket
+        /// (`frame_cut`): it is an incomplete copy, and the transcript over HTTP
+        /// holds the whole thing. Follows that frame.
+        case frameCut
     }
 
     let frames: AsyncStream<Frame>
@@ -159,8 +163,18 @@ final class EventStream: @unchecked Sendable {
     /// `codeg-events`, so servers without presence ignore it.
     static let iosClientProtocol = "codeg-client.ios"
 
+    /// Extra subprotocol that tells the server how large a frame this socket
+    /// takes. An iOS client that sends none is held to the 1 MiB default of
+    /// `URLSessionWebSocketTask`, and the server shrinks bigger frames for it.
+    static let maxFrameProtocol = "codeg-max-frame.\(maximumMessageSize)"
+
+    /// Everything the event socket offers when it connects.
+    static func protocols(token: String) -> [String] {
+        ["codeg-events", "codeg-token.\(base64URLNoPad(token))", iosClientProtocol, maxFrameProtocol]
+    }
+
     func start() {
-        let protocols = ["codeg-events", "codeg-token.\(EventStream.base64URLNoPad(token))", Self.iosClientProtocol]
+        let protocols = Self.protocols(token: token)
         let newTask = Self.makeTask(session: session, url: url, protocols: protocols)
         lock.lock(); task = newTask; lock.unlock()
         newTask.resume()
@@ -266,24 +280,34 @@ final class EventStream: @unchecked Sendable {
     }
 
     private func decode(_ data: Data) {
+        for frame in Self.frames(from: data) { continuation.yield(frame) }
+    }
+
+    /// The frames one text message carries: none (the legacy firehose, which
+    /// is ignored but for its ready signal), one, or one followed by
+    /// ``Frame/frameCut`` when the server shrank it.
+    static func frames(from data: Data) -> [Frame] {
         // The socket multiplexes the legacy firehose ({channel, payload}) with
         // the attach protocol ({type, ...}). Route on which key is present.
+        var cut = false
         if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let channel = obj["channel"] as? String {
-                if channel == "__ready__" { continuation.yield(.ready) }
-                return // ignore other legacy global events in Phase 1
+                return channel == "__ready__" ? [.ready] : [] // other legacy global events are ignored
             }
-            guard obj["type"] is String else { return }
+            guard obj["type"] is String else { return [] }
+            cut = (obj["frame_cut"] as? Bool) == true
         }
-        guard let message = try? CodegJSON.decoder.decode(WSServerMessage.self, from: data) else { return }
+        guard let message = try? CodegJSON.decoder.decode(WSServerMessage.self, from: data) else { return [] }
+        let frame: Frame
         switch message {
-        case .snapshot(let snapshot): continuation.yield(.snapshot(snapshot))
-        case .replay(let events): continuation.yield(.replay(events))
-        case .event(let envelope): continuation.yield(.event(envelope))
-        case .detached(let reason): continuation.yield(.detached(reason: reason))
-        case .pong: continuation.yield(.pong)
-        case .unknown: break
+        case .snapshot(let snapshot): frame = .snapshot(snapshot)
+        case .replay(let events): frame = .replay(events)
+        case .event(let envelope): frame = .event(envelope)
+        case .detached(let reason): frame = .detached(reason: reason)
+        case .pong: frame = .pong
+        case .unknown: return []
         }
+        return cut ? [frame, .frameCut] : [frame]
     }
 
     // MARK: - Helpers
