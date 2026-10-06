@@ -161,6 +161,35 @@ and the send path of `SessionDetailViewModel`.
   closes the socket. codeg sends bigger frames: `background_activity` re-sends
   a whole growing out-of-turn turn on every update (1.3 to 1.5 MB were seen),
   and an attach snapshot carries a long turn's whole live message.
+- **The server knows the limit (1.3.5).** The socket offers
+  `codeg-max-frame.67108864` next to `codeg-client.ios`. A codeg server holds
+  an iOS socket that offers no such protocol (1.3.4 and older) to the 1 MiB
+  default and shrinks bigger frames for it: images move out to
+  `/api/live_image/<key>` (the frame keeps a placeholder PNG in `data` and
+  the path in `data_ref`), finished tool payloads of a snapshot are left
+  out, then long text is cut; such a frame carries `frame_cut: true`.
+  `EventStream.frames(from:)` turns that flag into a `.frameCut` frame after
+  the frame itself; the session then stops letting the live turn stand in
+  for the persisted reply and reloads the transcript (never to fewer turns).
+  `InlineImageView` loads a `data_ref` with the session's token.
+
+### What the transcript never hides (1.3.5)
+
+`Timeline/TimelineNode.swift`, `TranscriptView.swift`, `Rendering/ToolCallVM.swift`.
+
+- **Tool pictures.** `images` on a tool result (transcript), on `tool_call` /
+  `tool_call_update` and on a snapshot's active tool calls render right after
+  the tool's card, live and persisted. A malformed image is skipped
+  (`ImageData.lenientList`), never failing the conversation.
+- **Reattach.** The live turn rebuilt from a snapshot hides the persisted copy
+  of the running reply (the assistant turns after the last user turn) only
+  while it holds every tool call id and picture of that copy
+  (`TranscriptTimeline.liveCovers`). A trimmed snapshot, or a running prompt
+  not yet persisted (so the "running reply" is the previous one), leaves the
+  persisted turns visible: a duplicate is recoverable, a hidden reply is not.
+- **The window** counts its 50 turns back from the running reply's prompt
+  while that reply is hidden, and "Show earlier messages" at the top loads
+  older turns where the screen is too short to scroll toward them.
 - **A dropped socket never fails a send.** A send opens its stream and waits
   for the server's snapshot before it prompts. A socket that closes before
   then (or a `lagged` / `server_shutdown` detach) is opened again, after
