@@ -40,18 +40,22 @@ extension ImageData {
     static func lenientList<K: CodingKey>(_ c: KeyedDecodingContainer<K>, forKey key: K) -> [ImageData] {
         guard c.contains(key), (try? c.decodeNil(forKey: key)) == false,
               var list = try? c.nestedUnkeyedContainer(forKey: key) else { return [] }
-        /// Always decodes, so a bad element is stepped over rather than retried.
-        struct Skip: Decodable { init(from decoder: Decoder) {} }
         var out: [ImageData] = []
         while !list.isAtEnd {
             if let image = try? list.decode(ImageData.self) {
                 out.append(image)
-            } else if (try? list.decode(Skip.self)) == nil {
+            } else if (try? list.decode(SkippedElement.self)) == nil {
                 break
             }
         }
         return out
     }
+}
+
+/// Always decodes, so a list element that failed to decode is stepped over
+/// rather than retried.
+private struct SkippedElement: Decodable {
+    init(from decoder: Decoder) {}
 }
 
 /// A polymorphic block of message content (Rust `ContentBlock`, internally
