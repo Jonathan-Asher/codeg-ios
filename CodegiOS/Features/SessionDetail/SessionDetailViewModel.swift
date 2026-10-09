@@ -59,6 +59,39 @@ final class SessionDetailViewModel {
     private(set) var turns: [MessageTurn] = [] {
         didSet { turnsVersion &+= 1 }
     }
+    /// Global index of `turns[0]` in the whole transcript. Above 0 while
+    /// older turns are still on the server (see `TranscriptSync`); they are
+    /// fetched a page at a time by `loadOlderTurns()`.
+    private(set) var turnsOffset = 0
+    /// The server's fingerprint of the turns before `turnsOffset` (`nil`
+    /// with offset 0: the whole transcript from a server without windows).
+    private var windowPrefixHash: String?
+    /// The whole transcript's length at the last fetch.
+    private var windowTotal: Int?
+    /// An older page is on its way.
+    private(set) var isLoadingOlder = false
+    /// Turns older than the ones held are still on the server.
+    var hasOlderTurns: Bool { turnsOffset > 0 && windowPrefixHash != nil }
+    /// What this screen holds of the transcript, for `TranscriptSync`.
+    private var heldWindow: TranscriptWindow {
+        TranscriptWindow(offset: turnsOffset, prefixHash: windowPrefixHash, total: windowTotal, turns: turns)
+    }
+    /// Turns fetched per older page.
+    static let olderPageTurns = 150
+
+    /// Where this session's transcript is kept between openings (`nil` in
+    /// tests that don't exercise it).
+    private let transcriptCache: TranscriptCache?
+    private let cacheServerKey: String
+    private var cacheSaveTask: Task<Void, Never>?
+    /// The screen opened with the cached transcript.
+    private(set) var openedFromCache = false
+    /// The first load, owned by the model rather than the view, so a view
+    /// that goes away mid-load (a layout change) doesn't cancel it.
+    private var loadTask: Task<Void, Never>?
+    /// No screen shows this session: its sockets are closed (see
+    /// `SessionModelStore`). `resume()` brings it back.
+    private(set) var isSuspended = false
     /// Monotonic version of `turns`, bumped on every mutation. A content-free
     /// signal the transcript keys its persisted-node memo on, so streamed tokens
     /// no longer force a re-hash of every visible turn's full text (`MessageTurn`
@@ -271,9 +304,12 @@ final class SessionDetailViewModel {
     private static let maxReattachDrops = 3
 
     private init(client: CodegClient, mode: Mode,
-                 makeEventStream: (@MainActor (CodegClient) -> any SessionEventStream)? = nil) {
+                 makeEventStream: (@MainActor (CodegClient) -> any SessionEventStream)? = nil,
+                 transcriptCache: TranscriptCache? = nil) {
         self.client = client
         self.mode = mode
+        self.transcriptCache = transcriptCache
+        self.cacheServerKey = TranscriptCache.serverKey(for: client)
         if let makeEventStream {
             self.makeEventStream = { makeEventStream(client) }
         } else {
@@ -331,23 +367,35 @@ final class SessionDetailViewModel {
 
     }
 
-    convenience init(client: CodegClient, conversationID: Int) {
-        self.init(client: client, mode: .existing(conversationID: conversationID))
+    convenience init(client: CodegClient, conversationID: Int,
+                     transcriptCache: TranscriptCache? = .shared) {
+        self.init(client: client, mode: .existing(conversationID: conversationID),
+                  transcriptCache: transcriptCache)
     }
 
     /// An existing conversation whose event sockets come from `makeEventStream`
     /// (the unit tests' scripted sockets).
     convenience init(client: CodegClient, conversationID: Int,
-                     makeEventStream: @escaping @MainActor (CodegClient) -> any SessionEventStream) {
+                     makeEventStream: @escaping @MainActor (CodegClient) -> any SessionEventStream,
+                     transcriptCache: TranscriptCache? = nil) {
         self.init(client: client, mode: .existing(conversationID: conversationID),
-                  makeEventStream: makeEventStream)
+                  makeEventStream: makeEventStream, transcriptCache: transcriptCache)
     }
 
     /// A brand-new task: `load()` immediately fires the first prompt composed
     /// in the new-task sheet, and the screen adopts the conversation id the
     /// server links — so the very first reply streams like any other turn.
-    convenience init(client: CodegClient, newSession request: NewSessionRequest) {
-        self.init(client: client, mode: .new(request))
+    convenience init(client: CodegClient, newSession request: NewSessionRequest,
+                     transcriptCache: TranscriptCache? = .shared) {
+        self.init(client: client, mode: .new(request), transcriptCache: transcriptCache)
+    }
+
+    /// Show what the session list already knows (title, agent, status) while
+    /// the transcript loads. Ignored once the screen has its own summary.
+    func prime(summary listed: ConversationSummary?) {
+        guard summary == nil, let listed, listed.id == conversationID else { return }
+        summary = listed
+        insertModel.agentType = listed.agentType
     }
 
     // MARK: - Derived
@@ -381,10 +429,33 @@ final class SessionDetailViewModel {
     /// Guards the one-time draft option load so a re-run of `.task` can't refetch.
     private var didLoadDraftOptions = false
 
+    /// Start the first load unless it ran or runs already. The screen calls
+    /// this whenever it appears: a screen rebuilt around the same model (a
+    /// layout change, a tab switched back) must not load it again.
+    func loadIfNeeded() {
+        guard phase != .loaded, loadTask == nil else { return }
+        loadTask = Task { [weak self] in
+            await self?.load()
+            self?.loadTask = nil
+        }
+    }
+
     func load() async {
         switch mode {
         case .existing(let id):
-            phase = .loading
+            // The cached transcript first, drawn at once; then only what
+            // changed since it was saved.
+            if turns.isEmpty, turnsOffset == 0, let cache = transcriptCache,
+               let entry = await cache.load(serverKey: cacheServerKey, conversationID: id),
+               turns.isEmpty, phase != .loaded {
+                applyCached(entry)
+                phase = .loaded
+                openedFromCache = true
+                requestStickToBottom()
+                await syncExisting(id: id, stickToBottom: false, overlap: TranscriptSync.reopenOverlap)
+                return
+            }
+            if phase != .loaded { phase = .loading }
             await syncExisting(id: id, stickToBottom: true)
 
         case .new(let request):
@@ -402,21 +473,27 @@ final class SessionDetailViewModel {
     /// and reattach if a turn is live. Shared by the initial `load()` (which shows
     /// the loading spinner first) and `refreshOnForeground()` (which does not, so
     /// resuming the app doesn't flash the transcript away and back).
-    private func syncExisting(id: Int, stickToBottom: Bool) async {
+    private func syncExisting(id: Int, stickToBottom: Bool, overlap: Int = TranscriptSync.reopenOverlap) async {
         do {
-            async let detailReq = client.conversationDetail(id: id)
+            let held: TranscriptWindow? = turns.isEmpty && turnsOffset == 0 ? nil : heldWindow
+            let version = turnsVersion
+            async let fetchReq = TranscriptSync.fetch(client: client, id: id, held: held, overlap: overlap)
             async let foldersReq = client.listFolders()
-            let detail = try await detailReq
+            let outcome = try await fetchReq
             let folders = try await foldersReq
+            let detail = outcome.detail
 
             summary = detail.summary
-            turns = detail.turns
+            // Another path (a turn reconciling, an older page) changed the
+            // turns while this fetch ran: its copy is newer.
+            if turnsVersion == version { adoptWindow(outcome, allowShrink: true) }
             sessionStats = detail.sessionStats
             allFolders = folders
             folder = folders.first { $0.id == detail.summary.folderId }
             currentBranch = detail.summary.gitBranch ?? folder?.gitBranch
             insertModel.agentType = detail.summary.agentType
             phase = .loaded
+            scheduleCacheSave()
             if stickToBottom { requestStickToBottom() }
             // If a turn is still running on this session (started here earlier,
             // from codeg web, or before an app relaunch), attach so it streams
@@ -492,6 +569,124 @@ final class SessionDetailViewModel {
         closeStream()
         liveTurn = nil
         sendState = .idle
+    }
+
+    // MARK: - Transcript window and cache
+
+    /// Show a cached transcript: the turns, identity and stats it was saved with.
+    private func applyCached(_ entry: CachedTranscript) {
+        var cachedSummary = entry.summary
+        cachedSummary.selectorState = entry.selectorState
+        summary = cachedSummary
+        sessionStats = entry.sessionStats
+        if let cachedFolder = entry.folder { folder = cachedFolder }
+        currentBranch = cachedSummary.gitBranch ?? folder?.gitBranch
+        insertModel.agentType = cachedSummary.agentType
+        turnsOffset = entry.turnsOffset
+        windowPrefixHash = entry.prefixHash
+        windowTotal = entry.turnsTotal
+        turns = entry.turns
+    }
+
+    /// Adopt a fetched window. A response that continues the held window but
+    /// ends before it is a stale read (the server hasn't written what this
+    /// screen showed yet), so it never takes turns away. A fresh window or a
+    /// whole transcript replaces what is held, only growing it unless
+    /// `allowShrink` (an authoritative reload).
+    @discardableResult
+    private func adoptWindow(_ outcome: TranscriptSync.Outcome, allowShrink: Bool) -> Bool {
+        let window = outcome.window
+        if window.end < heldEnd, outcome.continuesHeld || !allowShrink { return false }
+        if window.prefixHash != nil { TranscriptSync.noteWindowed(serverKey: cacheServerKey) }
+        turnsOffset = window.offset
+        windowPrefixHash = window.prefixHash
+        windowTotal = window.total
+        turns = window.turns
+        scheduleCacheSave()
+        return true
+    }
+
+    /// The global end (offset + count) of what `turns` holds.
+    private var heldEnd: Int { turnsOffset + turns.count }
+
+    /// Fetch what changed since the held window (`TranscriptSync`).
+    private func fetchTranscript(id: Int, overlap: Int) async throws -> TranscriptSync.Outcome {
+        let held: TranscriptWindow? = turns.isEmpty && turnsOffset == 0 ? nil : heldWindow
+        return try await TranscriptSync.fetch(client: client, id: id, held: held, overlap: overlap)
+    }
+
+    /// Save the transcript for the next opening, shortly after the last change.
+    private func scheduleCacheSave() {
+        guard let cache = transcriptCache, let id = conversationID, let summary, phase == .loaded || !turns.isEmpty
+        else { return }
+        let entry = CachedTranscript(
+            conversationID: id, savedAt: Date(), summary: summary, selectorState: summary.selectorState,
+            sessionStats: sessionStats, folder: folder, turnsOffset: turnsOffset,
+            prefixHash: windowPrefixHash, turnsTotal: windowTotal, turns: turns
+        )
+        let key = cacheServerKey
+        cacheSaveTask?.cancel()
+        cacheSaveTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            await cache.save(entry, serverKey: key)
+        }
+    }
+
+    /// Fetch the page of turns before the held ones and put it in front. When
+    /// the server's history before the window was rewritten (a compaction),
+    /// the page can't join it, and the screen starts over from the end.
+    func loadOlderTurns() async {
+        guard let id = conversationID, hasOlderTurns, !isLoadingOlder else { return }
+        isLoadingOlder = true
+        defer { isLoadingOlder = false }
+        let before = heldWindow
+        do {
+            let page = try await client.conversationTurnsPage(id: id, beforeIndex: before.offset,
+                                                              limit: Self.olderPageTurns)
+            // Only joins the window it was asked for.
+            guard conversationID == id, turnsOffset == before.offset, windowPrefixHash == before.prefixHash
+            else { return }
+            if let joined = TranscriptSync.prepend(page: page, to: heldWindow) {
+                turnsOffset = joined.offset
+                windowPrefixHash = joined.prefixHash
+                windowTotal = joined.total
+                turns = joined.turns
+                scheduleCacheSave()
+            } else {
+                let outcome = try await TranscriptSync.fetch(client: client, id: id, held: nil, overlap: 0)
+                guard conversationID == id, turnsOffset == before.offset else { return }
+                adoptWindow(outcome, allowShrink: true)
+            }
+        } catch {
+            // Scrolling up again tries again; the held turns stay.
+        }
+    }
+
+    /// A message is still being handed to the server: a prompt resolving its
+    /// connection, attaching or being sent, or a message into the turn not yet
+    /// confirmed. Suspension waits for it (`SessionModelStore`).
+    var isHandingOffSend: Bool {
+        sendsInProgress > 0 || insertedNotes.contains { !$0.delivered }
+    }
+
+    /// No screen shows this session any more (`SessionModelStore`): close
+    /// its sockets, as leaving the screen always did. The model, its turns
+    /// and its draft stay, so opening it again is instant.
+    func suspend() {
+        guard !isSuspended else { return }
+        teardown()
+        isSuspended = true
+    }
+
+    /// The session is on screen again after `suspend()`: reconnect a turn
+    /// that was streaming in place, or fetch what changed and reattach if a
+    /// turn started meanwhile.
+    func resume() async {
+        guard isSuspended else { return }
+        isSuspended = false
+        guard phase == .loaded else { return }
+        await refreshOnForeground()
     }
 
     /// Populate the draft's folder/agent lists and pick sensible defaults
@@ -1096,7 +1291,7 @@ final class SessionDetailViewModel {
         // first token on an extra round-trip.
         Task { [weak self] in
             guard let self,
-                  let detail = try? await self.client.conversationDetail(id: id),
+                  let detail = try? await self.client.conversationDetail(id: id, window: .tail(1)),
                   self.conversationID == id else { return }
             self.summary = detail.summary
             self.sessionStats = detail.sessionStats ?? self.sessionStats
@@ -1352,7 +1547,9 @@ final class SessionDetailViewModel {
     /// Additive: it does not touch the send flow. The moment the user sends,
     /// `openStream` supersedes this stream (a generation bump ends this consumer).
     func reattachIfLive(serverSaysLive: Bool = false) async {
-        guard let id = conversationID, summary != nil else { return }
+        // A load that finished after the screen went away opens nothing:
+        // `resume()` reattaches when the session is shown again.
+        guard let id = conversationID, summary != nil, !isSuspended else { return }
         // Nothing to do if we're already streaming locally, or for a finished session.
         guard liveTurn == nil, !isInFlight, stream == nil else { return }
         if summary?.status == .completed || summary?.status == .cancelled { return }
@@ -1393,8 +1590,8 @@ final class SessionDetailViewModel {
             return
         }
 
-        // Re-check: a send may have started while we awaited.
-        guard liveTurn == nil, !isInFlight, stream == nil else { return }
+        // Re-check: a send may have started (or the screen gone) while we awaited.
+        guard liveTurn == nil, !isInFlight, stream == nil, !isSuspended else { return }
 
         connectionID = conn
         closeStream()
@@ -1415,11 +1612,11 @@ final class SessionDetailViewModel {
     /// started locally — that path owns the transcript.
     private func reconcileAfterMissedLive() async {
         guard let id = conversationID, liveTurn == nil, !isInFlight, stream == nil else { return }
-        guard let detail = try? await client.conversationDetail(id: id) else { return }
+        guard let outcome = try? await fetchTranscript(id: id, overlap: TranscriptSync.liveOverlap) else { return }
         guard liveTurn == nil, !isInFlight, stream == nil else { return }
-        summary = detail.summary
-        turns = detail.turns
-        sessionStats = detail.sessionStats ?? sessionStats
+        summary = outcome.detail.summary
+        adoptWindow(outcome, allowShrink: true)
+        sessionStats = outcome.detail.sessionStats ?? sessionStats
         requestStickToBottom()
     }
 
@@ -1434,10 +1631,11 @@ final class SessionDetailViewModel {
         cutReloadAt = Date()
         guard let id = conversationID else { return }
         Task { [weak self] in
-            guard let self, let detail = try? await self.client.conversationDetail(id: id) else { return }
-            guard detail.turns.count >= self.turns.count else { return }
-            self.turns = detail.turns
-            self.sessionStats = detail.sessionStats ?? self.sessionStats
+            guard let self,
+                  let outcome = try? await self.fetchTranscript(id: id, overlap: TranscriptSync.liveOverlap)
+            else { return }
+            self.adoptWindow(outcome, allowShrink: false)
+            self.sessionStats = outcome.detail.sessionStats ?? self.sessionStats
         }
     }
 
@@ -1750,7 +1948,7 @@ final class SessionDetailViewModel {
         presenceReporter.update(conversationID: id, looking: isOnScreen)
         Task { [weak self] in
             guard let self else { return }
-            guard let detail = try? await self.client.conversationDetail(id: id),
+            guard let detail = try? await self.client.conversationDetail(id: id, window: .tail(1)),
                   self.conversationID == id else { return }
             // Mid-stream: adopt identity + stats only — the live turn is still
             // rendering and `refreshAfterTurn()` reconciles the transcript.
@@ -2001,16 +2199,17 @@ final class SessionDetailViewModel {
         guard liveTurn === live, isTurnActive else { return }
         streamReconnects = 0
         if let id = conversationID,
-           let detail = try? await client.conversationDetail(id: id),
+           let outcome = try? await fetchTranscript(id: id, overlap: TranscriptSync.liveOverlap),
            liveTurn === live, isTurnActive {
+            let detail = outcome.detail
             summary = detail.summary
             sessionStats = detail.sessionStats ?? sessionStats
             // Adopt only a transcript that genuinely advanced past our pre-turn
             // baseline AND ends with a real reply — never a stale read.
-            if detail.turns.count > turns.count, Self.transcriptHasReply(detail.turns) {
+            if outcome.window.end > heldEnd, Self.transcriptHasReply(outcome.window.turns) {
                 isTurnActive = false
                 clearInteractivePrompts()
-                turns = detail.turns
+                adoptWindow(outcome, allowShrink: false)
                 pendingUserTurns.removeAll()
                 liveTurn = nil
                 sendState = .idle
@@ -2138,7 +2337,7 @@ final class SessionDetailViewModel {
         // turn's assistant reply would satisfy `transcriptHasReply` and we'd adopt
         // it, dropping the reply we just streamed. `turns` isn't mutated elsewhere
         // between finalize and this reconcile.
-        let baselineCount = turns.count
+        let baselineEnd = heldEnd
 
         for attempt in 0..<5 {
             // If the user started another turn while we were reconciling, that
@@ -2146,7 +2345,9 @@ final class SessionDetailViewModel {
             // don't wipe its in-flight state (its own finalize reconciles later).
             guard liveTurn === live else { return }
             do {
-                let detail = try await client.conversationDetail(id: id)
+                // Only what changed: the reply and the turn or two before it.
+                let outcome = try await fetchTranscript(id: id, overlap: TranscriptSync.liveOverlap)
+                let detail = outcome.detail
                 // Re-check after the await — a new turn may have begun during it.
                 guard liveTurn === live else { return }
                 // Identity/stats are always safe to adopt, even before the reply
@@ -2159,9 +2360,9 @@ final class SessionDetailViewModel {
                 // merely ends with an older reply can't masquerade as ours) and —
                 // when there's a streamed reply to protect — end with a non-empty
                 // assistant turn.
-                let advanced = detail.turns.count > baselineCount
-                if advanced, !mustPreserveReply || Self.transcriptHasReply(detail.turns) {
-                    turns = detail.turns
+                let advanced = outcome.window.end > baselineEnd
+                if advanced, !mustPreserveReply || Self.transcriptHasReply(outcome.window.turns) {
+                    adoptWindow(outcome, allowShrink: false)
                     pendingUserTurns.removeAll()
                     liveTurn = nil
                     requestScrollToBottom()
@@ -2646,6 +2847,11 @@ final class SessionDetailViewModel {
         guard let id = conversationID else { return false }
         do {
             try await client.deleteConversation(conversationId: id)
+            cacheSaveTask?.cancel()
+            if let cache = transcriptCache {
+                let key = cacheServerKey
+                Task { await cache.remove(serverKey: key, conversationID: id) }
+            }
             notifyConversationsChanged()
             return true
         } catch {

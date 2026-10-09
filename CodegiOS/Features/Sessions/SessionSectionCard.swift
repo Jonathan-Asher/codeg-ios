@@ -143,11 +143,10 @@ struct SessionSectionFullScreen: View {
     var markedID: Int? = nil
     let onOpen: (Int) -> Void
     var onTogglePin: ((ConversationSummary) -> Void)?
-    /// Dismisses the fullscreen. The host drives this by clearing the cover's
-    /// item binding (`expandedSection = nil`) — the same path the row-open flow
-    /// uses. `@Environment(\.dismiss)` is a no-op for a cover presented with
-    /// `.navigationTransition(.zoom)`, so the close button reports up instead.
-    let onClose: () -> Void
+    /// Dismisses the fullscreen when it is presented as a cover: it then has
+    /// its own navigation stack and a close button. `nil` when it is pushed
+    /// onto the app's stack (`SessionGroupView`), which gives it Back.
+    var onClose: (() -> Void)? = nil
 
     /// "N sessions total" eyebrow shown above the big title.
     private var totalLabel: LocalizedStringKey {
@@ -156,44 +155,52 @@ struct SessionSectionFullScreen: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                header
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-
-                ForEach(conversations) { conv in
-                    SessionRow(
-                        conversation: conv,
-                        isSelected: conv.id == markedID,
-                        folderName: folderName(conv),
-                        onTap: { onOpen(conv.id) },
-                        onTogglePin: onTogglePin.map { toggle in { toggle(conv) } }
-                    )
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                }
-            }
-            .listStyle(.plain)
-            .environment(\.defaultMinListRowHeight, 1)
-            .scrollContentBackground(.hidden)
-            .background(CodegBackground().ignoresSafeArea())
-            .navigationBarTitleDisplayMode(.inline)
-            // Hidden bar background → the close button floats over a clean top
-            // (App Store look) instead of sitting on a visible band above the title.
-            .toolbarBackground(.hidden, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 15, weight: .bold))
+        if let onClose {
+            NavigationStack {
+                list
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button(action: onClose) {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 15, weight: .bold))
+                            }
+                            .accessibilityLabel("Close")
+                        }
                     }
-                    .accessibilityLabel("Close")
-                }
+            }
+        } else {
+            list
+        }
+    }
+
+    private var list: some View {
+        List {
+            header
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 14, trailing: 16))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+
+            ForEach(conversations) { conv in
+                SessionRow(
+                    conversation: conv,
+                    isSelected: conv.id == markedID,
+                    folderName: folderName(conv),
+                    onTap: { onOpen(conv.id) },
+                    onTogglePin: onTogglePin.map { toggle in { toggle(conv) } }
+                )
+                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             }
         }
+        .listStyle(.plain)
+        .environment(\.defaultMinListRowHeight, 1)
+        .scrollContentBackground(.hidden)
+        .background(CodegBackground().ignoresSafeArea())
+        .navigationBarTitleDisplayMode(.inline)
+        // Hidden bar background → the close button floats over a clean top
+        // (App Store look) instead of sitting on a visible band above the title.
+        .toolbarBackground(.hidden, for: .navigationBar)
     }
 
     /// Big left-aligned group title with a small total-count eyebrow above it —
@@ -213,5 +220,63 @@ struct SessionSectionFullScreen: View {
         }
         // Keep a long title clear of the floating close button.
         .padding(.trailing, 44)
+    }
+}
+
+/// One group of the Chats list in full, pushed from its card onto the tab's
+/// (or the iPad content column's) stack. Pushed rather than presented as a
+/// cover, so Back from a session opened here returns here, and Back again to
+/// the Chats list. Reads the rows live from the list's model, so a refresh
+/// while it is open keeps it current.
+struct SessionGroupView: View {
+    let group: SessionGroup
+    let viewModel: SessionListViewModel
+    var markedID: Int?
+    let onOpen: (Int) -> Void
+
+    var body: some View {
+        let content = SessionGroupContent(group: group, viewModel: viewModel)
+        SessionSectionFullScreen(
+            title: content.title,
+            tint: content.tint,
+            conversations: content.conversations,
+            folderName: { content.showFolder ? viewModel.folderNames[$0.folderId] : nil },
+            markedID: markedID,
+            onOpen: onOpen,
+            onTogglePin: { conv in
+                Task { await viewModel.setPinned(conv, pinned: !conv.isPinned) }
+            }
+        )
+    }
+}
+
+/// What a Chats group shows: its title, tint and rows.
+struct SessionGroupContent {
+    let title: String
+    let tint: Color
+    let conversations: [ConversationSummary]
+    /// Rows from several folders name their folder.
+    let showFolder: Bool
+
+    @MainActor
+    init(group: SessionGroup, viewModel: SessionListViewModel) {
+        switch group {
+        case .pinned:
+            title = "Pinned"
+            tint = Theme.accent
+            conversations = viewModel.pinned(searchText: "")
+            showFolder = true
+        case .folder(let id):
+            let folderGroup = viewModel.folderGroups(searchText: "").first { $0.folder.id == id }
+            title = folderGroup?.folder.name ?? "Folder"
+            tint = folderGroup.flatMap { Color(hexString: $0.folder.color) } ?? Theme.accent
+            conversations = folderGroup?.conversations ?? []
+            showFolder = false
+        case .other:
+            title = "Other"
+            tint = Theme.textSecondary
+            conversations = viewModel.ungrouped(searchText: "")
+            showFolder = true
+        }
     }
 }

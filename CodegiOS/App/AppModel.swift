@@ -14,6 +14,16 @@ final class AppModel {
     /// folders) — the poll-based stand-in for the future persistent event hub.
     let activity = ActivityModel()
 
+    /// The session screens' models, kept above the navigation containers so
+    /// a rebuilt screen gets the same one (see `SessionModelStore`).
+    let sessions: SessionModelStore
+
+    /// Brings Activity's finished sessions into the transcript cache.
+    let prefetcher: TranscriptPrefetcher
+
+    /// The Chats list's model, shared by the list and a group pushed from it.
+    @ObservationIgnored private var chatsList: (server: UUID, model: SessionListViewModel)?
+
     // MARK: - Server selection
 
     private static let lastServerKey = "codeg.lastSelectedServerID"
@@ -22,7 +32,7 @@ final class AppModel {
         didSet {
             guard oldValue != selectedServerID else { return }
             resetServerScopedState()
-            UserDefaults.standard.set(selectedServerID?.uuidString, forKey: Self.lastServerKey)
+            defaults.set(selectedServerID?.uuidString, forKey: Self.lastServerKey)
         }
     }
 
@@ -41,8 +51,17 @@ final class AppModel {
     // Typed route stacks (not opaque `NavigationPath`s) so navigation stays
     // inspectable — `open(_:)` can no-op when the destination is already on
     // top (e.g. tapping the running bar inside that very conversation).
-    var selectedTab: AppTab = .chats
+    /// Remembered across launches, so the app (and a notification opened
+    /// from the lock screen) comes back to the tab you were on.
+    var selectedTab: AppTab = .chats {
+        didSet {
+            guard oldValue != selectedTab else { return }
+            defaults.set(selectedTab.rawValue, forKey: Self.lastTabKey)
+        }
+    }
     var paths: [AppTab: [Route]] = [:]
+    private static let lastTabKey = "codeg.lastSelectedTab"
+    private let defaults: UserDefaults
 
     /// The Settings tab's stack is value-driven over `SettingsLeaf` (its own
     /// typed path, separate from the `Route` stacks above) so settings sub-screens
@@ -61,23 +80,40 @@ final class AppModel {
         isCompact ? lastOpenedConversationID : selectedConversationID
     }
 
-    /// Width class mirrored in by RootView so `open(_:)` can decide between a
-    /// push (compact) and a column selection (regular).
-    var isCompact = false
+    /// Which shell is up, mirrored in by RootView so `open(_:)` can decide
+    /// between a push (the tab shell) and a column selection (the split
+    /// view). Always true on iPhone, in every orientation (`ShellLayout`).
+    /// Changed through `setLayout(compact:)`, which carries the open screen
+    /// across.
+    private(set) var isCompact = false
 
     // MARK: - Presentation
 
     var serversSheetPresented = false
     var settingsSheetPresented = false
 
-    init(serverStore: ServerStore? = nil) {
+    init(serverStore: ServerStore? = nil, defaults: UserDefaults = .standard,
+         sessions: SessionModelStore? = nil, transcriptCache: TranscriptCache? = .shared) {
         let store = serverStore ?? ServerStore()
         self.serverStore = store
+        self.defaults = defaults
+        let sessionStore = sessions ?? SessionModelStore()
+        sessionStore.transcriptCache = transcriptCache
+        self.sessions = sessionStore
+        self.prefetcher = TranscriptPrefetcher(cache: transcriptCache)
         // Restore the last-used server, falling back to the first. With servers
         // demoted out of the tab bar there is no "pick a server" landing screen
         // anymore — the app must come up already pointed at a server.
-        let persisted = UserDefaults.standard.string(forKey: Self.lastServerKey).flatMap(UUID.init)
+        let persisted = defaults.string(forKey: Self.lastServerKey).flatMap(UUID.init)
         self.selectedServerID = store.servers.first { $0.id == persisted }?.id ?? store.servers.first?.id
+        if let raw = defaults.string(forKey: Self.lastTabKey), let tab = AppTab(rawValue: raw) {
+            self.selectedTab = tab
+        }
+        let activity = self.activity
+        sessionStore.summaryLookup = { id in activity.conversations.first { $0.id == id } }
+        activity.onRefreshed = { [weak self] in self?.activityRefreshed() }
+        store.onChange = { [weak self] in self?.pruneTranscriptCache() }
+        pruneTranscriptCache()
     }
 
     var selectedServer: ServerProfile? {
@@ -111,7 +147,48 @@ final class AppModel {
         case .project:
             sidebarSection = .projects
             if contentPath.last != route { contentPath.append(route) }
+        case .sessionGroup:
+            sidebarSection = .chats
+            if contentPath.last != route { contentPath.append(route) }
         }
+    }
+
+    // MARK: - Layout
+
+    /// The shell changed between the tabs (compact) and the split view
+    /// (regular). Only an iPad does this (a window resized across the
+    /// boundary); an iPhone keeps the tabs in landscape too. The screen that
+    /// was open stays open: the split view's sidebar section, content pushes
+    /// and detail become a tab with that stack, and back.
+    func setLayout(compact: Bool, initial: Bool = false) {
+        guard !initial else { isCompact = compact; return }
+        guard compact != isCompact else { return }
+        if compact {
+            let tab = sidebarSection.map(AppTab.init(section:)) ?? selectedTab
+            var stack = contentPath
+            if let pending = pendingNewSession {
+                stack.append(.newSession(pending))
+            } else if let id = selectedConversationID {
+                stack.append(.conversation(id))
+            }
+            selectedTab = tab
+            paths[tab] = stack
+        } else {
+            let stack = paths[selectedTab] ?? []
+            if let section = SidebarSection(tab: selectedTab) { sidebarSection = section }
+            let sessionIndex = stack.firstIndex(where: \.isSession)
+            contentPath = Array(stack[..<(sessionIndex ?? stack.endIndex)])
+            selectedConversationID = nil
+            pendingNewSession = nil
+            if let sessionIndex {
+                switch stack[sessionIndex] {
+                case .conversation(let id): selectedConversationID = id
+                case .newSession(let request): pendingNewSession = request
+                case .project, .sessionGroup: break
+                }
+            }
+        }
+        isCompact = compact
     }
 
     private func push(_ route: Route, on tab: AppTab) {
@@ -152,13 +229,16 @@ final class AppModel {
             return
         }
         guard let route = Route.from(url: url) else { return }
+        if case .conversation(let id) = route {
+            // Like a notification: on top of the screen you are on.
+            openSessionFromOutside(conversationID: id)
+            return
+        }
         if isCompact {
-            if case .conversation(let id) = route { lastOpenedConversationID = id }
-            let owner: AppTab = if case .project = route { .projects } else { .chats }
-            selectedTab = owner
-            paths[owner] = [route]
+            selectedTab = .projects
+            paths[.projects] = [route]
         } else {
-            if case .project = route { contentPath = [] }
+            contentPath = []
             open(route)
         }
     }
@@ -178,22 +258,69 @@ final class AppModel {
     }
 
     /// Open a session a notification pointed at: switch to its server if
-    /// needed, then land on it with a fresh, predictable stack (like a deep
-    /// link), so Back returns to the session list.
+    /// needed, then open it on top of the screen you were on, so Back returns
+    /// there (see `openSessionFromOutside`).
     func openFromPush(serverID: ServerProfile.ID, conversationID: Int) {
         guard serverStore.servers.contains(where: { $0.id == serverID }) else { return }
         if selectedServerID != serverID { selectedServerID = serverID }
         serversSheetPresented = false
         settingsSheetPresented = false
+        openSessionFromOutside(conversationID: conversationID)
+    }
+
+    /// A session opened from outside the lists (a notification, a link). On
+    /// iPhone it goes on the tab you are on, in place of any session open
+    /// there, so Back returns to the list, folder or search you were looking
+    /// at: usually Activity. From Settings, which has no sessions, it opens
+    /// on Activity. On iPad it fills the detail column next to the list you
+    /// were on.
+    func openSessionFromOutside(conversationID: Int) {
         let route = Route.conversation(conversationID)
         lastOpenedConversationID = conversationID
         if isCompact {
-            selectedTab = .chats
-            paths[.chats] = [route]
+            let tab: AppTab = selectedTab == .settings ? .activity : selectedTab
+            var stack = paths[tab] ?? []
+            if let first = stack.firstIndex(where: \.isSession) { stack.removeSubrange(first...) }
+            stack.append(route)
+            selectedTab = tab
+            paths[tab] = stack
         } else {
-            sidebarSection = .chats
+            if sidebarSection == nil { sidebarSection = .activity }
             open(route)
         }
+    }
+
+    // MARK: - Chats list
+
+    /// The Chats list's model for `server`, shared by the list and the
+    /// group screens pushed from it.
+    func sessionListModel(server: ServerProfile, client: CodegClient) -> SessionListViewModel {
+        if let chatsList, chatsList.server == server.id { return chatsList.model }
+        let model = SessionListViewModel(client: client)
+        chatsList = (server.id, model)
+        return model
+    }
+
+    // MARK: - Transcript cache
+
+    /// Drop cached transcripts of servers that are gone or whose URL or token
+    /// changed: each server's folder is named after its endpoint and token.
+    func pruneTranscriptCache() {
+        guard let cache = sessions.transcriptCache else { return }
+        let clients = serverStore.servers.map { serverStore.client(for: $0) }
+        // A token the Keychain can't give right now (a launch before the
+        // first unlock) is not a changed token: keep everything until it can.
+        guard !clients.contains(where: { $0 == nil }) else { return }
+        let keep = Set(clients.compactMap { $0 }.map(TranscriptCache.serverKey(for:)))
+        Task { await cache.removeServers(except: keep) }
+    }
+
+    /// Activity refreshed: cache the sessions that just finished a turn.
+    private func activityRefreshed() {
+        guard let client = selectedClient() else { return }
+        prefetcher.activityRefreshed(client: client,
+                                     shown: activity.running + activity.recent,
+                                     excluding: sessions.heldConversationIDs)
     }
 
     // MARK: - Server-scoped resets
@@ -208,6 +335,9 @@ final class AppModel {
         settingsPath = []
         contentPath = []
         activity.reset()
+        sessions.removeAll()
+        prefetcher.reset()
+        chatsList = nil
         AttentionStore.shared.clear()
     }
 
@@ -215,5 +345,6 @@ final class AppModel {
     /// URL/token) — the old endpoint's IDs may not exist on the new one.
     func selectedServerEndpointChanged() {
         resetServerScopedState()
+        pruneTranscriptCache()
     }
 }

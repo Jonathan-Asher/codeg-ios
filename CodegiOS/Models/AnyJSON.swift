@@ -13,7 +13,7 @@ import Foundation
 /// `AnyJSON.parse(jsonString:)` (via `JSONSerialization`, which never converts keys),
 /// preserving raw snake_case. `ParsedPermission.parse` therefore probes both
 /// snake_case and camelCase for every multi-word key.
-enum AnyJSON: Decodable, Hashable, Sendable {
+enum AnyJSON: Codable, Hashable, Sendable {
     case object([String: AnyJSON])
     case array([AnyJSON])
     case string(String)
@@ -37,6 +37,19 @@ enum AnyJSON: Decodable, Hashable, Sendable {
             self = .object(o)
         } else {
             self = .null
+        }
+    }
+
+    /// Written only to the on-device transcript cache (a tool call's `meta`).
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .object(let o): try c.encode(o)
+        case .array(let a): try c.encode(a)
+        case .string(let s): try c.encode(s)
+        case .number(let n): try c.encode(n)
+        case .bool(let b): try c.encode(b)
+        case .null: try c.encodeNil()
         }
     }
 

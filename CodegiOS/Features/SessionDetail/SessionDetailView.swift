@@ -17,7 +17,15 @@ struct SessionDetailView: View {
     /// to another worktree folder). `nil` where the host can't navigate.
     let onOpenSession: ((NewSessionRequest) -> Void)?
 
-    @State private var model: SessionDetailViewModel
+    /// Owned by `SessionModelStore` (above the navigation containers), so a
+    /// screen rebuilt by a layout change keeps the same transcript, draft,
+    /// live turn and socket.
+    @Bindable private var model: SessionDetailViewModel
+    /// Holds the model in the store while this screen is on screen. Without
+    /// one (previews), the screen closes the model's sockets when it goes.
+    private let lease: SessionLease?
+    /// This screen's identity as a holder of the model.
+    @State private var holderID = UUID()
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -38,20 +46,13 @@ struct SessionDetailView: View {
 
     private var cameraTalk: CameraTalkController { CameraTalkController.shared }
 
-    init(server: ServerProfile, client: CodegClient, conversationID: Int,
+    init(server: ServerProfile, client: CodegClient, model: SessionDetailViewModel, lease: SessionLease?,
          onOpenSession: ((NewSessionRequest) -> Void)? = nil) {
         self.server = server
         self.client = client
         self.onOpenSession = onOpenSession
-        _model = State(initialValue: SessionDetailViewModel(client: client, conversationID: conversationID))
-    }
-
-    init(server: ServerProfile, client: CodegClient, newSession request: NewSessionRequest,
-         onOpenSession: ((NewSessionRequest) -> Void)? = nil) {
-        self.server = server
-        self.client = client
-        self.onOpenSession = onOpenSession
-        _model = State(initialValue: SessionDetailViewModel(client: client, newSession: request))
+        self._model = Bindable(model)
+        self.lease = lease
     }
 
     /// Localized nav title: a real session title renders verbatim (user data,
@@ -171,15 +172,22 @@ struct SessionDetailView: View {
                                     activity: model.activity, agentName: model.agentTypeForUI.displayName)
             }
         }
-        .task { await model.load() }
+        .task { model.loadIfNeeded() }
         .onAppear {
             isVisible = true
+            lease?.acquire(holderID)
             updateLooking()
         }
         .onDisappear {
             isVisible = false
             PresenceTracker.shared.hide(serverProfileID: server.id, conversationID: model.conversationID)
-            model.teardown()
+            model.setOnScreen(false)
+            if let lease {
+                // The store closes the sockets once no screen holds the model.
+                lease.release(holderID)
+            } else {
+                model.teardown()
+            }
         }
         .onChange(of: model.conversationID) { _, _ in updateLooking() }
         // The live WebSocket is suspended (and often killed outright) while
@@ -289,7 +297,10 @@ struct SessionDetailView: View {
             turnsVersion: model.turnsVersion,
             scrollTick: model.scrollTick,
             stickTick: model.stickTick,
-            onPinnedChange: { model.setPinnedToBottom($0) }
+            onPinnedChange: { model.setPinnedToBottom($0) },
+            turnsOffset: model.turnsOffset,
+            hasOlderOnServer: model.hasOlderTurns,
+            onLoadOlder: { await model.loadOlderTurns() }
         ) {
             // No top banner on an existing session — its identity + stats now
             // live in the nav-bar "…" → Session Details, so messages start at

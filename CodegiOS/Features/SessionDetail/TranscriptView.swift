@@ -66,6 +66,13 @@ struct TranscriptView<Header: View>: View {
     /// it to show/hide the floating "jump to latest" button (which lives above the
     /// compose bar, not here, so it is reliably tappable).
     let onPinnedChange: (Bool) -> Void
+    /// Global index of `turns[0]`: above 0 while older turns are still on
+    /// the server (the session opened with a window of its latest turns).
+    var turnsOffset: Int = 0
+    /// Older turns can be fetched from the server.
+    var hasOlderOnServer: Bool = false
+    /// Fetches the page of turns before `turns[0]` and puts it in front.
+    var onLoadOlder: () async -> Void = {}
     /// Scrolls with the content as the first element (header above the first
     /// node). Kept generic so the transcript stays agnostic of the header's type.
     @ViewBuilder var header: () -> Header
@@ -104,10 +111,11 @@ struct TranscriptView<Header: View>: View {
     // load older ones when the user scrolls up. `build` + the `List` layout become
     // O(window) instead of O(history), so open time stops growing with length.
     //
-    // `windowStartTurn` is the absolute index into `turns` where the window begins;
-    // `nil` means "not yet expanded" → the window is anchored to the tail and
-    // follows new turns. Persisted turns only grow at the end, so an absolute index
-    // stays valid as the conversation advances.
+    // `windowStartTurn` is the global index (in the whole transcript) where the
+    // window begins; `nil` means "not yet expanded" → the window is anchored to
+    // the tail and follows new turns. Persisted turns only grow at the end, and
+    // older ones fetched from the server go in front of `turns` (lowering
+    // `turnsOffset`), so a global index stays valid either way.
 
     /// How many trailing turns to show on first open. Enough to fill the viewport
     /// with room to spare; small enough that layout is instant.
@@ -157,7 +165,7 @@ struct TranscriptView<Header: View>: View {
     /// user/system boundary so an assistant reply is never split and keeps its
     /// originating question in-window (jump-to-question stays correct).
     private var effectiveStart: Int {
-        if let s = windowStartTurn { return min(max(0, s), turns.count) }
+        if let s = windowStartTurn { return snappedStart(min(max(0, s - turnsOffset), turns.count)) }
         // While a reattached live turn stands in for the persisted copy of the
         // running reply, that copy is hidden: count the window back from the
         // reply's prompt. Counting from the end let a long running reply push
@@ -174,13 +182,14 @@ struct TranscriptView<Header: View>: View {
 
     /// Whether the window reaches the true start of the conversation (everything
     /// loaded). Only then is the scrollaway `header` shown and the rail's top capped.
-    private var headLoaded: Bool { effectiveStart == 0 }
+    private var headLoaded: Bool { effectiveStart == 0 && !hasOlderOnServer }
 
     /// Walk back from `desired` to the nearest non-assistant (user/system) turn so
     /// the window never starts in the middle of a merged assistant reply.
     private func snappedStart(_ desired: Int) -> Int {
         guard !turns.isEmpty else { return 0 }
-        var i = min(max(0, desired), turns.count - 1)
+        guard desired < turns.count else { return turns.count }
+        var i = max(0, desired)
         while i > 0, turns[i].role == .assistant { i -= 1 }
         return i
     }
@@ -231,7 +240,7 @@ struct TranscriptView<Header: View>: View {
         // conversation; otherwise the spine continues up into the not-yet-loaded
         // turns.
         if !all.isEmpty {
-            if start == 0 { all[0].connectTop = false }
+            if start == 0, !hasOlderOnServer { all[0].connectTop = false }
             all[all.count - 1].connectBottom = false
         }
         return all
@@ -242,12 +251,24 @@ struct TranscriptView<Header: View>: View {
     /// are inserted above.
     private func loadEarlier() {
         let cur = effectiveStart
-        guard cur > 0, !isLoadingEarlier else { return }
-        isLoadingEarlier = true
-        windowStartTurn = snappedStart(cur - pageTurns)
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(300))
-            isLoadingEarlier = false
+        guard !isLoadingEarlier else { return }
+        if cur > 0 {
+            isLoadingEarlier = true
+            windowStartTurn = turnsOffset + snappedStart(cur - pageTurns)
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                isLoadingEarlier = false
+            }
+        } else if hasOlderOnServer {
+            // Everything held is shown: fetch the page before it. The window
+            // then opens onto the new page (`effectiveStart` snaps it).
+            isLoadingEarlier = true
+            let shownFrom = turnsOffset
+            Task { @MainActor in
+                await onLoadOlder()
+                windowStartTurn = max(0, shownFrom - pageTurns)
+                isLoadingEarlier = false
+            }
         }
     }
 

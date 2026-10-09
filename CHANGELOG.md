@@ -12,6 +12,17 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Activity lists older sessions on demand (1.3.6). Sessions not touched in
+  the last 24 hours no longer simply vanish: an "Earlier" card at the old end
+  of the feed (the top with the newest at the bottom) lists them 20 at a time.
+- Opened sessions are kept on the iPhone (1.3.6). Opening one again draws its
+  saved copy at once, pictures included, and then fetches only what changed;
+  if the server can't be reached, the saved copy stays on screen. The cache
+  lives in the Caches folder, is capped at 256 MB (least recently opened go
+  first) and is cleared for a server whose address or token changes. Sessions
+  in Activity that finish a turn are refreshed into it in the background (on
+  Wi-Fi for ones never opened).
+
 - Hebrew or English dictation (1.3.1): the new default Language, "Hebrew or
   English (automatic)", tells the two apart on the iPhone with whisper tiny
   (44 MB, downloaded with the speech model) and then transcribes with the
@@ -82,6 +93,18 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Changed
 
+- Long sessions open with their latest 120 turns (1.3.6), and earlier ones load
+  as you scroll up, instead of downloading the whole transcript each time:
+  8.7 MB became 1.0 MB for a 1,700-turn session with pictures. Refreshes after
+  a turn, on returning to the app and on reopening fetch only the turns that
+  changed, and reload from the end if the server rewrote the history.
+- Pictures in a transcript are decoded off the main thread and scaled to the
+  screen (1.3.6), so scrolling onto a large screenshot no longer stutters.
+- A notification or a link opens its session on the tab you are on (1.3.6),
+  so Back returns to Activity (or the list you were in) rather than to Chats;
+  from Settings it opens on Activity. The app reopens on the tab you left.
+- A Chats folder's full list opens as a screen of its own (1.3.6), so Back from
+  a session opened there returns to it.
 - The ✕ on the Camera Control pill (1.3.3) only hides the pill now: it folds
   into the mic's badge at once (or hides a pause or failure report until the
   status changes) and the mode stays on. The toolbar button turns it off.
@@ -118,6 +141,11 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- Turning a Plus or Pro Max iPhone to landscape left the open session, closed
+  and reopened its connection, and switched the app to the iPad's three-column
+  layout (1.3.6). The iPhone now keeps its tabs in every orientation, and the
+  session keeps its place, its draft, its running reply and its connection.
+  Lists keep their scroll position and filter.
 - Pictures a tool returned never showed (1.3.5): the drawings an agent
   rendered and read back, the screenshots it took. The transcript, the live
   stream and a reattach's snapshot all carry them (`images` on a tool

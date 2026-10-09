@@ -50,9 +50,12 @@ struct ActivityView: View {
                     Task { await activity.refresh(client: client) }
                 }
             } else {
+                let earlier = activity.earlier
                 ActivityFeed(
                     running: activity.running,
                     recent: activity.recent,
+                    earlier: Array(earlier.prefix(activity.earlierShown)),
+                    earlierTotal: earlier.count,
                     folderNames: activity.folderNames,
                     markedID: markedConversationID,
                     lastRefreshed: activity.lastRefreshed,
@@ -60,6 +63,7 @@ struct ActivityView: View {
                     onOpen: onOpen,
                     onRefresh: { await activity.refresh(client: client) },
                     onDismissError: { activity.dismissError() },
+                    onShowEarlier: { activity.showMoreEarlier() },
                     newestAtBottom: appearance.newestAtBottom
                 )
             }
@@ -84,6 +88,10 @@ struct ActivityFeed: View {
     let running: [ConversationSummary]
     /// Sessions touched in the last 24 hours, most recently updated first.
     let recent: [ConversationSummary]
+    /// Older sessions listed so far ("Earlier"), most recent first.
+    var earlier: [ConversationSummary] = []
+    /// How many older sessions there are in all.
+    var earlierTotal: Int = 0
     let folderNames: [Int: String]
     /// The session that is open (iPad) or was opened last (iPhone); its row is
     /// marked.
@@ -94,6 +102,8 @@ struct ActivityFeed: View {
     let onOpen: (Int) -> Void
     let onRefresh: () async -> Void
     let onDismissError: () -> Void
+    /// Lists the next page of older sessions.
+    var onShowEarlier: () -> Void = {}
     /// Oldest at the top, the most recent session at the bottom.
     var newestAtBottom: Bool = false
 
@@ -107,7 +117,12 @@ struct ActivityFeed: View {
     private static let bottomID = "activity-bottom"
 
     private var sections: [ActivityFeedLayout.Section] {
-        ActivityFeedLayout.sections(running: running, recent: recent, newestAtBottom: newestAtBottom)
+        ActivityFeedLayout.sections(running: running, recent: recent, earlier: earlier,
+                                    newestAtBottom: newestAtBottom)
+    }
+
+    private var earlierControlState: ActivityFeedLayout.EarlierControl {
+        ActivityFeedLayout.earlierControl(total: earlierTotal, shown: earlier.count)
     }
 
     /// Changes whenever a row is added, removed or moved.
@@ -119,6 +134,8 @@ struct ActivityFeed: View {
                 LazyVStack(spacing: 8) {
                     Color.clear.frame(height: 1).id(Self.topID)
                     if newestAtBottom { updatedLine } else { errorBanner }
+                    // Older sessions continue at the old end of the feed.
+                    if newestAtBottom { earlierControl }
 
                     if sections.isEmpty {
                         EmptyStateView(
@@ -126,7 +143,7 @@ struct ActivityFeed: View {
                             title: "All Agents Idle",
                             message: "Nothing is running and nothing finished in the last 24 hours."
                         )
-                        .frame(maxWidth: .infinity, minHeight: 360)
+                        .frame(maxWidth: .infinity, minHeight: earlierTotal > 0 ? 240 : 360)
                     } else {
                         ForEach(sections) { section in
                             sectionHeader(section)
@@ -134,6 +151,7 @@ struct ActivityFeed: View {
                         }
                     }
 
+                    if !newestAtBottom { earlierControl }
                     if newestAtBottom { errorBanner } else { updatedLine }
                     Color.clear.frame(height: 1).id(Self.bottomID)
                 }
@@ -226,20 +244,78 @@ struct ActivityFeed: View {
         )
     }
 
+    /// "Earlier": lists sessions older than 24 hours on demand, a page at a
+    /// time, so they don't simply vanish from Activity. A flat card in the
+    /// rows' style with the section header's badge; once some are shown, a
+    /// plain "Show more" line in their place.
+    @ViewBuilder
+    private var earlierControl: some View {
+        switch earlierControlState {
+        case .none, .allShown:
+            EmptyView()
+        case .show(let total):
+            Button(action: showEarlier) {
+                HStack(spacing: 11) {
+                    SectionBadgeIcon(systemImage: "calendar", tint: Theme.textSecondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Earlier")
+                            .font(.headline)
+                            .foregroundStyle(Theme.textPrimary)
+                        Text("Sessions from before the last 24 hours")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    Spacer(minLength: 8)
+                    CountBadge(count: total)
+                    Image(systemName: newestAtBottom ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(Theme.bgElevated, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                .hairlineBorder(Theme.Radius.md)
+            }
+            .buttonStyle(PressableRowStyle())
+            .padding(.top, 4)
+            .accessibilityLabel("Earlier sessions, \(total)")
+            .accessibilityHint("Lists sessions from before the last 24 hours")
+        case .more(let remaining):
+            Button(action: showEarlier) {
+                Label("Show \(min(remaining, ActivityModel.earlierPage)) more", systemImage: newestAtBottom ? "arrow.up" : "arrow.down")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(PressableRowStyle())
+        }
+    }
+
+    /// With the newest at the bottom, older rows go in above: let go of the
+    /// bottom so they open where the control was, instead of above the screen.
+    private func showEarlier() {
+        if newestAtBottom { pin.update(atBottom: false, userScrolling: true) }
+        onShowEarlier()
+    }
+
     /// A group header above its cards: a tinted circular badge + the section
     /// name + a count pill.
     private func sectionHeader(_ section: ActivityFeedLayout.Section) -> some View {
         let (title, icon, tint): (LocalizedStringKey, String, Color) = switch section.kind {
         case .running: ("Running", "waveform", Theme.accent)
         case .recent: ("Last 24 Hours", "clock.arrow.circlepath", Theme.textSecondary)
+        case .earlier: ("Earlier", "calendar", Theme.textSecondary)
         }
+        let count = section.kind == .earlier ? earlierTotal : section.rows.count
         return HStack(spacing: 11) {
             SectionBadgeIcon(systemImage: icon, tint: tint)
             Text(title)
                 .font(.headline)
                 .foregroundStyle(Theme.textPrimary)
             Spacer(minLength: 8)
-            CountBadge(count: section.rows.count)
+            CountBadge(count: count)
         }
         .padding(.horizontal, 2)
         .padding(.top, 12)

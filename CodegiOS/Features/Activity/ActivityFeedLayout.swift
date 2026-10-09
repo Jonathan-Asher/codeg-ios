@@ -4,15 +4,17 @@ import Foundation
 /// The Activity tab's sections in display order.
 ///
 /// Newest first (the default upstream order): "Running" on top, then "Last 24
-/// Hours", each most recent first. Newest at the bottom (the Settings ›
-/// Appearance option): the whole feed is turned over, so the most recent
-/// session sits at the bottom of the screen, within reach of the thumb, and
-/// older ones go up. "Last 24 Hours" then comes first and "Running" last, each
-/// oldest first. A header always stays above its own rows.
+/// Hours", then "Earlier" (older sessions, listed on demand), each most
+/// recent first. Newest at the bottom (the Settings › Appearance option): the
+/// whole feed is turned over, so the most recent session sits at the bottom
+/// of the screen, within reach of the thumb, and older ones go up. "Earlier"
+/// then comes first and "Running" last, each oldest first. A header always
+/// stays above its own rows.
 enum ActivityFeedLayout {
     enum Kind: Hashable, Sendable {
         case running
         case recent
+        case earlier
     }
 
     struct Section: Identifiable, Equatable {
@@ -21,18 +23,43 @@ enum ActivityFeedLayout {
         var id: Kind { kind }
     }
 
-    /// `running` and `recent` arrive most recent first, as `ActivityModel`
-    /// derives them. Empty sections are dropped.
+    /// `running`, `recent` and `earlier` arrive most recent first, as
+    /// `ActivityModel` derives them; `earlier` holds only the rows asked for.
+    /// Empty sections are dropped.
     static func sections(
         running: [ConversationSummary],
         recent: [ConversationSummary],
+        earlier: [ConversationSummary] = [],
         newestAtBottom: Bool
     ) -> [Section] {
         var sections: [Section] = []
         if !running.isEmpty { sections.append(Section(kind: .running, rows: running)) }
         if !recent.isEmpty { sections.append(Section(kind: .recent, rows: recent)) }
+        if !earlier.isEmpty { sections.append(Section(kind: .earlier, rows: earlier)) }
         guard newestAtBottom else { return sections }
         return sections.reversed().map { Section(kind: $0.kind, rows: $0.rows.reversed()) }
+    }
+
+    /// The "Earlier" control: what it offers given how many older sessions
+    /// exist and how many are shown. It sits at the old end of the feed
+    /// (the bottom, or the top when the newest is at the bottom), where
+    /// older sessions continue.
+    enum EarlierControl: Equatable {
+        /// Nothing older than 24 hours.
+        case none
+        /// None shown yet: "Earlier", with how many there are.
+        case show(total: Int)
+        /// Some shown: "Show more", with how many are left.
+        case more(remaining: Int)
+        /// All shown.
+        case allShown
+    }
+
+    static func earlierControl(total: Int, shown: Int) -> EarlierControl {
+        if total == 0 { return .none }
+        if shown == 0 { return .show(total: total) }
+        if shown < total { return .more(remaining: total - shown) }
+        return .allShown
     }
 }
 

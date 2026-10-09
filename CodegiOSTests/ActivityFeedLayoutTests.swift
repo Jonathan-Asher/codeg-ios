@@ -50,7 +50,7 @@ final class ActivityFeedLayoutTests: XCTestCase {
             for section in sections {
                 switch section.kind {
                 case .running: XCTAssertTrue(section.rows.allSatisfy { $0.status.isLive })
-                case .recent: XCTAssertTrue(section.rows.allSatisfy { !$0.status.isLive })
+                case .recent, .earlier: XCTAssertTrue(section.rows.allSatisfy { !$0.status.isLive })
                 }
             }
         }

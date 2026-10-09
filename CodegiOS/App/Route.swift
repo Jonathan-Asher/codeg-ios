@@ -32,6 +32,57 @@ enum Route: Hashable {
     /// first send connects + prompts before a server conversation id exists
     /// (it adopts one on `conversation_linked`).
     case newSession(NewSessionRequest)
+    /// One group of the Chats list (Pinned, a folder, Other) in full, opened
+    /// from its card. Pushed rather than presented, so Back from a session
+    /// opened in it returns to it.
+    case sessionGroup(SessionGroup)
+
+    /// A session screen (an existing conversation or a new task's draft).
+    var isSession: Bool {
+        switch self {
+        case .conversation, .newSession: return true
+        case .project, .sessionGroup: return false
+        }
+    }
+}
+
+/// A group of the Chats list.
+enum SessionGroup: Hashable {
+    case pinned
+    case folder(Int)
+    case other
+
+    /// Pairs the card with the pushed list for the zoom transition.
+    var transitionID: String {
+        switch self {
+        case .pinned: return "pinned"
+        case .folder(let id): return "folder-\(id)"
+        case .other: return "other"
+        }
+    }
+}
+
+extension AppTab {
+    /// The tab showing what an iPad sidebar section shows.
+    init(section: SidebarSection) {
+        switch section {
+        case .chats: self = .chats
+        case .projects: self = .projects
+        case .activity: self = .activity
+        }
+    }
+}
+
+extension SidebarSection {
+    /// The sidebar section for a tab, `nil` for Settings (a sheet on iPad).
+    init?(tab: AppTab) {
+        switch tab {
+        case .chats, .search: self = .chats
+        case .projects: self = .projects
+        case .activity: self = .activity
+        case .settings: return nil
+        }
+    }
 }
 
 /// A draft new-task token. Carries only an optional preselected folder (e.g.

@@ -144,11 +144,11 @@ extension EnvironmentValues {
 // MARK: - Inline image
 
 /// Decodes a base64 `ImageData` payload and renders it rounded, with an optional
-/// caption (e.g. a revised generation prompt). The base64 → image decode runs once
-/// off the main thread in a `.task` (not in `body`, where it re-ran on every
-/// render — costly while the transcript invalidates during streaming) and is held
-/// in a memory-pressure-evicting `NSCache`, so scrolling a decoded image back on
-/// screen is free.
+/// caption (e.g. a revised generation prompt). The picture is decoded once, off
+/// the main thread and scaled down to what the screen shows
+/// (`TranscriptImages`), in a `.task` (not in `body`, where it re-ran on every
+/// render — costly while the transcript invalidates during streaming), and held
+/// in a cost-bounded memory cache, so scrolling it back on screen is free.
 struct InlineImageView: View {
     let image: ImageData
     let caption: String?
@@ -157,9 +157,8 @@ struct InlineImageView: View {
     @State private var decoded: UIImage?
     @State private var failed = false
 
-    /// Thread-safe, auto-evicting under memory pressure — the right store for a
-    /// handful of potentially large transcript images.
-    private static let cache = NSCache<NSString, UIImage>()
+    /// Cheap to compare on every render, unlike the base64 text itself.
+    private var cacheKey: String { TranscriptImages.key(for: image) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -184,7 +183,7 @@ struct InlineImageView: View {
             }
         }
         .animation(Theme.Motion.content, value: decoded == nil)
-        .task(id: image.dataRef ?? image.data) { await decode() }
+        .task(id: cacheKey) { await decode() }
     }
 
     /// A calm decoding box (or a decode-failure note) shown until the image lands.
@@ -205,30 +204,25 @@ struct InlineImageView: View {
     }
 
     private func decode() async {
+        let key = cacheKey
+        if let hit = TranscriptImages.cached(key) { decoded = hit; failed = false; return }
         // An image the live frame carried by reference: load the real one from
         // the server, falling back to the placeholder `data` if it is gone.
         if let ref = image.dataRef, let request = source?.request(for: ref) {
-            let refKey = ref as NSString
-            if let hit = Self.cache.object(forKey: refKey) { decoded = hit; failed = false; return }
             if let loaded = try? await URLSession.shared.data(for: request),
                (loaded.1 as? HTTPURLResponse)?.statusCode == 200,
-               let img = UIImage(data: loaded.0) {
-                Self.cache.setObject(img, forKey: refKey)
+               let img = await TranscriptImages.decode(data: loaded.0) {
+                TranscriptImages.store(img, key: key)
                 decoded = img
                 failed = false
                 return
             }
         }
-        let key = image.data as NSString
-        if let hit = Self.cache.object(forKey: key) { decoded = hit; failed = false; return }
-        let raw = image.data
-        // Heavy base64 decode off the main thread; `Data` is Sendable so it crosses
-        // the boundary cleanly (UIImage(data:) defers the pixel decode to draw time).
-        let data = await Task.detached(priority: .userInitiated) {
-            Data(base64Encoded: raw, options: .ignoreUnknownCharacters)
-        }.value
-        guard let data, let img = UIImage(data: data) else { failed = true; return }
-        Self.cache.setObject(img, forKey: key)
+        // Base64 decode, then a downscaled decode of the pixels, both off the
+        // main thread. A by-reference picture's `data` is only a placeholder,
+        // which is shown but never cached under the reference.
+        guard let img = await TranscriptImages.decode(base64: image.data) else { failed = true; return }
+        if image.dataRef == nil { TranscriptImages.store(img, key: key) }
         decoded = img
         failed = false
     }

@@ -51,10 +51,36 @@ final class ActivityModel {
 
     /// Non-running sessions touched in the last 24 hours, most recent first.
     var recent: [ConversationSummary] {
-        let cutoff = Date().addingTimeInterval(-24 * 3600)
+        let cutoff = Self.recentCutoff()
         return conversations.filter { !$0.status.isLive && $0.updatedAt >= cutoff }
             .sorted { $0.updatedAt > $1.updatedAt }
     }
+
+    /// Non-running sessions last touched before the last 24 hours, most
+    /// recent first. Activity lists them only on demand ("Earlier").
+    var earlier: [ConversationSummary] {
+        let cutoff = Self.recentCutoff()
+        return conversations.filter { !$0.status.isLive && $0.updatedAt < cutoff }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    /// How many of `earlier` Activity shows: none until asked, then a page
+    /// more each time. Kept here (not in the view) so it survives opening a
+    /// session and coming back, and resets with the server.
+    private(set) var earlierShown = 0
+    static let earlierPage = 20
+
+    func showMoreEarlier() {
+        earlierShown = min(earlier.count, earlierShown + Self.earlierPage)
+    }
+
+    private static func recentCutoff(now: Date = Date()) -> Date {
+        now.addingTimeInterval(-24 * 3600)
+    }
+
+    /// Called after each refresh that loaded the list (the transcript
+    /// prefetcher looks for sessions that just finished a turn).
+    @ObservationIgnored var onRefreshed: (@MainActor () -> Void)?
 
     /// The folder set the display + grouping derive from: the open set normally,
     /// but the FULL set as a fallback when the open-folders endpoint failed while
@@ -115,6 +141,7 @@ final class ActivityModel {
         lastRefreshed = nil
         loadedEndpoint = nil
         consecutiveFailures = 0
+        earlierShown = 0
     }
 
     /// Clears a surfaced refresh-error banner (a failed refresh over a list that
@@ -154,6 +181,7 @@ final class ActivityModel {
             error = nil
             lastRefreshed = Date()
             consecutiveFailures = 0
+            if result.conversations != nil { onRefreshed?() }
         } else {
             // Both failed after retries. Debounce so a lone blip in the periodic
             // pulse stays silent; surface it once it persists (or on first load,

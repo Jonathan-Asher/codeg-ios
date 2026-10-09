@@ -63,7 +63,7 @@ private struct SkippedElement: Decodable {
 /// the source of truth for transcripts; locally-constructed optimistic turns
 /// build cases directly. Unknown future variants decode to `.unknown` instead
 /// of throwing.
-enum ContentBlock: Hashable, Sendable, Decodable {
+enum ContentBlock: Hashable, Sendable, Codable {
     case text(String)
     case thinking(String)
     case image(ImageData)
@@ -123,10 +123,48 @@ enum ContentBlock: Hashable, Sendable, Decodable {
             self = .unknown(type: type)
         }
     }
+
+    /// Written only to the on-device transcript cache: the keys `init(from:)`
+    /// reads, so a cached block decodes to the same value.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text(let text):
+            try c.encode("text", forKey: .type)
+            try c.encode(text, forKey: .text)
+        case .thinking(let text):
+            try c.encode("thinking", forKey: .type)
+            try c.encode(text, forKey: .text)
+        case .image(let image):
+            try c.encode("image", forKey: .type)
+            try c.encode(image.data, forKey: .data)
+            try c.encode(image.mimeType, forKey: .mimeType)
+            try c.encodeIfPresent(image.uri, forKey: .uri)
+            try c.encodeIfPresent(image.dataRef, forKey: .dataRef)
+        case .imageGeneration(let revisedPrompt, let image):
+            try c.encode("image_generation", forKey: .type)
+            try c.encodeIfPresent(revisedPrompt, forKey: .revisedPrompt)
+            try c.encodeIfPresent(image, forKey: .image)
+        case .toolUse(let id, let name, let inputPreview, let meta):
+            try c.encode("tool_use", forKey: .type)
+            try c.encodeIfPresent(id, forKey: .toolUseId)
+            try c.encode(name, forKey: .toolName)
+            try c.encodeIfPresent(inputPreview, forKey: .inputPreview)
+            try c.encodeIfPresent(meta, forKey: .meta)
+        case .toolResult(let id, let outputPreview, let isError, let images):
+            try c.encode("tool_result", forKey: .type)
+            try c.encodeIfPresent(id, forKey: .toolUseId)
+            try c.encodeIfPresent(outputPreview, forKey: .outputPreview)
+            try c.encode(isError, forKey: .isError)
+            if !images.isEmpty { try c.encode(images, forKey: .images) }
+        case .unknown(let type):
+            try c.encode(type, forKey: .type)
+        }
+    }
 }
 
 /// One turn in a conversation transcript (Rust `MessageTurn`).
-struct MessageTurn: Identifiable, Hashable, Sendable, Decodable {
+struct MessageTurn: Identifiable, Hashable, Sendable, Codable {
     let id: String
     let role: TurnRole
     let blocks: [ContentBlock]
@@ -135,6 +173,12 @@ struct MessageTurn: Identifiable, Hashable, Sendable, Decodable {
     let durationMs: Int?
     let model: String?
     let completedAt: Date?
+    /// The server's timestamp in epoch milliseconds, exactly as the server
+    /// counts it (`timestamp_millis`). Only turns that came from the server
+    /// have it; a turn built on the phone (an optimistic prompt, a reply that
+    /// was never reconciled) has `nil`. The transcript window's prefix
+    /// fingerprint is computed from it (`TranscriptFingerprint`).
+    let serverMillis: Int64?
 
     init(
         id: String,
@@ -144,7 +188,8 @@ struct MessageTurn: Identifiable, Hashable, Sendable, Decodable {
         usage: TurnUsage? = nil,
         durationMs: Int? = nil,
         model: String? = nil,
-        completedAt: Date? = nil
+        completedAt: Date? = nil,
+        serverMillis: Int64? = nil
     ) {
         self.id = id
         self.role = role
@@ -154,5 +199,46 @@ struct MessageTurn: Identifiable, Hashable, Sendable, Decodable {
         self.durationMs = durationMs
         self.model = model
         self.completedAt = completedAt
+        self.serverMillis = serverMillis
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, role, blocks, timestamp, usage, durationMs, model, completedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        role = try c.decode(TurnRole.self, forKey: .role)
+        blocks = try c.decode([ContentBlock].self, forKey: .blocks)
+        // Read the timestamp text ourselves: the date decoder drops 6- and
+        // 9-digit fractions entirely, and the fingerprint needs the exact
+        // milliseconds.
+        if let raw = try? c.decode(String.self, forKey: .timestamp), let millis = TranscriptTime.millis(raw) {
+            timestamp = Date(timeIntervalSince1970: Double(millis) / 1000)
+            serverMillis = millis
+        } else {
+            timestamp = try c.decode(Date.self, forKey: .timestamp)
+            serverMillis = nil
+        }
+        usage = try c.decodeIfPresent(TurnUsage.self, forKey: .usage)
+        durationMs = try c.decodeIfPresent(Int.self, forKey: .durationMs)
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+        completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
+    }
+
+    /// Written only to the on-device transcript cache, in the shape the
+    /// decoder above reads back (camelCase keys, RFC 3339 timestamp).
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(role.rawValue, forKey: .role)
+        try c.encode(blocks, forKey: .blocks)
+        try c.encode(serverMillis.map(TranscriptTime.string(millis:)) ?? TranscriptTime.string(date: timestamp),
+                     forKey: .timestamp)
+        try c.encodeIfPresent(usage, forKey: .usage)
+        try c.encodeIfPresent(durationMs, forKey: .durationMs)
+        try c.encodeIfPresent(model, forKey: .model)
+        try c.encodeIfPresent(completedAt, forKey: .completedAt)
     }
 }

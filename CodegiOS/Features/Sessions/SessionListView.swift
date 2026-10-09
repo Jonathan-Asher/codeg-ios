@@ -36,32 +36,39 @@ struct SessionListView: View {
         let onManage: () -> Void
     }
 
-    @State private var viewModel: SessionListViewModel
+    /// Owned by `AppModel`, so a group pushed from a card (and the other
+    /// shell, after a layout change) reads the same list.
+    let viewModel: SessionListViewModel
+    /// Opens a group's full list (pushed, so Back from a session opened in it
+    /// returns to it).
+    let onOpenGroup: (SessionGroup) -> Void
+    /// Pairs each card with its pushed list for the zoom transition.
+    let cardNamespace: Namespace.ID
     @State private var searchText = ""
-    /// The group currently zoom-expanded to fullscreen, or `nil`.
-    @State private var expandedSection: ChatExpand?
-    /// Shared namespace pairing each card's `matchedTransitionSource` with the
-    /// fullscreen's `.navigationTransition(.zoom)`.
-    @Namespace private var cardNS
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     init(
         server: ServerProfile,
         client: CodegClient,
+        viewModel: SessionListViewModel,
         selectedConversationID: Binding<Int?>,
         onOpen: ((Int) -> Void)? = nil,
+        onOpenGroup: @escaping (SessionGroup) -> Void,
+        cardNamespace: Namespace.ID,
         onNewSession: (() -> Void)? = nil,
         serverSwitcher: ServerSwitcher? = nil,
         markedConversationID: Int? = nil
     ) {
         self.server = server
         self.client = client
+        self.viewModel = viewModel
         self._selectedConversationID = selectedConversationID
         self.onOpen = onOpen
+        self.onOpenGroup = onOpenGroup
+        self.cardNamespace = cardNamespace
         self.onNewSession = onNewSession
         self.serverSwitcher = serverSwitcher
         self.markedConversationID = markedConversationID
-        self._viewModel = State(initialValue: SessionListViewModel(client: client))
     }
 
     /// The row drawn as the current one: the open session on iPad, the one
@@ -202,13 +209,6 @@ struct SessionListView: View {
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.immediately)
         .refreshable { await viewModel.refresh() }
-        // App Store-style zoom into the tapped group's full list. A row tap opens
-        // the conversation *then* clears this binding (see `fullScreen(for:)`), so
-        // the cover's dismissal reveals the already-pushed detail in one motion —
-        // no flash of this list in between.
-        .fullScreenCover(item: $expandedSection) { section in
-            fullScreen(for: section)
-        }
     }
 
     // MARK: - Cards
@@ -236,7 +236,7 @@ struct SessionListView: View {
     }
 
     private func card(
-        _ section: ChatExpand, title: String, tint: Color,
+        _ group: SessionGroup, title: String, tint: Color,
         conversations: [ConversationSummary], showFolder: Bool
     ) -> some View {
         SessionSectionCard(
@@ -247,9 +247,9 @@ struct SessionListView: View {
             markedID: markedID,
             onOpen: { open(id: $0) },
             onTogglePin: { togglePin($0) },
-            onExpand: { expandedSection = section }
+            onExpand: { onOpenGroup(group) }
         )
-        .matchedTransitionSource(id: section.id, in: cardNS)
+        .matchedTransitionSource(id: group.transitionID, in: cardNamespace)
         .padding(.horizontal, Theme.Layout.screenHMargin)
     }
 
@@ -278,58 +278,6 @@ struct SessionListView: View {
         // Match the flat result list in the Search tab (`SearchView.resultsList`)
         // and the card grid above — all at the shared screen margin.
         .padding(.horizontal, Theme.Layout.screenHMargin)
-    }
-
-    // MARK: - Fullscreen
-
-    @ViewBuilder
-    private func fullScreen(for section: ChatExpand) -> some View {
-        let data = sectionData(section)
-        SessionSectionFullScreen(
-            title: data.title,
-            tint: data.tint,
-            conversations: data.conversations,
-            folderName: { data.showFolder ? viewModel.folderNames[$0.folderId] : nil },
-            markedID: markedID,
-            // Open first (pushes the detail onto the nav stack behind the cover),
-            // then dismiss — so closing the cover reveals the detail directly
-            // instead of zooming back to this list and pushing afterward.
-            onOpen: { id in open(id: id); expandedSection = nil },
-            onTogglePin: { conv in togglePin(conv) },
-            onClose: { expandedSection = nil }
-        )
-        .navigationTransition(.zoom(sourceID: section.id, in: cardNS))
-    }
-
-    /// Live-reads the section's current rows from the view model (never a frozen
-    /// snapshot) so a background refresh while the fullscreen is open stays fresh.
-    private func sectionData(_ section: ChatExpand)
-        -> (title: String, tint: Color, conversations: [ConversationSummary], showFolder: Bool) {
-        switch section {
-        case .pinned:
-            return ("Pinned", Theme.accent, viewModel.pinned(searchText: ""), true)
-        case .folder(let fid):
-            let group = viewModel.folderGroups(searchText: "").first { $0.folder.id == fid }
-            let tint = group.flatMap { Color(hexString: $0.folder.color) } ?? Theme.accent
-            return (group?.folder.name ?? "Folder", tint, group?.conversations ?? [], false)
-        case .other:
-            return ("Other", Theme.textSecondary, viewModel.ungrouped(searchText: ""), true)
-        }
-    }
-
-    /// One expandable chat section. Its `id` doubles as the zoom-transition
-    /// source id and selects the live row list in `sectionData`.
-    private enum ChatExpand: Identifiable, Hashable {
-        case pinned
-        case folder(Int)
-        case other
-        var id: String {
-            switch self {
-            case .pinned: return "pinned"
-            case .folder(let fid): return "folder-\(fid)"
-            case .other: return "other"
-            }
-        }
     }
 
     @ViewBuilder

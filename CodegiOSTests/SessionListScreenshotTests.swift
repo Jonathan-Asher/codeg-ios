@@ -166,6 +166,37 @@ final class SessionListScreenshotTests: XCTestCase {
             activityScreen(running: Array(split.running.prefix(1)),
                            recent: Array(split.recent.prefix(2)), newestAtBottom: true)
         }
+        // Older sessions: the "Earlier" card, then a page of them listed.
+        let older = try olderSessions()
+        for style in Shot.styles {
+            try Shot.capture("activity-earlier-card", style) {
+                activityScreen(running: Array(split.running.prefix(1)), recent: Array(split.recent.prefix(3)),
+                               earlierTotal: older.count, newestAtBottom: true)
+            }
+            try Shot.capture("activity-earlier-open", style) {
+                activityScreen(running: Array(split.running.prefix(1)), recent: Array(split.recent.prefix(2)),
+                               earlier: Array(older.prefix(4)), earlierTotal: older.count, newestAtBottom: true)
+            }
+        }
+        try Shot.capture("activity-earlier-newest-first", .light) {
+            activityScreen(running: Array(split.running.prefix(1)), recent: Array(split.recent.prefix(3)),
+                           earlierTotal: older.count, newestAtBottom: false)
+        }
+    }
+
+    /// Sessions last touched two days to a month ago.
+    private func olderSessions() throws -> [ConversationSummary] {
+        let titles = ["Release notes for 1.3.0", "Benchmark whisper tiny vs base", "Fix the folder sort order",
+                      "Upgrade SwiftTerm", "Push payload routing", "Camera Control prototype", "Audit the Keychain fallback"]
+        return try titles.enumerated().map { index, title in
+            let updated = now.addingTimeInterval(-Double(2 + index * 4) * 86_400)
+            let json = """
+            {"id": \(300 + index), "folder_id": \(index % 2 + 1), "title": "\(title)", "agent_type": "claude_code",
+             "status": "completed", "message_count": 12, "created_at": "\(TranscriptTime.string(date: updated.addingTimeInterval(-7_200)))",
+             "updated_at": "\(TranscriptTime.string(date: updated))", "turn_state": null}
+            """
+            return try CodegJSON.decoder.decode(ConversationSummary.self, from: Data(json.utf8))
+        }
     }
 
     func testRenderAppearanceSettings() throws {
@@ -180,6 +211,7 @@ final class SessionListScreenshotTests: XCTestCase {
     }
 
     private func activityScreen(running: [ConversationSummary], recent: [ConversationSummary],
+                                earlier: [ConversationSummary] = [], earlierTotal: Int = 0,
                                 newestAtBottom: Bool) -> some View {
         Shot.tabs(selected: 2) {
             ZStack {
@@ -187,6 +219,8 @@ final class SessionListScreenshotTests: XCTestCase {
                 ActivityFeed(
                     running: running,
                     recent: recent,
+                    earlier: earlier,
+                    earlierTotal: earlierTotal,
                     folderNames: SampleSessions.folders,
                     markedID: Self.marked,
                     lastRefreshed: now.addingTimeInterval(-20),

@@ -218,7 +218,12 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
         try c.encodeIfPresent(pinnedAt, forKey: .pinnedAt)
-        try c.encodeIfPresent(turnState, forKey: .turnState)
+        if let turnState {
+            try c.encode(turnState, forKey: .turnState)
+        } else if turnStateReported {
+            // Keep "the server sent turn_state: null" apart from "no field".
+            try c.encodeNil(forKey: .turnState)
+        }
         try c.encode(critical, forKey: .critical)
         try c.encodeIfPresent(limitPause, forKey: .limitPause)
         try c.encode(limitAutoContinue, forKey: .limitAutoContinue)
@@ -279,7 +284,7 @@ struct LimitPause: Codable, Hashable, Sendable {
 /// The selector values one conversation's session runs with (Rust
 /// `ConversationSelectorState`, camelCase on the wire): the ACP mode and the
 /// config option values by option id (`model`, `effort`, `fast`, …).
-struct ConversationSelectorState: Hashable, Sendable {
+struct ConversationSelectorState: Codable, Hashable, Sendable {
     var modeId: String?
     var configValues: [String: String]
 
@@ -376,12 +381,43 @@ struct SessionStats: Codable, Hashable, Sendable {
 }
 
 /// Full session detail incl. message history (Rust `DbConversationDetail`).
-/// Decode-only: `MessageTurn`/`ContentBlock` are response shapes we never encode.
+///
+/// Asked for with a window (`tailTurns` or `fromIndex`), a codeg server that
+/// knows the turn-window protocol sends only `turns[turnsOffset...]`, with the
+/// four window fields set; every other field still describes the whole
+/// transcript. An older server ignores the window and sends everything, with
+/// the window fields absent.
 struct ConversationDetail: Decodable, Sendable {
     var summary: ConversationSummary
+    var turns: [MessageTurn]
+    var sessionStats: SessionStats?
+    var inFlightUserTurnId: String?
+    /// Global index of `turns[0]` (window responses only).
+    var turnsOffset: Int? = nil
+    /// Turns in the whole transcript (window responses only).
+    var turnsTotal: Int? = nil
+    /// Fingerprint of the turns before `turnsOffset`, 16 hex digits (window
+    /// responses only). See `TranscriptFingerprint`.
+    var prefixHash: String? = nil
+
+    /// Whether the server answered with the turn-window protocol.
+    var isWindowed: Bool { turnsOffset != nil && turnsTotal != nil && prefixHash != nil }
+}
+
+/// One page of older history (`get_folder_conversation_turns`):
+/// `turns[turnsOffset ..< turnsOffset + turns.count]`, ending just before the
+/// `beforeIndex` asked for.
+struct ConversationTurnsPage: Decodable, Sendable {
     let turns: [MessageTurn]
-    let sessionStats: SessionStats?
-    let inFlightUserTurnId: String?
+    let turnsOffset: Int
+    let turnsTotal: Int
+    /// Fingerprint of the turns before `turnsOffset`: the window's new one
+    /// once this page is in front of it.
+    let prefixHash: String
+    /// Fingerprint of the turns before `beforeIndex`. It must equal the
+    /// window's current one, or the history before the window was rewritten
+    /// in between and the page doesn't join it.
+    let prefixHashBeforeIndex: String
 }
 
 /// Returned by `acp_find_connection_for_conversation` when a live ACP

@@ -13,6 +13,13 @@ final class ServerStore {
     private let storageKey = ServerStore.storageKey
     static let storageKey = "codeg.servers.v1"
 
+    /// Called after any change to the saved servers or their tokens (the app
+    /// drops cached transcripts of an endpoint or token that is gone).
+    @ObservationIgnored var onChange: (@MainActor () -> Void)?
+    /// Builds clients instead of the Keychain path (tests point the app at an
+    /// in-process mock server this way).
+    @ObservationIgnored var clientFactory: (@MainActor (ServerProfile) -> CodegClient?)?
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.servers = ServerStore.load(from: defaults, key: storageKey)
@@ -101,6 +108,7 @@ final class ServerStore {
 
     /// Build an HTTP client for a profile, or nil if the URL/token is missing.
     func client(for profile: ServerProfile) -> CodegClient? {
+        if let clientFactory { return clientFactory(profile) }
         guard let baseURL = profile.baseURL, let token = token(for: profile) else { return nil }
         return CodegClient(baseURL: baseURL, token: token)
     }
@@ -110,6 +118,7 @@ final class ServerStore {
     private func persist() {
         guard let data = try? JSONEncoder().encode(servers) else { return }
         defaults.set(data, forKey: storageKey)
+        onChange?()
     }
 
     private static func load(from defaults: UserDefaults, key: String) -> [ServerProfile] {

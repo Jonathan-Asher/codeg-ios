@@ -1,23 +1,36 @@
 import SwiftUI
 
-/// App shell. Adapts to width:
-/// - **Compact** (iPhone): an iOS 26 Liquid Glass `TabView` — Chats · Folders
-///   · Activity · Search · Settings, all in one glass capsule (Search is a plain
-///   tab, not a detached search pill). Running tasks surface as a badge on the
-///   Activity tab. The current server is switched from the Chats title menu;
-///   opening a session pushes the detail (hiding the tab bar).
-/// - **Regular** (iPad, landscape): a three-column `NavigationSplitView` whose
-///   sidebar is the source list (Chats / Folders / Activity), with the same
-///   server title menu and a gear that presents Settings as a sheet.
+/// App shell (`ShellLayout`):
+/// - **Tabs** (iPhone in every orientation, a narrow iPad window): an iOS 26
+///   Liquid Glass `TabView` — Chats · Folders · Activity · Search · Settings,
+///   all in one glass capsule (Search is a plain tab, not a detached search
+///   pill). Running tasks surface as a badge on the Activity tab. The current
+///   server is switched from the Chats title menu; opening a session pushes
+///   the detail (hiding the tab bar).
+/// - **Split** (a regular-width iPad): a three-column `NavigationSplitView`
+///   whose sidebar is the source list (Chats / Folders / Activity), with the
+///   same server title menu and a gear that presents Settings as a sheet.
 ///
 /// First launch with no saved servers shows the onboarding screen instead.
 struct RootView: View {
-    @State private var model = AppModel()
+    @State private var model: AppModel
     @State private var appearance = AppearanceStore()
     @State private var language = LanguageStore()
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// Pairs a Chats card with the group list it opens (zoom transition).
+    @Namespace private var chatsCardNamespace
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
+
+    /// `model` is injected by tests; the app makes its own.
+    init(model: AppModel? = nil) {
+        _model = State(initialValue: model ?? AppModel())
+    }
+
+    /// The tab shell or the split view; on iPhone always the tabs.
+    private var usesTabs: Bool {
+        ShellLayout.usesTabs(idiom: UIDevice.current.userInterfaceIdiom, horizontalSizeClass: horizontalSizeClass)
+    }
 
     var body: some View {
         Group {
@@ -25,8 +38,12 @@ struct RootView: View {
                 OnboardingView(store: model.serverStore) { profile in
                     model.selectedServerID = profile.id
                 }
-            } else if horizontalSizeClass == .compact {
+            } else if usesTabs {
                 compactShell
+                    // An iPhone in landscape reports a regular width; the tab
+                    // shell's screens keep their compact layout there, so
+                    // nothing inside it is rebuilt by a rotation.
+                    .environment(\.horizontalSizeClass, .compact)
             } else {
                 splitShell
             }
@@ -47,8 +64,8 @@ struct RootView: View {
         .environment(\.locale, language.locale)
         .preferredColorScheme(appearance.mode.colorScheme)
         .onOpenURL { model.handle(url: $0) }
-        .onChange(of: horizontalSizeClass, initial: true) { _, size in
-            model.isCompact = size == .compact
+        .onChange(of: usesTabs, initial: true) { old, tabs in
+            model.setLayout(compact: tabs, initial: old == tabs)
         }
         // If the selected server is edited in place (same UUID, new endpoint),
         // its conversation/folder IDs may no longer be valid — drop them.
@@ -78,7 +95,7 @@ struct RootView: View {
     private func openPendingPush() {
         guard PushRouter.shared.pending != nil, !model.serverStore.servers.isEmpty,
               let request = PushRouter.shared.take() else { return }
-        model.isCompact = horizontalSizeClass == .compact
+        model.setLayout(compact: usesTabs, initial: true)
         model.openFromPush(serverID: request.serverProfileID, conversationID: request.conversationID)
     }
 
@@ -175,8 +192,11 @@ struct RootView: View {
                 SessionListView(
                     server: server,
                     client: client,
+                    viewModel: model.sessionListModel(server: server, client: client),
                     selectedConversationID: $model.selectedConversationID,
                     onOpen: { model.open(.conversation($0)) },
+                    onOpenGroup: { model.open(.sessionGroup($0)) },
+                    cardNamespace: chatsCardNamespace,
                     onNewSession: { model.open(.newSession(NewSessionRequest())) },
                     // The big left title IS the switcher (tappable in place), so
                     // SessionListView owns the title menu here; no inlineLarge +
@@ -301,7 +321,10 @@ struct RootView: View {
                 SessionListView(
                     server: server,
                     client: client,
+                    viewModel: model.sessionListModel(server: server, client: client),
                     selectedConversationID: $model.selectedConversationID,
+                    onOpenGroup: { model.open(.sessionGroup($0)) },
+                    cardNamespace: chatsCardNamespace,
                     onNewSession: { model.open(.newSession(NewSessionRequest())) }
                 )
                 .id(server.id)
@@ -340,18 +363,11 @@ struct RootView: View {
         if let server = model.selectedServer,
            let client = model.serverStore.client(for: server),
            let pending = model.pendingNewSession {
-            SessionDetailView(server: server, client: client, newSession: pending,
-                              onOpenSession: { model.open(.newSession($0)) })
-                .id(pending.id)
+            draftScreen(server: server, client: client, request: pending)
         } else if let server = model.selectedServer,
                   let client = model.serverStore.client(for: server),
                   let conversationID = model.selectedConversationID {
-            SessionDetailView(server: server, client: client, conversationID: conversationID,
-                              onOpenSession: { model.open(.newSession($0)) })
-                // Recreate the stateful detail model when the conversation, the
-                // server, or its token changes — so it never streams against a
-                // stale CodegClient after an in-place server edit / token rotation.
-                .id("\(server.id)|\(conversationID)|\(client.token.hashValue)")
+            sessionScreen(server: server, client: client, conversationID: conversationID)
         } else {
             ColumnPlaceholder(
                 icon: "sparkles",
@@ -372,15 +388,19 @@ struct RootView: View {
         if let server = model.selectedServer, let client = model.serverStore.client(for: server) {
             switch route {
             case .conversation(let id):
-                SessionDetailView(server: server, client: client, conversationID: id,
-                                  onOpenSession: { model.open(.newSession($0)) })
-                    .id("\(server.id)|\(id)|\(client.token.hashValue)")
+                sessionScreen(server: server, client: client, conversationID: id)
                     .toolbar(.hidden, for: .tabBar)
             case .newSession(let request):
-                SessionDetailView(server: server, client: client, newSession: request,
-                                  onOpenSession: { model.open(.newSession($0)) })
-                    .id(request.id)
+                draftScreen(server: server, client: client, request: request)
                     .toolbar(.hidden, for: .tabBar)
+            case .sessionGroup(let group):
+                SessionGroupView(
+                    group: group,
+                    viewModel: model.sessionListModel(server: server, client: client),
+                    markedID: model.markedConversationID,
+                    onOpen: { model.open(.conversation($0)) }
+                )
+                .navigationTransition(.zoom(sourceID: group.transitionID, in: chatsCardNamespace))
             case .project(let id):
                 ProjectDetailView(
                     client: client,
@@ -397,6 +417,33 @@ struct RootView: View {
                 message: "This server's token is missing. Edit the server to re-enter it."
             )
         }
+    }
+
+    /// A conversation's screen, with its model from the store: the same model
+    /// whichever stack or column shows it, so a rebuilt screen (an iPad
+    /// layout change) keeps its transcript, draft, live turn and socket.
+    private func sessionScreen(server: ServerProfile, client: CodegClient, conversationID: Int) -> some View {
+        let target = SessionModelStore.Target.conversation(conversationID)
+        return SessionDetailView(
+            server: server, client: client,
+            model: model.sessions.model(server: server, client: client, conversationID: conversationID),
+            lease: model.sessions.lease(server: server, client: client, target: target),
+            onOpenSession: { model.open(.newSession($0)) }
+        )
+        // A new screen (and model) for another conversation, server, or token,
+        // so it never streams against a stale CodegClient after an in-place
+        // server edit / token rotation.
+        .id("\(server.id)|\(conversationID)|\(client.token.hashValue)")
+    }
+
+    private func draftScreen(server: ServerProfile, client: CodegClient, request: NewSessionRequest) -> some View {
+        SessionDetailView(
+            server: server, client: client,
+            model: model.sessions.model(server: server, client: client, draft: request),
+            lease: model.sessions.lease(server: server, client: client, target: .draft(request.id)),
+            onOpenSession: { model.open(.newSession($0)) }
+        )
+        .id(request.id)
     }
 
     // MARK: - Server switcher

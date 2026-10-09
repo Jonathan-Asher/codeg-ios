@@ -45,6 +45,23 @@ struct ConversationIdBody: Encodable, Sendable {
     let conversationId: Int
 }
 
+/// Body for `get_folder_conversation` with a turn window: at most one of
+/// `tailTurns` (the last N turns, from a user turn) and `fromIndex` (every
+/// turn from that global index). Absent keys are left out of the JSON.
+struct ConversationWindowBody: Encodable, Sendable {
+    let conversationId: Int
+    var tailTurns: Int?
+    var fromIndex: Int?
+}
+
+/// Body for `get_folder_conversation_turns`: up to `limit` turns ending just
+/// before `beforeIndex`.
+struct ConversationTurnsPageBody: Encodable, Sendable {
+    let conversationId: Int
+    let beforeIndex: Int
+    let limit: Int
+}
+
 /// Body for `create_conversation` — creates a server-side conversation row in
 /// `folderId` for `agentType` (optional `title`) BEFORE the first prompt, so the
 /// server broadcasts a `conversation_upsert` to every client (the desktop/web
