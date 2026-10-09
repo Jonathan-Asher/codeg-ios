@@ -232,10 +232,55 @@ jobs:
       - name: Generate the Xcode project
         run: xcodegen generate
 
+      # A hosted runner starts with an empty keychain, so automatic signing
+      # used to create a new development certificate on every upload until
+      # the account hit Apple's limit. The archive now signs with one
+      # long-lived certificate whose key is kept in the repository secrets.
+      - name: Install the signing certificate
+        env:
+          IOS_DEV_CERT_P12: ${{ secrets.IOS_DEV_CERT_P12 }}
+          IOS_DEV_CERT_PASSWORD: ${{ secrets.IOS_DEV_CERT_PASSWORD }}
+          IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+        run: |
+          missing=""
+          [[ -n "$IOS_DEV_CERT_P12" ]] || missing+=" IOS_DEV_CERT_P12"
+          [[ -n "$IOS_DEV_CERT_PASSWORD" ]] || missing+=" IOS_DEV_CERT_PASSWORD"
+          [[ -n "$IOS_KEYCHAIN_PASSWORD" ]] || missing+=" IOS_KEYCHAIN_PASSWORD"
+          if [[ -n "$missing" ]]; then echo "::error::missing secrets:$missing"; exit 1; fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          p12="$RUNNER_TEMP/signing.p12"
+          printf '%s' "$IOS_DEV_CERT_P12" | base64 --decode >"$p12"
+          security create-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$keychain"
+          security import "$p12" -k "$keychain" -P "$IOS_DEV_CERT_PASSWORD" -A -t cert -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple: -k "$IOS_KEYCHAIN_PASSWORD" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm -f "$p12"
+          security find-identity -v -p codesigning "$keychain"
+          echo "SIGNING_KEYCHAIN=$keychain" >>"$GITHUB_ENV"
+
       - name: Archive, export and upload
         env:
           BUILD_NUMBER: ${{ inputs.build_number || github.run_number }}
         run: scripts/archive.sh --tag "ci-${{ github.run_number }}" --build-number "$BUILD_NUMBER"
+
+      # Safety net: should signing ever mint a development certificate again
+      # (it reaches the account's limit after a handful of runs), revoke every
+      # API-created one except the long-lived certificate above.
+      - name: Revoke stray development certificates
+        if: always() && env.ASC_KEY_PATH != ''
+        env:
+          KEEP_CERT_ID: ${{ vars.IOS_DEV_CERT_ID }}
+        run: |
+          if [[ -z "$KEEP_CERT_ID" ]]; then echo "::warning::IOS_DEV_CERT_ID is not set; skipping"; exit 0; fi
+          python3 -m venv "$RUNNER_TEMP/asc-venv"
+          "$RUNNER_TEMP/asc-venv/bin/pip" install --quiet pyjwt cryptography
+          "$RUNNER_TEMP/asc-venv/bin/python" scripts/revoke_stray_certs.py
+
+      - name: Remove the signing keychain
+        if: always() && env.SIGNING_KEYCHAIN != ''
+        run: security delete-keychain "$SIGNING_KEYCHAIN" || true
 
       - name: Remove the API key
         if: always()

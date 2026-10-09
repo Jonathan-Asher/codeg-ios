@@ -1195,17 +1195,33 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
    - `ASC_KEY_ID`: the key ID;
    - `ASC_ISSUER_ID`: the issuer ID;
    - `ASC_KEY_P8`: the contents of `AuthKey_<ID>.p8`, raw or base64-encoded.
-3. Set the repository variable `TESTFLIGHT_ENABLED` to `true`.
-4. Go to Actions → iOS → Run workflow and tick **testflight**. The build number
+3. Add the CI signing certificate (see below): the secrets `IOS_DEV_CERT_P12`
+   (the `.p12`, base64-encoded), `IOS_DEV_CERT_PASSWORD` and
+   `IOS_KEYCHAIN_PASSWORD` (any random string), and the variable
+   `IOS_DEV_CERT_ID` (the certificate's App Store Connect id).
+4. Set the repository variable `TESTFLIGHT_ENABLED` to `true`.
+5. Go to Actions → iOS → Run workflow and tick **testflight**. The build number
    defaults to the run number, and the `build_number` input overrides it. Each
    upload needs a build number higher than the last upload for that version.
 
-On an ephemeral GitHub-hosted runner, xcodebuild has no signing identity. The
-archive step therefore creates a new Apple Development certificate through the
-API key on every run. Export signs with Apple's cloud-managed distribution
-certificate. Expect certificates named "Created via API" to pile up in the
-developer account, and revoke them from time to time. The self-hosted option
-below avoids this.
+An ephemeral GitHub-hosted runner starts with no signing identity, and
+automatic signing then creates a new Apple Development certificate through the
+API key on every run. Ten of them filled the account in October 2026 and
+blocked uploads. The job therefore installs one long-lived development
+certificate into a temporary keychain before archiving, and xcodebuild reuses
+it. Export still signs with Apple's cloud-managed distribution certificate.
+
+- The certificate's private key, `.p12` and password are kept on the remote box
+  in `~/.config/codeg-ios/ci-dev-cert/` (mode 600). The key also exists in the
+  repository secrets.
+- To replace it (for example, when it expires a year after creation): create a
+  key and CSR with `openssl`, `POST /v1/certificates` with
+  `certificateType: DEVELOPMENT`, build the `.p12`, and update the three secrets
+  and `IOS_DEV_CERT_ID`.
+- After every upload, `scripts/revoke_stray_certs.py` revokes any other
+  "Apple Development: Created via API" certificate, so a regression can't fill
+  the account again. Certificates made from Xcode carry the developer's name
+  and are left alone.
 
 ### Alternative: Jonathan's self-hosted Mac runner
 
