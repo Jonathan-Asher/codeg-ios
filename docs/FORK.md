@@ -253,7 +253,9 @@ it was unclear which one a tap had opened.
 - **Touch.** A press highlights the row's surface (`Theme.pressed`) and shrinks
   it slightly. In a Chats folder card a row opens its own session; the header
   and "Show all" open the full list (upstream zoomed the whole card open on any
-  tap). Pin/Unpin stays on a long press.
+  tap). Since 1.3.6 the full list is pushed (`Route.sessionGroup`, with the
+  same zoom), not presented over the tabs, so Back from a session opened in it
+  returns to it. Pin/Unpin stays on a long press.
 - **The session you came from.** `AppModel.lastOpenedConversationID` records
   the conversation opened last, from a list, a link or a notification. On
   iPhone every list draws that row with an accent outline; on iPad the lists
@@ -286,6 +288,19 @@ only the user's own scroll unpins; a refresh, new rows or a layout pass can
 only re-pin. While pinned, a session that updates or arrives keeps the newest
 row in view; scrolled up, the list stays where it is.
 
+### Activity: Earlier (1.3.6)
+
+Activity keeps its 24-hour window. Sessions last touched before it used to
+vanish from Activity; an **Earlier** card ("Sessions from before the last 24
+hours", with their count) now sits at the old end of the feed: the bottom
+newest-first, the top with the newest at the bottom. A tap lists the 20 most
+recent of them under an "Earlier" header, and "Show 20 more" continues
+(`ActivityModel.earlier`, `earlierShown`; the conversations are already in
+the list Activity polls, so nothing is fetched). What is shown survives
+opening a session and coming back, and folds again when the server changes.
+With the newest at the bottom, a tap lets go of the bottom so the older rows
+open where the card was.
+
 ### Screenshots
 
 `CodegiOSTests/SessionListScreenshotTests.swift` renders the rows, the Chats
@@ -303,6 +318,172 @@ tab bars, so each screen is hosted in its own window on the simulator and
 captured with `drawHierarchy`. The `test` job runs on an iPhone 17 Pro Max
 simulator (440 × 956 pt, @3x) and uploads the PNGs as the
 `session-list-screenshots` artifact.
+
+## Rotation, Back, and long sessions (1.3.6)
+
+### Rotation keeps everything
+
+A Plus or Pro Max iPhone reports a regular width in landscape, and
+`RootView` picked its shell from the width class: tabs when compact, the
+iPad's three-column split view otherwise. Turning the phone swapped one for
+the other. Everything under the root was rebuilt: the open session's
+`SessionDetailView` disappeared, so its model was torn down (event socket and
+presence socket closed); the split view showed no session at all (it reads
+`selectedConversationID`, which pushes on iPhone never set); turning back
+rebuilt the tab and its stack, so the session loaded and attached again from
+scratch, with its scroll position, draft and live turn gone. Activity, Search
+and the folder screens lost their scroll positions the same way.
+
+- **One shell per device** (`App/ShellLayout.swift`). An iPhone always gets
+  the tabs; in landscape they are wider. Inside the tab shell the width class
+  is pinned to compact, so no screen switches layout on a rotation either
+  (the Chats list's iPad search field, the screen titles). This was chosen
+  over carrying state across the swap because the swap itself was the
+  inconsistency: a different app on its side.
+- **Session models live above the shells** (`App/SessionModelStore.swift`,
+  owned by `AppModel`), keyed by server, endpoint and token, and
+  conversation (or draft). A screen holds its model with a `SessionLease`
+  between `onAppear` and `onDisappear`. Only when no screen has held it for
+  0.7 s is it suspended (its sockets close, as leaving a session always did),
+  and a send still being handed to the server finishes first. A suspended
+  model keeps its turns and draft, so opening the session again is instant;
+  the 6 most recently used are kept, all are dropped on a memory warning or a
+  server change. An iPad window resized across the width boundary still
+  swaps shells, and `AppModel.setLayout(compact:)` carries the open screen
+  across (the sidebar section, content pushes and detail become that tab's
+  stack, and back), so the session's screen is rebuilt around the same model.
+- **Test.** `RotationTests` hosts the whole `RootView` on the CI simulator
+  (an iPhone 17 Pro Max) against a mock server, opens a running session from
+  Activity, and turns the simulator to landscape and back twice
+  (`requestGeometryUpdate`). It checks the tab shell, the Activity stack, the
+  same model, never suspended, the live turn, the draft, one socket never
+  closed, and no second transcript fetch. Where the simulator doesn't turn or
+  stays compact, it sets the width class a Pro Max reports. Captures:
+  `rotation-portrait.png` and `rotation-landscape.png` in the
+  `session-list-screenshots` artifact.
+
+### Back returns where you came from
+
+- **From a list.** A session opened from Activity, Search, a folder or a
+  Chats card is pushed on that tab's stack, so Back returns to it, with its
+  scroll position and filter. This held before, except across a rotation
+  (above) and from a Chats folder's full list, which was a full-screen cover
+  dismissed on open, so Back landed on the Chats list. That list is now a
+  pushed screen.
+- **From a notification or a link** (`AppModel.openSessionFromOutside`). Both
+  used to open the session on the Chats tab with a fresh stack, so Back went
+  to Chats even if you were in Activity. Now the session opens on the tab you
+  are on, in place of any session open there, so Back returns to the list,
+  folder or search you were looking at; from Settings it opens on Activity.
+  The selected tab is remembered across launches (`codeg.lastSelectedTab`),
+  so a notification that starts the app opens on the tab you left it on. On
+  iPad the session fills the detail column next to the section you were on.
+
+### Opening long sessions
+
+Measured on the box against conversation 86 (a Claude session whose JSONL is
+35 MB, with 1,697 turns and 56 pictures), and three bigger ones. Times are
+over loopback on the M1 box (no network), median of three, with the app's
+own models, window and cache code built for macOS (1.3.5's for "before") and
+a plain `URLSession` request in place of `CodegClient`.
+
+| | conv 86 | conv 36 | conv 58 | conv 128 |
+| - | - | - | - | - |
+| Transcript file | 35 MB | 119 MB | 58 MB | 82 MB |
+| Turns | 1,697 | 6,290 | 4,292 | 5,120 |
+| Server time (any request) | 0.08–0.14 s | 0.33–0.66 s | 0.50–0.78 s | 0.19–0.25 s |
+| **Before**: whole transcript, compressed | 8.7 MB (14.1 MB raw) | 18.5 MB | 7.8 MB | 13.9 MB |
+| Before: fetch and decode, no network | 768 ms | 2,910 ms | 1,698 ms | 1,860 ms |
+| **First open now**: latest 120 turns, compressed | 1.0 MB | 2.2 MB | 0.3 MB | 2.1 MB |
+| First open now: fetch and decode, no network | 131 ms | 474 ms | 562 ms | 317 ms |
+| **Cached open**: on screen from disk | 6 ms | 14 ms | 3 ms | 12 ms |
+| Cached open: background refresh, compressed | 130 KB | 12 KB | 57 KB | 22 KB |
+| Cached open: background refresh time | 80 ms | 342 ms | 521 ms | 192 ms |
+
+Over the phone's network the transfer comes on top: at 20 Mbps the old
+8.7 MB for conversation 86 took about 3.5 s more (18.5 MB for conversation
+36, 7.4 s), the first open now about 0.4 s, a cached open nothing before it
+draws. Of the client's own time, decoding the whole of conversation 86 took
+306 ms on the M1 (1,037 ms for conversation 36) plus 47 ms re-reading the
+JSON for the selector state; 120 turns take 14 ms. Rendering was already
+limited to the latest 50 turns; its pictures now decode off the main thread.
+
+What changed:
+
+- **Windows** (`Features/SessionDetail/TranscriptWindow.swift`). codeg
+  serializes a window of a transcript on request (`tailTurns`, `fromIndex`)
+  with `turns_offset`, `turns_total` and `prefix_hash`, the server's FNV-1a
+  fingerprint of the turns before the window (`turn_window.rs`); the web
+  client uses it. A session now opens with its latest 120 turns, from a user
+  turn. "Show earlier messages", or scrolling near the top, fetches the 150
+  turns before them (`get_folder_conversation_turns`), joined only when the
+  page's `prefix_hash_before_index` equals the window's fingerprint. Every
+  refresh (reopening, the app returning, a turn finishing, a reconcile) asks
+  only `fromIndex` = the held end minus an overlap (40 turns when reopening
+  or returning, which the server may have rewritten in place; 8 after a turn
+  on screen), and checks the response's `prefix_hash` against the held
+  window's fingerprint extended over the held turns
+  (`TranscriptFingerprint`, the server's function, computed from each turn's
+  exact `timestamp_millis`). A response that doesn't join means the history
+  was rewritten (a compaction), and the screen starts over from a fresh
+  window. A response that joins but ends before the screen is a stale read
+  and never takes turns away. A turn only the phone has (a reply that was
+  never reconciled) is never part of a fingerprint and is fetched again. A
+  server without windows answers with the whole transcript, used as before.
+  Each turn keeps the server's exact milliseconds (`MessageTurn.serverMillis`,
+  read by `TranscriptTime`, which also replaced the locked
+  `ISO8601DateFormatter` for turn times: decoding conversation 86 whole went
+  from 300 to 170 ms).
+- **Cache** (`Persistence/TranscriptCache.swift`). Each opened conversation's
+  window (its server turns, summary, selector state, stats, folder, offset
+  and fingerprint) is written to `Caches/TranscriptCache/<server>/<id>.json`
+  0.4 s after the last change, off the main thread. `<server>` is a SHA-256
+  of the URL and token, so a changed URL or token starts empty, and folders
+  of servers that are gone or changed are deleted when the servers change
+  (never while the Keychain can't give a token). The cache is capped at
+  256 MB, least recently opened removed first (to 80%). Opening a session
+  draws the cached window at once, then refreshes as above; the change
+  marker is the window's fingerprint and length, checked by the server on
+  every refresh. Pictures are stored inside the window, so a cached session
+  never fetches them. If the server can't be reached, the cached copy stays
+  on screen.
+- **Prefetch** (`Persistence/TranscriptPrefetcher.swift`). After each
+  Activity refresh, sessions shown there that just finished a turn (no
+  longer running, and updated since the last refresh or running then) are
+  refreshed into the cache in the background, up to 4 per refresh: a cached
+  one gets only what changed (a few KB), one never opened gets its latest
+  turns, but only on Wi-Fi (a session that iOS refuses on cellular, a
+  hotspot or Low Data Mode) and only from a server that has answered with
+  windows. The session on screen is skipped.
+- **Pictures** (`Features/SessionDetail/TranscriptImages.swift`). Decoded off
+  the main thread with ImageIO's thumbnail path, at most 1,600 pixels on the
+  long side, fully (not at first draw, which happened on the main thread at
+  full size), and kept in a 96 MB memory cache under a key that is cheap to
+  compare (length and both ends of the base64, not the whole string).
+- **Title at once.** A session opened from a list shows the list's title,
+  agent and status while its transcript loads.
+
+### What the codeg server should change
+
+Once the transfer is small, the server's own time is what remains, and it is
+paid on every request, windows included: `get_folder_conversation` parses the
+whole JSONL each time (0.08 s for 35 MB, 0.33–0.78 s for the 58–119 MB
+sessions above; `parsers/summary_cache.rs` caches only summaries). The iOS app
+now asks after every finished turn and on every return to a session, and the
+web client does the same. Suggested, in order:
+
+1. **Cache the parsed detail per transcript file**, keyed by path, size and
+   mtime (the summary cache's fingerprint), holding the post-processed turn
+   list. A hit only slices and serializes the window: a refresh of
+   conversation 58 would go from about 0.5 s to a few milliseconds of server
+   time.
+2. **Parse incrementally.** The JSONL only grows; `transcript_watermark`
+   already records the bytes consumed. Resuming from the watermark when the
+   file grew (and the prefix is unchanged) would make a miss after an append
+   cost only the new lines.
+3. Optionally, `fromIndex` with `If-None-Match` on `turns_total` +
+   `transcript_watermark` + the prefix hash, answering 304 when nothing
+   changed.
 
 ## Read aloud (BlueTTS)
 
@@ -985,9 +1166,11 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
 - **`test`** runs the `CodegiOSTests` unit tests (session activity, push
   payload routing, Markdown-to-speech text, voice typing, the Activity order
   and bottom pin, the Camera Control press and gating, dictation clean-up with
-  a mock server, the audio session owner and microphone hand-off, and the
+  a mock server, the audio session owner and microphone hand-off, the
   event socket's recovery and send confirmation against a mock server with
-  scripted sockets) on an
+  scripted sockets, transcript windows and the transcript cache against a
+  mock windowed server, navigation and Back, the session model store, and
+  the whole app rotated in a running session) on an
   iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
   `build`. It uploads the session list screenshots as the
   `session-list-screenshots` artifact and the compose area as
