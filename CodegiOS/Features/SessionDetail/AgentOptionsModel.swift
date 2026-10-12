@@ -63,6 +63,8 @@ final class AgentOptionsModel {
     private var applyingDesired: [String: String] = [:]
     /// Why the server couldn't apply an in-flight change, by key.
     private var serverFailures: [String: String] = [:]
+    /// The last change reported as failed (key, value asked for).
+    private var failedChange: (key: String, value: String)?
 
     /// Transient apply failure surfaced under the selectors.
     var errorNotice: String?
@@ -308,6 +310,7 @@ final class AgentOptionsModel {
             message += " It stays on \(valueName(forKey: key, value: current))."
         }
         errorNotice = message
+        failedChange = (key, desired)
         onFailure?(message)
     }
 
@@ -509,6 +512,12 @@ final class AgentOptionsModel {
             return
         }
         setSelection(key: key, value: value)
+        // A change reported as failed that landed after all (a slow agent
+        // answered after the reconcile gave up): the message no longer holds.
+        if let failedChange, failedChange.key == key, failedChange.value == value {
+            self.failedChange = nil
+            errorNotice = nil
+        }
     }
 
     private func setSelection(key: String, value: String) {

@@ -253,6 +253,23 @@ final class MidTurnOptionsTests: XCTestCase {
         XCTAssertEqual(server.calls("acp_set_mode").first?.body["modeId"] as? String, "bypassPermissions")
     }
 
+    func testAChangeThatLandsAfterTheReconcileGaveUpClearsItsMessage() async {
+        server.on("acp_set_config_option") { _ in .body("null") }
+        server.on("acp_get_session_snapshot") { _ in .body(Self.connectionSnapshotJSON(mode: "plan")) }
+        let model = makeOptions(mode: "plan")
+
+        model.selectConfig(optionId: "mode", valueId: "bypassPermissions")
+        let settled = await eventually { model.applying.isEmpty }
+        XCTAssertTrue(settled)
+        XCTAssertEqual(model.selectedConfig["mode"], "plan")
+        XCTAssertNotNil(model.errorNotice)
+
+        // A slow agent answers after all; the live option list says so.
+        model.applyLiveConfigOptions(Self.configOptions(mode: "bypassPermissions"))
+        XCTAssertEqual(model.selectedConfig["mode"], "bypassPermissions")
+        XCTAssertNil(model.errorNotice)
+    }
+
     func testAnOlderLiveValueDoesNotUndoAPickOnItsWay() async {
         server.on("acp_set_config_option") { _ in .body("null") }
         server.on("acp_get_session_snapshot") { _ in .body(Self.connectionSnapshotJSON(mode: "bypassPermissions")) }
