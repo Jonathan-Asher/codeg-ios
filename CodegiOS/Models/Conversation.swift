@@ -20,9 +20,18 @@ struct FolderDetail: Codable, Identifiable, Hashable, Sendable {
     /// Server `kind`. `chat` scratch folders are hidden from the folder lists;
     /// `regular` is a user folder. Absent / unknown on older servers → `.regular`.
     var kind: FolderKind
+    /// The desktop sidebar's folder group this folder sits in (`group_id`), or
+    /// `nil`. The app shows no groups; it only needs this to tell whether the
+    /// folder is archived through an archived group. Absent on older servers.
+    var groupId: Int?
+    /// This folder's own archive flag (`archived`). `nil` when the server
+    /// predates archiving: nothing is archived then, and the app offers no
+    /// Archive action — it behaves exactly as before. See ``FolderArchive``.
+    var archived: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case id, name, path, gitBranch, defaultAgentType, lastOpenedAt, sortOrder, color, parentId, kind
+        case groupId, archived
     }
 
     init(from decoder: Decoder) throws {
@@ -39,6 +48,8 @@ struct FolderDetail: Codable, Identifiable, Hashable, Sendable {
         // Tolerate an absent key (older server) and an unknown value (lenient
         // `FolderKind` decode) — neither should fail the whole folder.
         kind = (try? c.decodeIfPresent(FolderKind.self, forKey: .kind)) ?? .regular
+        groupId = try? c.decodeIfPresent(Int.self, forKey: .groupId)
+        archived = try? c.decodeIfPresent(Bool.self, forKey: .archived)
     }
 
     /// Memberwise initializer (preserved for the few call sites that build a
@@ -46,7 +57,8 @@ struct FolderDetail: Codable, Identifiable, Hashable, Sendable {
     init(
         id: Int, name: String, path: String, gitBranch: String?,
         defaultAgentType: AgentType?, lastOpenedAt: Date, sortOrder: Int,
-        color: String, parentId: Int? = nil, kind: FolderKind = .regular
+        color: String, parentId: Int? = nil, kind: FolderKind = .regular,
+        groupId: Int? = nil, archived: Bool? = nil
     ) {
         self.id = id
         self.name = name
@@ -58,10 +70,45 @@ struct FolderDetail: Codable, Identifiable, Hashable, Sendable {
         self.color = color
         self.parentId = parentId
         self.kind = kind
+        self.groupId = groupId
+        self.archived = archived
     }
 
     /// True when this folder is a git worktree created under another folder.
     var isWorktree: Bool { parentId != nil }
+}
+
+/// A desktop sidebar folder group (Rust `FolderGroupDetail`, from
+/// `list_folder_groups`). The app draws no groups; it reads them only so a
+/// folder in an archived group counts as archived, as on the desktop.
+struct FolderGroupDetail: Codable, Identifiable, Hashable, Sendable {
+    let id: Int
+    let name: String
+    let color: String
+    let sortOrder: Int
+    /// `nil` when the server predates archiving.
+    var archived: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, color, sortOrder, archived
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        color = (try? c.decodeIfPresent(String.self, forKey: .color)) ?? "inherit"
+        sortOrder = (try? c.decodeIfPresent(Int.self, forKey: .sortOrder)) ?? 0
+        archived = try? c.decodeIfPresent(Bool.self, forKey: .archived)
+    }
+
+    init(id: Int, name: String, color: String = "inherit", sortOrder: Int = 0, archived: Bool? = nil) {
+        self.id = id
+        self.name = name
+        self.color = color
+        self.sortOrder = sortOrder
+        self.archived = archived
+    }
 }
 
 /// Folder classification (Rust `FolderKind`). `chat` folders back chat-mode

@@ -12,6 +12,15 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Archived folders (1.3.8), following codeg's new sidebar Archive. A folder
+  archived on the desktop or from the phone (long-press a folder in the
+  Folders tab: Archive Folder, Unarchive Folder, or the same for its desktop
+  folder group) moves to an "Archived" group at the bottom of the Folders and
+  Chats lists, closed until tapped, and its sessions leave Activity's "Last
+  24 Hours" and "Earlier". Nothing about the sessions changes: they open
+  normally, a running one stays in "Running" and still notifies, and a search
+  still finds them. Against a codeg server without archiving the app behaves
+  exactly as 1.3.7 and offers no Archive action.
 - Activity lists older sessions on demand (1.3.6). Sessions not touched in
   the last 24 hours no longer simply vanish: an "Earlier" card at the old end
   of the feed (the top with the newest at the bottom) lists them 20 at a time.

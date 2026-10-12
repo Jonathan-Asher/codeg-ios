@@ -25,6 +25,9 @@ final class ActivityModel {
     /// respected (the server genuinely has no open folders) rather than re-falling
     /// back. Distinguishes a failed open-folders fetch from a legitimately empty one.
     private var openFoldersLoaded = false
+    /// The desktop folder groups, read only for their archive flags (a folder in
+    /// an archived group is archived). Kept across a failed fetch.
+    private(set) var groups: [FolderGroupDetail] = []
     private(set) var lastRefreshed: Date?
     private(set) var error: String?
     private(set) var isRefreshing = false
@@ -50,18 +53,27 @@ final class ActivityModel {
     }
 
     /// Non-running sessions touched in the last 24 hours, most recent first.
+    /// Sessions of archived folders are left out (see ``FolderArchive``); a
+    /// running one still shows in ``running``.
     var recent: [ConversationSummary] {
         let cutoff = Self.recentCutoff()
-        return conversations.filter { !$0.status.isLive && $0.updatedAt >= cutoff }
-            .sorted { $0.updatedAt > $1.updatedAt }
+        let archived = archivedFolderIDs
+        return conversations.filter {
+            !$0.status.isLive && $0.updatedAt >= cutoff && !archived.contains($0.folderId)
+        }
+        .sorted { $0.updatedAt > $1.updatedAt }
     }
 
     /// Non-running sessions last touched before the last 24 hours, most
-    /// recent first. Activity lists them only on demand ("Earlier").
+    /// recent first. Activity lists them only on demand ("Earlier"). Archived
+    /// folders' sessions are left out here too.
     var earlier: [ConversationSummary] {
         let cutoff = Self.recentCutoff()
-        return conversations.filter { !$0.status.isLive && $0.updatedAt < cutoff }
-            .sorted { $0.updatedAt > $1.updatedAt }
+        let archived = archivedFolderIDs
+        return conversations.filter {
+            !$0.status.isLive && $0.updatedAt < cutoff && !archived.contains($0.folderId)
+        }
+        .sorted { $0.updatedAt > $1.updatedAt }
     }
 
     /// How many of `earlier` Activity shows: none until asked, then a page
@@ -97,6 +109,27 @@ final class ActivityModel {
     /// by the view.
     var displayFolders: [FolderDetail] {
         FolderVisibility.visibleFolders(displaySource)
+    }
+
+    /// The archived folders among the displayed set: on their own, through an
+    /// archived desktop group, or a worktree through its repo. Empty against a
+    /// server that predates archiving, so everything behaves as before.
+    var archivedFolderIDs: Set<Int> {
+        FolderArchive.archivedIDs(folders: displaySource, groups: groups, childToParent: childToParent)
+    }
+
+    /// Whether the server knows about archiving (it sent the flag).
+    var archiveSupported: Bool { FolderArchive.isSupported(folders) || FolderArchive.isSupported(openFolders) }
+
+    /// What a folder's menu offers (Archive, Unarchive, Unarchive Group, or
+    /// nothing on an older server).
+    func archiveState(of folder: FolderDetail) -> FolderArchive.State {
+        FolderArchive.state(of: folder, groups: groups, supported: archiveSupported)
+    }
+
+    /// The desktop group a folder sits in, if the server sent it.
+    func group(of folder: FolderDetail) -> FolderGroupDetail? {
+        folder.groupId.flatMap { id in groups.first { $0.id == id } }
     }
 
     /// `folderId -> name` lookup for row labels — over the FULL set so a worktree
@@ -135,6 +168,7 @@ final class ActivityModel {
         folders = []
         openFolders = []
         openFoldersLoaded = false
+        groups = []
         hasLoaded = false
         isRefreshing = false
         error = nil
@@ -174,6 +208,7 @@ final class ActivityModel {
         if let loaded = result.folders { folders = loaded }
         if let loaded = result.openFolders { openFolders = loaded; openFoldersLoaded = true }
         if let loaded = result.conversations { conversations = loaded }
+        if let loaded = result.groups { groups = loaded }
         AttentionStore.shared.update(result.attention)
 
         if result.anySucceeded {
@@ -190,6 +225,57 @@ final class ActivityModel {
             if !hasLoaded || consecutiveFailures >= Self.failuresBeforeAlerting {
                 error = result.message
             }
+        }
+    }
+
+    // MARK: - Archive
+
+    /// Archive or unarchive one folder. The change shows at once and is put
+    /// back if the server refuses it (the error is rethrown for the view to
+    /// show). Presentational only: the folder stays open, its sessions are
+    /// untouched, and a running one keeps running.
+    func setArchived(folderID: Int, archived: Bool, client: CodegClient?) async throws {
+        guard let client else { return }
+        let previousFolders = folders
+        let previousOpen = openFolders
+        folders = Self.patch(folders, id: folderID, archived: archived)
+        openFolders = Self.patch(openFolders, id: folderID, archived: archived)
+        do {
+            try await client.setFolderArchived(folderId: folderID, archived: archived)
+        } catch {
+            folders = previousFolders
+            openFolders = previousOpen
+            throw error
+        }
+        NotificationCenter.default.post(name: .foldersDidChange, object: nil)
+    }
+
+    /// Archive or unarchive a desktop folder group, every folder in it
+    /// following. Same optimistic shape as ``setArchived(folderID:archived:client:)``.
+    func setGroupArchived(groupID: Int, archived: Bool, client: CodegClient?) async throws {
+        guard let client else { return }
+        let previous = groups
+        groups = groups.map { group in
+            guard group.id == groupID else { return group }
+            var next = group
+            next.archived = archived
+            return next
+        }
+        do {
+            try await client.setFolderGroupArchived(groupId: groupID, archived: archived)
+        } catch {
+            groups = previous
+            throw error
+        }
+        NotificationCenter.default.post(name: .foldersDidChange, object: nil)
+    }
+
+    private static func patch(_ list: [FolderDetail], id: Int, archived: Bool) -> [FolderDetail] {
+        list.map { folder in
+            guard folder.id == id else { return folder }
+            var next = folder
+            next.archived = archived
+            return next
         }
     }
 

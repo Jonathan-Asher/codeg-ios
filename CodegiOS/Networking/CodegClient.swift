@@ -95,6 +95,29 @@ struct CodegClient: Sendable {
         try await postJSON("list_open_folder_details", EmptyBody(), session: Self.readSession)
     }
 
+    /// The desktop sidebar's folder groups (`list_folder_groups`). Read only so
+    /// a folder in an archived group counts as archived; the app draws no
+    /// groups.
+    func listFolderGroups() async throws -> [FolderGroupDetail] {
+        try await postJSON("list_folder_groups", EmptyBody(), session: Self.readSession)
+    }
+
+    /// Archive or unarchive one folder (`set_folder_archived`). Presentational
+    /// only: the folder stays open and its sessions are untouched.
+    @discardableResult
+    func setFolderArchived(folderId: Int, archived: Bool) async throws -> FolderDetail {
+        try await postJSON("set_folder_archived",
+                           SetFolderArchivedBody(folderId: folderId, archived: archived))
+    }
+
+    /// Archive or unarchive a desktop folder group and every folder in it
+    /// (`set_folder_group_archived`).
+    @discardableResult
+    func setFolderGroupArchived(groupId: Int, archived: Bool) async throws -> FolderGroupDetail {
+        try await postJSON("set_folder_group_archived",
+                           SetFolderGroupArchivedBody(groupId: groupId, archived: archived))
+    }
+
     /// Conversations, optionally filtered by folder / status / search text.
     func listConversations(
         folderIds: [Int]? = nil,
@@ -545,6 +568,11 @@ struct ServerSnapshotLoad {
     /// ``FolderVisibility`` hides worktree children.
     let openFolders: [FolderDetail]?
     let conversations: [ConversationSummary]?
+    /// The desktop folder groups (`list_folder_groups`), read only for their
+    /// archive flags. `nil` when the call failed or the server predates groups
+    /// — callers keep what they had, so a blip can't unarchive a group's
+    /// folders for one refresh.
+    var groups: [FolderGroupDetail]? = nil
     /// User-facing message for the first failure, or nil when all succeeded.
     let message: String?
     /// The load was cancelled (view disappeared / a newer fetch superseded it) —
@@ -568,10 +596,12 @@ extension CodegClient {
         async let openFoldersResult = resultOfRetry { try await self.listOpenFolders() }
         async let conversationsResult = resultOfRetry { try await self.listConversations() }
         async let attentionResult = try? await self.listConversationAttention()
+        async let groupsResult = try? await self.listFolderGroups()
         let folders = await foldersResult
         let openFolders = await openFoldersResult
         let conversations = await conversationsResult
         let attention = await attentionResult
+        let groups = await groupsResult
 
         // All fail with a cancellation when the awaiting task is torn down — report
         // it so callers don't clobber on-screen state with an empty/error result.
@@ -586,6 +616,7 @@ extension CodegClient {
             folders: try? folders.get(),
             openFolders: try? openFolders.get(),
             conversations: try? conversations.get(),
+            groups: groups,
             message: message,
             cancelled: false
         )

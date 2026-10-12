@@ -267,7 +267,8 @@ struct SessionGroupContent {
             conversations = viewModel.pinned(searchText: "")
             showFolder = true
         case .folder(let id):
-            let folderGroup = viewModel.folderGroups(searchText: "").first { $0.folder.id == id }
+            let folderGroup = (viewModel.folderGroups(searchText: "")
+                + viewModel.folderGroups(searchText: "", archived: true)).first { $0.folder.id == id }
             title = folderGroup?.folder.name ?? "Folder"
             tint = folderGroup.flatMap { Color(hexString: $0.folder.color) } ?? Theme.accent
             conversations = folderGroup?.conversations ?? []

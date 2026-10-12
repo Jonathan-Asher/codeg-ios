@@ -25,6 +25,9 @@ final class SessionListViewModel {
     /// Whether `openFolders` has loaded at least once (see `displaySource`): until
     /// then the groups fall back to the full set; after, an empty result is honored.
     private var openFoldersLoaded = false
+    /// The desktop folder groups, read only for their archive flags. Kept
+    /// across a failed fetch.
+    private(set) var groups: [FolderGroupDetail] = []
     /// Full, unfiltered conversation list as returned by the server. Grouping /
     /// search ordering is applied at the derived-data accessors below.
     private(set) var conversations: [ConversationSummary] = []
@@ -95,6 +98,13 @@ final class SessionListViewModel {
         }
     }
 
+    /// Archived folders among the displayed set (see ``FolderArchive``): their
+    /// cards move to the "Archived" group at the bottom. Empty on a server that
+    /// predates archiving.
+    var archivedFolderIDs: Set<Int> {
+        FolderArchive.archivedIDs(folders: displaySource, groups: groups, childToParent: childToParent)
+    }
+
     /// `folderId -> name` lookup for the dim folder label shown on pinned rows
     /// (which span folders, so the row notes which folder it belongs to).
     var folderNames: [Int: String] {
@@ -112,15 +122,20 @@ final class SessionListViewModel {
     /// non-pinned conversations, newest-first. With no search every folder is
     /// included — even empty ones, so their collapsible header still shows; when
     /// searching, folders with no matching conversation are dropped.
-    func folderGroups(searchText: String) -> [FolderGroup] {
+    ///
+    /// `archived` picks the side: the main list (`false`, the default) or the
+    /// "Archived" group at the bottom (`true`).
+    func folderGroups(searchText: String, archived: Bool = false) -> [FolderGroup] {
         let searching = !trimmed(searchText).isEmpty
         // Group by the merge target so a worktree's conversations land under its
         // root folder's header (matching the web), not a hidden worktree row.
         let map = childToParent
+        let archivedIDs = archivedFolderIDs
         let unpinnedByGroup = Dictionary(grouping: conversations.filter { !$0.isPinned }) {
             FolderVisibility.mergedFolderId($0.folderId, childToParent: map)
         }
         return sortedFolders.compactMap { folder in
+            guard archivedIDs.contains(folder.id) == archived else { return nil }
             let convs = matching(unpinnedByGroup[folder.id] ?? [], searchText)
                 .sorted { $0.updatedAt > $1.updatedAt }
             if searching, convs.isEmpty { return nil }
@@ -224,6 +239,7 @@ final class SessionListViewModel {
             folders = []
             openFolders = []
             openFoldersLoaded = false
+            groups = []
             conversations = []
         }
         if isInitial { isLoading = true } else { isRefreshing = true }
@@ -251,6 +267,7 @@ final class SessionListViewModel {
         if let loaded = result.folders { folders = loaded }
         if let loaded = result.openFolders { openFolders = loaded; openFoldersLoaded = true }
         if let loaded = result.conversations { conversations = loaded }
+        if let loaded = result.groups { groups = loaded }
         AttentionStore.shared.update(result.attention)
 
         if result.anySucceeded {

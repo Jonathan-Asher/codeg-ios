@@ -45,6 +45,8 @@ struct SessionListView: View {
     /// Pairs each card with its pushed list for the zoom transition.
     let cardNamespace: Namespace.ID
     @State private var searchText = ""
+    /// The archived folders' cards at the bottom; closed until asked for.
+    @AppStorage("codeg.chats.archivedExpanded") private var archivedExpanded = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     init(
@@ -170,11 +172,13 @@ struct SessionListView: View {
     private var sessionList: some View {
         let pinnedConvs = viewModel.pinned(searchText: searchText)
         let groups = viewModel.folderGroups(searchText: searchText)
+        let archivedGroups = viewModel.folderGroups(searchText: searchText, archived: true)
         let orphans = viewModel.ungrouped(searchText: searchText)
         // Nothing to show in any group (empty server, folders-but-no-sessions, or
         // a search with no matches) → the empty state, not a wall of empty cards.
         let isEmpty = pinnedConvs.isEmpty && orphans.isEmpty
             && groups.allSatisfy { $0.conversations.isEmpty }
+            && archivedGroups.allSatisfy { $0.conversations.isEmpty }
 
         return ScrollView {
             LazyVStack(spacing: 12) {
@@ -197,9 +201,11 @@ struct SessionListView: View {
                     // Search (iPad `.searchable` only): a flat, directly-tappable
                     // result list — capped preview cards would hide matches behind
                     // an extra tap.
-                    searchResults(pinned: pinnedConvs, groups: groups, orphans: orphans)
+                    // A search still finds archived folders' sessions.
+                    searchResults(pinned: pinnedConvs, groups: groups + archivedGroups, orphans: orphans)
                 } else {
-                    sectionCards(pinned: pinnedConvs, groups: groups, orphans: orphans)
+                    sectionCards(pinned: pinnedConvs, groups: groups, orphans: orphans,
+                                 archived: archivedGroups)
                 }
             }
             .padding(.top, Theme.Layout.screenTopInset)
@@ -213,12 +219,14 @@ struct SessionListView: View {
 
     // MARK: - Cards
 
-    /// One card per group: Pinned, each non-empty folder, then Other.
+    /// One card per group: Pinned, each non-empty folder, then Other, then the
+    /// archived folders under a closed "Archived" heading.
     @ViewBuilder
     private func sectionCards(
         pinned: [ConversationSummary],
         groups: [SessionListViewModel.FolderGroup],
-        orphans: [ConversationSummary]
+        orphans: [ConversationSummary],
+        archived: [SessionListViewModel.FolderGroup]
     ) -> some View {
         if !pinned.isEmpty {
             card(.pinned, title: "Pinned",
@@ -232,6 +240,18 @@ struct SessionListView: View {
         if !orphans.isEmpty {
             card(.other, title: "Other",
                  tint: Theme.textSecondary, conversations: orphans, showFolder: true)
+        }
+        let archivedCards = archived.filter { !$0.conversations.isEmpty }
+        if !archivedCards.isEmpty {
+            ArchivedSectionHeader(count: archivedCards.count, expanded: $archivedExpanded)
+                .padding(.horizontal, Theme.Layout.screenHMargin)
+            if archivedExpanded {
+                ForEach(archivedCards) { group in
+                    card(.folder(group.folder.id), title: group.folder.name,
+                         tint: Color(hexString: group.folder.color) ?? Theme.accent,
+                         conversations: group.conversations, showFolder: false)
+                }
+            }
         }
     }
 

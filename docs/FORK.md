@@ -365,6 +365,39 @@ opening a session and coming back, and folds again when the server changes.
 With the newest at the bottom, a tap lets go of the bottom so the older rows
 open where the card was.
 
+### Archived folders (1.3.8)
+
+codeg's desktop sidebar can archive a folder, or a whole folder group with
+every folder in it, to keep their sessions out of its Recent lists
+(`folder.archived`, `folder_group.archived`; `set_folder_archived` and
+`set_folder_group_archived`). Archiving is presentational: no session, file
+or git state changes, and a running session keeps running.
+
+The app reads the flag from `list_all_folder_details` /
+`list_open_folder_details` and, for groups, `list_folder_groups` (fetched
+with the snapshot; a failure keeps the groups it had). `FolderArchive`
+decides which folders are archived: on their own, through an archived group,
+or a worktree through the repo it is shown under. Then:
+
+- **Activity**: "Last 24 Hours" and "Earlier" leave archived folders'
+  sessions out. "Running" keeps every running session, so work in an
+  archived folder and a session waiting on you stay visible.
+- **Folders** and **Chats**: archived folders move to an "Archived" group at
+  the bottom, closed until tapped (remembered per list). They open and work
+  as usual from there. A Chats search still finds their sessions.
+- **Archive and unarchive**: long-press a folder in the Folders tab. A
+  folder offers Archive Folder (and Archive Group "…" when it is in a desktop
+  group), an archived one Unarchive Folder, and one archived through its
+  group Unarchive Group "…". The change shows at once and is put back, with
+  an alert, if the server refuses it.
+- **Older servers**: a folder without the `archived` field means the server
+  predates archiving. Nothing is archived and no Archive action is offered,
+  so the app behaves exactly as 1.3.7.
+
+`CodegiOSTests/FolderArchiveTests.swift` covers decoding with and without
+the flag, the rules, Activity's filtering, the Chats split and the archive
+calls.
+
 ### Screenshots
 
 `CodegiOSTests/SessionListScreenshotTests.swift` renders the rows, the Chats

@@ -171,6 +171,20 @@ struct UpdateConversationPinnedBody: Encodable, Sendable {
     let pinned: Bool
 }
 
+/// Body for `set_folder_archived` — archives or unarchives one folder. The
+/// response is the updated folder.
+struct SetFolderArchivedBody: Encodable, Sendable {
+    let folderId: Int
+    let archived: Bool
+}
+
+/// Body for `set_folder_group_archived` — archives or unarchives a desktop
+/// folder group with every folder in it. The response is the updated group.
+struct SetFolderGroupArchivedBody: Encodable, Sendable {
+    let groupId: Int
+    let archived: Bool
+}
+
 /// Body for `update_conversation_title` — renames a conversation. The server
 /// stores the new `title`; the response is `null`.
 struct UpdateConversationTitleBody: Encodable, Sendable {

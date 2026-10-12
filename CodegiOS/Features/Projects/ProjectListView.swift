@@ -15,6 +15,9 @@ struct ProjectListView: View {
     @State private var browseOpen = false
     @State private var cloneOpen = false
     @State private var actionError: String?
+    /// The archived folders' group at the bottom; closed until asked for.
+    @AppStorage("codeg.folders.archivedExpanded") private var archivedExpanded = false
+    @State private var archiveError: String?
 
     var body: some View {
         ZStack {
@@ -66,6 +69,14 @@ struct ProjectListView: View {
         } message: {
             Text(actionError ?? "")
         }
+        .alert(
+            "Couldn’t Change the Archive",
+            isPresented: Binding(get: { archiveError != nil }, set: { if !$0 { archiveError = nil } })
+        ) {
+            Button("OK", role: .cancel) { archiveError = nil }
+        } message: {
+            Text(archiveError ?? "")
+        }
         .task {
             if !activity.hasLoaded {
                 await activity.refresh(client: client)
@@ -105,7 +116,7 @@ struct ProjectListView: View {
             InlineErrorView(message: error) {
                 Task { await activity.refresh(client: client) }
             }
-        } else if sortedFolders.isEmpty {
+        } else if sortedFolders.isEmpty && archivedFolders.isEmpty {
             EmptyStateView(
                 icon: "folder",
                 title: "No Folders",
@@ -122,17 +133,18 @@ struct ProjectListView: View {
     /// plain `VStack` inside the card is fine (no virtualization needed here).
     private var projectList: some View {
         ScrollView {
-            GlassCard(cornerRadius: Theme.Radius.lg, padding: 0) {
-                VStack(spacing: 0) {
-                    ForEach(Array(sortedFolders.enumerated()), id: \.element.id) { index, folder in
-                        if index > 0 {
-                            InsetDivider(leading: FolderRowMetrics.dividerInset)
-                        }
-                        ProjectRow(
-                            folder: folder,
-                            runningCount: activity.runningCount(folderID: folder.id),
-                            onTap: { onOpenProject(folder.id) }
-                        )
+            VStack(alignment: .leading, spacing: 8) {
+                if !sortedFolders.isEmpty {
+                    folderCard(sortedFolders)
+                }
+                // Archived folders (on the desktop or here) sit in their own
+                // group at the bottom, closed until asked for. They open and
+                // work as usual from there.
+                if !archivedFolders.isEmpty {
+                    ArchivedSectionHeader(count: archivedFolders.count, expanded: $archivedExpanded)
+                    if archivedExpanded {
+                        folderCard(archivedFolders)
+                            .transition(.opacity)
                     }
                 }
             }
@@ -144,11 +156,70 @@ struct ProjectListView: View {
         .refreshable { await activity.refresh(client: client) }
     }
 
+    private func folderCard(_ folders: [FolderDetail]) -> some View {
+        GlassCard(cornerRadius: Theme.Radius.lg, padding: 0) {
+            VStack(spacing: 0) {
+                ForEach(Array(folders.enumerated()), id: \.element.id) { index, folder in
+                    if index > 0 {
+                        InsetDivider(leading: FolderRowMetrics.dividerInset)
+                    }
+                    ProjectRow(
+                        folder: folder,
+                        runningCount: activity.runningCount(folderID: folder.id),
+                        onTap: { onOpenProject(folder.id) }
+                    )
+                    .contextMenu {
+                        FolderArchiveMenuItems(
+                            state: activity.archiveState(of: folder),
+                            group: activity.group(of: folder),
+                            onSetArchived: { archived in setArchived(folder, archived) },
+                            onSetGroupArchived: { group, archived in setGroupArchived(group, archived) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func setArchived(_ folder: FolderDetail, _ archived: Bool) {
+        Task {
+            do {
+                try await activity.setArchived(folderID: folder.id, archived: archived, client: client)
+            } catch {
+                archiveError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    private func setGroupArchived(_ group: FolderGroupDetail, _ archived: Bool) {
+        Task {
+            do {
+                try await activity.setGroupArchived(groupID: group.id, archived: archived, client: client)
+            } catch {
+                archiveError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
     /// Server `sortOrder` first, then name. Reads `displayFolders` (open + regular,
     /// worktree children hidden) — not the full `folders` set used for by-id
-    /// lookups — so worktree/chat folders never get their own row.
+    /// lookups — so worktree/chat folders never get their own row. Archived
+    /// folders are left out; they are listed in ``archivedFolders``.
     private var sortedFolders: [FolderDetail] {
-        activity.displayFolders.sorted {
+        let archived = activity.archivedFolderIDs
+        return Self.sorted(activity.displayFolders.filter { !archived.contains($0.id) })
+    }
+
+    /// The archived folders, in the same order, for the group at the bottom.
+    /// Empty on a server that predates archiving.
+    private var archivedFolders: [FolderDetail] {
+        let archived = activity.archivedFolderIDs
+        guard !archived.isEmpty else { return [] }
+        return Self.sorted(activity.displayFolders.filter { archived.contains($0.id) })
+    }
+
+    private static func sorted(_ folders: [FolderDetail]) -> [FolderDetail] {
+        folders.sorted {
             $0.sortOrder != $1.sortOrder
                 ? $0.sortOrder < $1.sortOrder
                 : $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
