@@ -231,6 +231,70 @@ shows "Idle — background work running" from its live connection), and is
 null while the agent works out of turn. See the codeg server for the live
 status the list would need.
 
+### Mode and options during a turn (1.3.7)
+
+`Features/SessionDetail/AgentOptionsModel.swift` (`AgentOptionsGate` and the
+live updates), `AgentOptionsButton.swift`, the event mapping of
+`SessionDetailViewModel` and `Interactive/PermissionRequestCard.swift`.
+
+- **What can change mid-turn.** The codeg web composer disables none of its
+  selectors while a turn runs (`session-config-selector.tsx`,
+  `message-input.tsx`), and the server applies `acp_set_mode` and
+  `acp_set_config_option` inside the running turn (the in-turn command loop
+  of `acp/connection.rs`). The options sheet now does the same: the mode
+  (Claude's `mode` config option, or the mode list of an agent without config
+  options) and every config option (model, effort, fast mode, …) stay live
+  while the agent responds, also while a permission or plan card waits. A row
+  only waits for its own change in flight. The Workspace card keeps the
+  folder read-only and the branch locked while busy, with a note saying why;
+  the blanket "Options can't be changed while the agent is responding" is
+  gone.
+- **One difference from the desktop.** The desktop's legacy mode list (agents
+  that publish modes but no config options) keeps a mid-turn pick locally and
+  sends it with the next prompt. The phone sends it at once with
+  `acp_set_mode`, which the server handles mid-turn. Claude's mode is a config
+  option on both, sent at once.
+- **Applying.** A pick shows at once and is remembered for new sessions, as
+  before. The HTTP call only queues the change, so the sheet still polls
+  `acp_get_session_snapshot` until the session reports it. A refused request,
+  a `set_mode_failed` / `set_config_option_failed` error from the turn, a
+  `config_option_rejected`, or a session that stays on the old value put the
+  pick back, with "Couldn't change Mode to Bypass permissions: <reason>. It
+  stays on Plan." under the selectors, or as the session's notice if the
+  sheet was closed. While a change is on its way, an older live value for the
+  same option is ignored, so it can't flicker back. The mode list's
+  selection key can't collide with Claude's config option id `mode` (they
+  shared one before).
+- **Live sync.** `mode_changed`, `session_modes`, `session_config_options`
+  and `config_option_rejected` are decoded, and the attach snapshot's
+  `modes`, `current_mode` and `config_options` seed the sheet. So the phone
+  follows a mode the agent leaves on its own (plan mode after an approved
+  plan sends `mode_changed` and the new option list) and a change made on the
+  desktop. A change made on the phone reaches the desktop the same way: the
+  server broadcasts the events to every client of the connection.
+- **Errors that are not turn failures.** The web client routes
+  `set_mode_failed`, `set_config_option_failed`,
+  `grok_model_switch_incompatible_agent`, `goal_control_failed` and
+  `image_dropped` to a toast (`routeAcpError`, kind `action`). The phone used
+  to end the live reply on any `error` event, so a failed change on the
+  desktop ended the reply on the phone. These codes are now a notice and the
+  turn goes on.
+- **A permission card waiting during a switch.** Neither the server, the
+  agent adapter nor the desktop answers a pending request when the mode
+  changes; the request was made under the old mode and still needs a tap.
+  The desktop card offers only the agent's own options (Claude's "Always
+  Allow" can carry a permission-mode change of its own), with no "switch to
+  bypass" action, so the phone adds none either. Once the mode changed while
+  the card waited, the card says "The mode is now Bypass permissions. This
+  request came before the switch and still needs your answer." Later tool
+  calls follow the new mode.
+- **Checked live** against a codeg server (Claude, a throwaway folder): with
+  a Bash permission card waiting, `acp_set_config_option mode=bypassPermissions`
+  and `acp_set_mode acceptEdits` each returned at once, `session_config_options`
+  and `mode_changed` reached both an iOS-style and a desktop-style socket
+  within 100 ms, the card stayed pending, and after it was answered the turn
+  ran its next command without asking and completed.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one
@@ -1169,8 +1233,9 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   a mock server, the audio session owner and microphone hand-off, the
   event socket's recovery and send confirmation against a mock server with
   scripted sockets, transcript windows and the transcript cache against a
-  mock windowed server, navigation and Back, the session model store, and
-  the whole app rotated in a running session) on an
+  mock windowed server, navigation and Back, the session model store, the
+  whole app rotated in a running session, and the mode and options changed
+  during a turn) on an
   iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
   `build`. It uploads the session list screenshots as the
   `session-list-screenshots` artifact and the compose area as
