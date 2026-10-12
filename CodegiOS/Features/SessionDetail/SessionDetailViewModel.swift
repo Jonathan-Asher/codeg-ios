@@ -126,7 +126,23 @@ final class SessionDetailViewModel {
     /// A pending permission request — or ExitPlanMode — awaiting the user's
     /// choice. Rendered as a card above the compose bar; nil when none is pending.
     private(set) var pendingPermission: PendingPermission? {
-        didSet { syncAttention() }
+        didSet {
+            if pendingPermission?.requestId != oldValue?.requestId {
+                modeWhenPermissionAsked = pendingPermission == nil ? nil : agentOptions.currentMode?.id
+            }
+            syncAttention()
+        }
+    }
+    /// The session's mode when the waiting permission card was raised.
+    private var modeWhenPermissionAsked: String?
+
+    /// Said on the permission card once the mode changed while it waited.
+    /// Switching modes (to Bypass permissions, say) doesn't answer a request
+    /// the agent already made, on the desktop either: it still needs a tap.
+    var permissionModeNote: String? {
+        guard pendingPermission != nil, let asked = modeWhenPermissionAsked,
+              let now = agentOptions.currentMode, now.id != asked else { return nil }
+        return "The mode is now \(now.name). This request came before the switch and still needs your answer."
     }
     /// A pending `ask_user_question` awaiting the user's answers.
     private(set) var pendingQuestion: PendingQuestion? {
@@ -343,6 +359,11 @@ final class SessionDetailViewModel {
         agentOptions.loadSnapshot = { [weak self] in
             guard let self, let id = self.conversationID else { return nil }
             return try await self.client.sessionSnapshot(conversationId: id)
+        }
+        // A change that failed after the sheet was closed still gets said.
+        agentOptions.onFailure = { [weak self] message in
+            guard let self, !self.agentOptions.isSheetShown else { return }
+            self.notice = message
         }
 
         // Quick messages + experts are connection-independent catalog reads.
@@ -1855,8 +1876,15 @@ final class SessionDetailViewModel {
         case .turnComplete(let stopReason):
             finalize(live: live, stopReason: stopReason)
 
-        case .error(let message, _):
-            failLive(live, message: message)
+        case .error(let message, let code):
+            // An error about one action (a mode or option change, a goal
+            // action, a dropped picture) leaves the turn running: the web
+            // client shows it as a toast, and so does this screen.
+            if let code, Self.actionErrorCodes.contains(code) {
+                handleActionError(code: code, message: message)
+            } else {
+                failLive(live, message: message)
+            }
 
         case .conversationLinked(let linkedID, _):
             adoptLinkedConversation(linkedID)
@@ -1913,13 +1941,48 @@ final class SessionDetailViewModel {
                 insertedNotes[idx].delivered = true
             }
 
+        // The agent's mode and options, as changed by the agent (leaving plan
+        // mode) or by any client, this one included: the options sheet follows.
+        case .modeChanged(let modeId):
+            agentOptions.applyLiveMode(modeId)
+
+        case .sessionModes(let modes):
+            agentOptions.applyLiveModes(modes)
+
+        case .sessionConfigOptions(let options):
+            agentOptions.applyLiveConfigOptions(options)
+
+        case .configOptionRejected(let configId, let optionName, let requested, let actual, let actualValue):
+            agentOptions.applyRejection(configId: configId, optionName: optionName, requested: requested,
+                                        actual: actual, actualValue: actualValue)
+
         case .sessionStarted, .conversationStatusChanged, .userPromptSent, .unknown:
             break
         }
     }
 
+    /// Error codes that report one action going wrong while the turn goes on
+    /// (codeg web `routeAcpError`, kind `action`).
+    static let actionErrorCodes: Set<String> = [
+        "set_mode_failed", "set_config_option_failed", "grok_model_switch_incompatible_agent",
+        "goal_control_failed", "image_dropped",
+    ]
+
+    private func handleActionError(code: String, message: String) {
+        switch code {
+        case "set_mode_failed":
+            agentOptions.applyServerFailure(isModeChange: true, message: message)
+        case "set_config_option_failed":
+            agentOptions.applyServerFailure(isModeChange: false, message: message)
+        default:
+            notice = message
+        }
+    }
+
     /// Adopt the connection-level signals an attach snapshot carries.
     private func applyLiveSignals(from snap: LiveSessionSnapshot) {
+        agentOptions.applyLiveSnapshot(modes: snap.modes, currentMode: snap.currentMode,
+                                       configOptions: snap.configOptions)
         if snap.nativeSteeringAvailable { nativeSteeringAvailable = true }
         awaitingBackground = snap.awaitingBackground && snap.status == .prompting
         backgroundOutstanding = snap.backgroundOutstanding

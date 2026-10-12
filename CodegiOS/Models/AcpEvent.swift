@@ -94,6 +94,17 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     case feedbackSubmitted(id: String, text: String)
     /// The agent read one or more feedback notes.
     case feedbackConsumed(ids: [String])
+    /// The session's mode changed: the agent left plan mode on its own, or a
+    /// client (this one, the desktop) set it. Also mid-turn.
+    case modeChanged(modeId: String)
+    /// The agent's mode list (and current mode), on connect or when it changes.
+    case sessionModes(SessionModeState)
+    /// The agent's whole config option list with current values (model,
+    /// effort, Claude's mode, …), on connect and after every change.
+    case sessionConfigOptions([SessionConfigOption])
+    /// The agent settled a `set_config_option` on another value than the one
+    /// asked for (labels for the message, `actualValue` the raw id).
+    case configOptionRejected(configId: String, optionName: String, requested: String, actual: String, actualValue: String)
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -105,6 +116,7 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         case approvalId, planMarkdown
         case phase, elapsedMs, awaiting, nativeSteering, outstanding, item, ids
         case images
+        case modeId, modes, configOptions, configId, optionName, requested, actual, actualValue
     }
 
     init(from decoder: Decoder) throws {
@@ -224,6 +236,29 @@ enum AcpEvent: Hashable, Sendable, Decodable {
             )
         case "feedback_consumed":
             self = .feedbackConsumed(ids: (try? c.decodeIfPresent([String].self, forKey: .ids)) ?? [])
+        case "mode_changed":
+            self = .modeChanged(modeId: (try? c.decodeIfPresent(String.self, forKey: .modeId)) ?? "")
+        case "session_modes":
+            // A shape surprise must not cost the stream its frame: read as unknown.
+            if let modes = (try? c.decodeIfPresent(SessionModeState.self, forKey: .modes)) ?? nil {
+                self = .sessionModes(modes)
+            } else {
+                self = .unknown(type: type)
+            }
+        case "session_config_options":
+            if let options = (try? c.decodeIfPresent([SessionConfigOption].self, forKey: .configOptions)) ?? nil {
+                self = .sessionConfigOptions(options)
+            } else {
+                self = .unknown(type: type)
+            }
+        case "config_option_rejected":
+            self = .configOptionRejected(
+                configId: (try? c.decodeIfPresent(String.self, forKey: .configId)) ?? "",
+                optionName: (try? c.decodeIfPresent(String.self, forKey: .optionName)) ?? "",
+                requested: (try? c.decodeIfPresent(String.self, forKey: .requested)) ?? "",
+                actual: (try? c.decodeIfPresent(String.self, forKey: .actual)) ?? "",
+                actualValue: (try? c.decodeIfPresent(String.self, forKey: .actualValue)) ?? ""
+            )
         default:
             self = .unknown(type: type)
         }
@@ -290,12 +325,19 @@ struct LiveSessionSnapshot: Sendable, Decodable {
     /// Messages delivered into the running turn (fork `feedback`), cleared by
     /// the next turn's prompt.
     let feedback: [FeedbackNoteSnapshot]
+    /// The connection's mode list and current mode, and its config options
+    /// with their current values: what the options sheet shows, current as of
+    /// this snapshot.
+    let modes: SessionModeState?
+    let currentMode: String?
+    let configOptions: [SessionConfigOption]?
 
     private enum CodingKeys: String, CodingKey {
         case connectionId, conversationId, folderId, status, externalId, eventSeq
         case liveMessage, activeToolCalls, pendingPermission, pendingQuestion, pendingPlanApproval
         case awaitingBackground, backgroundOutstanding, nativeSteeringAvailable
         case pendingUserMessage, feedback
+        case modes, currentMode, configOptions
     }
 
     private struct PendingUserMessageRef: Decodable {
@@ -321,6 +363,9 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         pendingUserMessageId = ((try? c.decodeIfPresent(PendingUserMessageRef.self, forKey: .pendingUserMessage)) ?? nil)?
             .messageId
         feedback = ((try? c.decodeIfPresent([FeedbackNoteSnapshot].self, forKey: .feedback)) ?? nil) ?? []
+        modes = (try? c.decodeIfPresent(SessionModeState.self, forKey: .modes)) ?? nil
+        currentMode = (try? c.decodeIfPresent(String.self, forKey: .currentMode)) ?? nil
+        configOptions = (try? c.decodeIfPresent([SessionConfigOption].self, forKey: .configOptions)) ?? nil
     }
 }
 

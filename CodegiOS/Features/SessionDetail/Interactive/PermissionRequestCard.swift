@@ -7,6 +7,10 @@ import SwiftUI
 /// the agent-supplied option buttons (filled to allow, bordered to reject).
 struct PermissionRequestCard: View {
     let pending: PendingPermission
+    /// Set once the session's mode changed while this card waited (switching
+    /// to Bypass permissions mid-turn, say): the request was made before the
+    /// switch and the agent still waits for an answer to it, as on the desktop.
+    var modeNote: String? = nil
     /// Resolve with the chosen `option_id`. Returns true on success — the model
     /// then clears the card; false keeps it and re-enables the buttons.
     let onRespond: (String) async -> Bool
@@ -32,6 +36,13 @@ struct PermissionRequestCard: View {
                     .frame(maxHeight: 300)
             } else {
                 bodyContent
+            }
+
+            if let modeNote {
+                Label { Text(verbatim: modeNote) } icon: { Image(systemName: "arrow.triangle.swap") }
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if failed {

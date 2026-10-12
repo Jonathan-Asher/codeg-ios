@@ -20,7 +20,14 @@ import Observation
 /// an apply optimistically updates the selection and then RECONCILES by polling
 /// the snapshot until it reflects the change (or settles on the agent's
 /// normalized value). An HTTP error — including a dead connection — reverts and
-/// notices.
+/// notices, and so does a change the session never takes (the agent refused
+/// it, or the running turn reported `set_mode_failed`).
+///
+/// Picks apply mid-turn too, as on the codeg web composer (see
+/// `AgentOptionsGate`), and the selection follows the session's live events
+/// (`mode_changed`, `session_modes`, `session_config_options`, the attach
+/// snapshot), so a mode the agent leaves on its own (plan mode after an
+/// approved plan) or another client picks shows here at once.
 @MainActor
 @Observable
 final class AgentOptionsModel {
@@ -50,11 +57,20 @@ final class AgentOptionsModel {
     private(set) var selectedModeId: String?
     private(set) var selectedConfig: [String: String] = [:]   // configId → valueId
 
-    /// Keys currently being applied ("mode" or a configId) so a row can spin.
+    /// Keys currently being applied (`modeKey` or a configId) so a row can spin.
     private(set) var applying: Set<String> = []
+    /// The value each in-flight apply asked for, by key.
+    private var applyingDesired: [String: String] = [:]
+    /// Why the server couldn't apply an in-flight change, by key.
+    private var serverFailures: [String: String] = [:]
 
     /// Transient apply failure surfaced under the selectors.
     var errorNotice: String?
+    /// Told about every failed change, so the session screen can show it once
+    /// the sheet is closed.
+    var onFailure: ((String) -> Void)?
+    /// The options sheet is on screen (it shows `errorNotice` itself then).
+    var isSheetShown = false
 
     /// Catalog cache per agent type so re-opening the sheet doesn't re-spawn a
     /// probe when there's no live session.
@@ -169,10 +185,13 @@ final class AgentOptionsModel {
     private func applyAuthoritative(_ snap: SessionSnapshot) {
         let options = snap.asOptionsSnapshot
         snapshot = options
-        selectedModeId = snap.modes?.currentModeId ?? snap.currentMode ?? selectedModeId
+        // A change still on its way keeps its pick until it settles.
+        if let mode = snap.modes?.currentModeId ?? snap.currentMode {
+            adoptLive(key: Self.modeKey, value: mode)
+        }
         for option in snap.configOptions ?? [] {
             if let current = option.kind.selectCurrentValue, !current.isEmpty {
-                selectedConfig[option.id] = current
+                adoptLive(key: option.id, value: current)
             }
         }
         phase = options.isEmpty ? .empty : .loaded
@@ -207,13 +226,14 @@ final class AgentOptionsModel {
     // MARK: - Apply
 
     func selectMode(_ modeId: String) {
-        guard modeId != selectedModeId, canApply("mode") else { return }
+        guard modeId != selectedModeId, canApply(Self.modeKey) else { return }
         let previous = selectedModeId
         selectedModeId = modeId   // optimistic (only after the guards pass)
         // Remember the pick per agent so the next new session starts in this mode
         // (re-applied via acp_connect's preferredModeId). Mirrors the web client.
         if let agentType { SelectorPrefsStore.saveMode(agent: agentType, modeId: modeId) }
-        run(key: "mode", desired: modeId, revert: { [weak self] in self?.selectedModeId = previous }) { client, conn in
+        run(key: Self.modeKey, desired: modeId, previous: previous,
+            revert: { [weak self] in self?.selectedModeId = previous }) { client, conn in
             try await client.setMode(connectionId: conn, modeId: modeId)
         }
     }
@@ -223,7 +243,8 @@ final class AgentOptionsModel {
         let previous = selectedConfig[optionId]
         selectedConfig[optionId] = valueId   // optimistic (only after the guards pass)
         if let agentType { SelectorPrefsStore.saveConfig(agent: agentType, configId: optionId, valueId: valueId) }
-        run(key: optionId, desired: valueId, revert: { [weak self] in self?.selectedConfig[optionId] = previous }) { client, conn in
+        run(key: optionId, desired: valueId, previous: previous,
+            revert: { [weak self] in self?.selectedConfig[optionId] = previous }) { client, conn in
             try await client.setConfigOption(connectionId: conn, configId: optionId, valueId: valueId)
         }
     }
@@ -238,11 +259,13 @@ final class AgentOptionsModel {
     private func run(
         key: String,
         desired: String,
+        previous: String?,
         revert: @escaping () -> Void,
         action: @escaping (CodegClient, String) async throws -> Void
     ) {
         guard resolveConnection != nil else { revert(); return }
         applying.insert(key)
+        applyingDesired[key] = desired
         errorNotice = nil
         let client = self.client
         Task { [weak self] in
@@ -265,10 +288,49 @@ final class AgentOptionsModel {
             } catch {
                 revert()
                 self.connectionTask = nil   // re-resolve on the next apply
-                self.errorNotice = Self.describe(error)
+                self.failed(key: key, desired: desired, previous: previous, reason: Self.describe(error))
             }
             self.applying.remove(key)
+            self.applyingDesired[key] = nil
         }
+    }
+
+    /// The change of `key` to `desired` didn't go through: say what, why, and
+    /// what the session is still on.
+    private func failed(key: String, desired: String, previous: String?, reason: String?) {
+        let label = self.label(forKey: key)
+        let wanted = valueName(forKey: key, value: desired)
+        var message = "Couldn't change \(label) to \(wanted)"
+        let because = (reason ?? "").trimmingCharacters(in: CharacterSet(charactersIn: ". \n"))
+        if !because.isEmpty { message += ": \(because)" }
+        message += "."
+        if let current = currentSelection(forKey: key) ?? previous {
+            message += " It stays on \(valueName(forKey: key, value: current))."
+        }
+        errorNotice = message
+        onFailure?(message)
+    }
+
+    /// The name the sheet shows for `key` ("Mode", "Model", …).
+    func label(forKey key: String) -> String {
+        if key == Self.modeKey { return "Mode" }
+        return snapshot?.configOptions.first { $0.id == key }?.name ?? key
+    }
+
+    /// The display name of `value` for `key`, or the value itself.
+    func valueName(forKey key: String, value: String) -> String {
+        if let option = snapshot?.configOptions.first(where: { $0.id == key }) {
+            let choices = (option.kind.selectOptions ?? []) + (option.kind.selectGroups ?? []).flatMap(\.options)
+            if let name = choices.first(where: { $0.value == value })?.name { return name }
+        }
+        if key == Self.modeKey, let name = snapshot?.modes?.availableModes.first(where: { $0.id == value })?.name {
+            return name
+        }
+        return value
+    }
+
+    private func currentSelection(forKey key: String) -> String? {
+        key == Self.modeKey ? selectedModeId : selectedConfig[key]
     }
 
     /// Resolve the chat connection once and share it across concurrent applies, so
@@ -302,22 +364,155 @@ final class AgentOptionsModel {
             lastSeen = current
             if current == desired {
                 setSelection(key: key, value: current)   // confirmed
+                serverFailures[key] = nil
                 return
             }
         }
         // Settled without confirming the pick — adopt the last authoritative value
-        // we saw (the agent may have normalized/rejected it); if we never saw one,
-        // keep the optimistic pick as a best effort.
-        if let lastSeen { setSelection(key: key, value: lastSeen) }
+        // we saw (the agent may have normalized/rejected it) and say so; if we
+        // never saw one, keep the optimistic pick as a best effort.
+        let serverReason = serverFailures.removeValue(forKey: key)
+        if let lastSeen {
+            setSelection(key: key, value: lastSeen)
+            if errorNotice == nil || serverReason != nil {
+                failed(key: key, desired: desired, previous: lastSeen, reason: serverReason)
+            }
+        } else if let serverReason {
+            report(serverReason)
+        }
     }
 
     private func currentValue(forKey key: String, in snap: SessionSnapshot) -> String? {
-        if key == "mode" { return snap.modes?.currentModeId ?? snap.currentMode }
+        if key == Self.modeKey { return snap.modes?.currentModeId ?? snap.currentMode }
         return snap.configOptions?.first { $0.id == key }?.kind.selectCurrentValue
     }
 
+    // MARK: - Live updates from the session's event stream
+
+    /// The selection key of the mode list. Config options use their id, and
+    /// Claude's mode is a config option whose id is `mode`, so the mode list
+    /// has a key no config id can be.
+    nonisolated static let modeKey = "\u{1}modes"
+
+    /// The session's mode changed (`mode_changed`): the agent left plan mode,
+    /// or another client switched it. The open sheet follows at once.
+    func applyLiveMode(_ modeId: String) {
+        guard !modeId.isEmpty else { return }
+        if let modes = snapshot?.modes {
+            snapshot = AgentOptionsSnapshot(
+                modes: SessionModeState(currentModeId: modeId, availableModes: modes.availableModes),
+                configOptions: snapshot?.configOptions ?? [])
+        }
+        adoptLive(key: Self.modeKey, value: modeId)
+        // Claude shows its mode as a config option; follow it there too, should
+        // the option list that normally comes with the change be late.
+        if let option = snapshot?.configOptions.first(where: AgentOptionsGate.isModeOption),
+           option.kind.allSelectValues.contains(modeId) {
+            adoptLive(key: option.id, value: modeId)
+        }
+    }
+
+    /// A new mode list from the agent (`session_modes`).
+    func applyLiveModes(_ modes: SessionModeState) {
+        snapshot = AgentOptionsSnapshot(modes: modes, configOptions: snapshot?.configOptions ?? [])
+        adoptLive(key: Self.modeKey, value: modes.currentModeId)
+        if case .loaded = phase {} else if snapshot?.isEmpty == false { phase = .loaded }
+    }
+
+    /// The agent's config options with their current values
+    /// (`session_config_options`), after any change, from any client.
+    func applyLiveConfigOptions(_ options: [SessionConfigOption]) {
+        snapshot = AgentOptionsSnapshot(modes: snapshot?.modes, configOptions: options)
+        for option in options {
+            if let current = option.kind.selectCurrentValue, !current.isEmpty {
+                adoptLive(key: option.id, value: current)
+            }
+        }
+        if case .loaded = phase {} else if snapshot?.isEmpty == false { phase = .loaded }
+    }
+
+    /// The selectors an attach snapshot carries, current as of that snapshot.
+    func applyLiveSnapshot(modes: SessionModeState?, currentMode: String?, configOptions: [SessionConfigOption]?) {
+        let hasModes = !(modes?.availableModes.isEmpty ?? true)
+        let hasConfig = !(configOptions?.isEmpty ?? true)
+        guard hasModes || hasConfig else {
+            if let currentMode, !currentMode.isEmpty { adoptLive(key: Self.modeKey, value: currentMode) }
+            return
+        }
+        if hasModes, let modes { applyLiveModes(modes) }
+        if let currentMode, !currentMode.isEmpty { applyLiveMode(currentMode) }
+        if hasConfig, let configOptions { applyLiveConfigOptions(configOptions) }
+    }
+
+    /// The agent kept another value than the one picked (`config_option_rejected`).
+    func applyRejection(configId: String, optionName: String, requested: String, actual: String, actualValue: String) {
+        if !actualValue.isEmpty { setSelection(key: configId, value: actualValue) }
+        let name = optionName.isEmpty ? label(forKey: configId) : optionName
+        var message = "Couldn't change \(name) to \(requested)."
+        let kept = actual.isEmpty ? actualValue : actual
+        if !kept.isEmpty { message += " The agent kept \(kept)." }
+        report(message)
+    }
+
+    /// The server couldn't apply a change: the `set_mode_failed` or
+    /// `set_config_option_failed` error a running turn reports instead of
+    /// failing the request. The change in flight of that kind is put back
+    /// (the reconcile then says so with this reason); with none in flight the
+    /// reason is shown as it came.
+    func applyServerFailure(isModeChange: Bool, message: String) {
+        let reason = Self.serverReason(message)
+        guard let key = applying.first(where: { isModeChange ? $0 == Self.modeKey : $0 != Self.modeKey }) else {
+            report(isModeChange ? "Couldn't change the mode: \(reason)." : "Couldn't change that option: \(reason).")
+            return
+        }
+        serverFailures[key] = reason
+    }
+
+    /// The agent's own reason, without the server's "Failed to set …:" lead-in
+    /// (the message around it already says what failed).
+    nonisolated static func serverReason(_ message: String) -> String {
+        var reason = message
+        for prefix in ["Failed to set mode: ", "Failed to set config option: "] where reason.hasPrefix(prefix) {
+            reason = String(reason.dropFirst(prefix.count))
+        }
+        return reason.trimmingCharacters(in: CharacterSet(charactersIn: ". \n"))
+    }
+
+    /// The session's current mode as the sheet shows it: the mode config option
+    /// (Claude's `mode`) when the agent has one, else the mode list.
+    var currentMode: ModeChoice? {
+        if let option = snapshot?.configOptions.first(where: AgentOptionsGate.isModeOption),
+           let id = selectedConfig[option.id] {
+            return ModeChoice(id: id, name: valueName(forKey: option.id, value: id))
+        }
+        guard let id = selectedModeId else { return nil }
+        return ModeChoice(id: id, name: valueName(forKey: Self.modeKey, value: id))
+    }
+
+    struct ModeChoice: Equatable {
+        let id: String
+        let name: String
+    }
+
+    private func report(_ message: String) {
+        errorNotice = message
+        onFailure?(message)
+    }
+
+    /// A live value for `key`. While a change of that key is on its way, only
+    /// the value asked for is taken (it confirms the change): an older value
+    /// can still be in flight from before the change, and the reconcile that
+    /// follows the change adopts what the agent finally settled on.
+    private func adoptLive(key: String, value: String) {
+        if let desired = applyingDesired[key] {
+            if value == desired { setSelection(key: key, value: value) }
+            return
+        }
+        setSelection(key: key, value: value)
+    }
+
     private func setSelection(key: String, value: String) {
-        if key == "mode" { selectedModeId = value } else { selectedConfig[key] = value }
+        if key == Self.modeKey { selectedModeId = value } else { selectedConfig[key] = value }
     }
 
     func teardown() {
@@ -328,10 +523,59 @@ final class AgentOptionsModel {
         connectionTask?.cancel()
         connectionTask = nil
         applying.removeAll()
+        applyingDesired.removeAll()
+        serverFailures.removeAll()
     }
 
     private static func describe(_ error: Error) -> String {
         if let api = error as? APIError { return api.errorDescription ?? "\(api)" }
         return error.localizedDescription
+    }
+}
+
+/// What the options sheet lets you change while a turn runs. It mirrors the
+/// codeg web composer, which disables none of its selectors mid-turn: the mode
+/// (the mode list, or a `mode` config option) and every config option (model,
+/// effort, …) change at once, also while a permission or plan card waits. The
+/// server applies them inside the running turn. Only the workspace stays put
+/// while the agent responds: the folder is fixed for a session, and switching
+/// the branch would change the working tree under the agent.
+enum AgentOptionsGate {
+    struct Availability: Equatable {
+        var enabled: Bool
+        var hint: String?
+    }
+
+    enum Item {
+        case modeList
+        case config(SessionConfigOption)
+        case branch
+    }
+
+    static let pendingRequestHint = "A request already waiting for you still needs an answer; the new mode applies to what the agent does next."
+    static let branchBusyHint = "The branch can't change while the agent is responding."
+
+    /// Whether `item` can be changed now, and what to say under it.
+    /// - Parameters:
+    ///   - isBusy: a turn is running.
+    ///   - cardWaiting: a permission or plan card waits for an answer.
+    ///   - applying: the keys whose change is on its way (`AgentOptionsModel.applying`).
+    static func availability(of item: Item, isBusy: Bool, cardWaiting: Bool, applying: Set<String>) -> Availability {
+        switch item {
+        case .modeList:
+            return Availability(enabled: !applying.contains(AgentOptionsModel.modeKey),
+                                hint: cardWaiting ? pendingRequestHint : nil)
+        case .config(let option):
+            return Availability(enabled: !applying.contains(option.id),
+                                hint: cardWaiting && isModeOption(option) ? pendingRequestHint : nil)
+        case .branch:
+            return Availability(enabled: !isBusy, hint: isBusy ? branchBusyHint : nil)
+        }
+    }
+
+    /// A config option that is the agent's mode (Claude publishes its mode as
+    /// the `mode` option, category `mode`).
+    static func isModeOption(_ option: SessionConfigOption) -> Bool {
+        option.category == "mode" || option.id == "mode"
     }
 }

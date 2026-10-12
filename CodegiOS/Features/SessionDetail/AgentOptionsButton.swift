@@ -54,7 +54,10 @@ struct SessionBranchConfig {
 struct AgentOptionsButton: View {
     let agentType: AgentType
     let workingDir: String?
+    /// A turn is running. Mode and options still change (see `AgentOptionsGate`).
     let isBusy: Bool
+    /// A permission or plan card waits for an answer.
+    var cardWaiting: Bool = false
     let options: AgentOptionsModel
     /// Present only for an editable new-session draft.
     var newSession: NewSessionAgentConfig? = nil
@@ -81,13 +84,14 @@ struct AgentOptionsButton: View {
             // pop itself) before navigating to a worktree session — a `.sheet`
             // otherwise stays above the pushed destination.
             AgentOptionsSheet(
-                isBusy: isBusy, options: options, newSession: newSession, branch: branch,
+                isBusy: isBusy, cardWaiting: cardWaiting, options: options, newSession: newSession, branch: branch,
                 dismissSheet: { showSheet = false }
             )
             .presentationDetents([.medium, .large])
             .presentationBackground(Theme.bg)
         }
         .onChange(of: showSheet) { _, shown in
+            options.isSheetShown = shown
             if shown { options.prepare(agentType: agentType, workingDir: workingDir) }
         }
     }
@@ -97,6 +101,7 @@ struct AgentOptionsButton: View {
 /// agent's auto-loaded Mode/config selectors.
 private struct AgentOptionsSheet: View {
     let isBusy: Bool
+    let cardWaiting: Bool
     let options: AgentOptionsModel
     let newSession: NewSessionAgentConfig?
     let branch: SessionBranchConfig?
@@ -120,10 +125,6 @@ private struct AgentOptionsSheet: View {
                         // above the branch selector.
                         if let branch, branch.folderPath != nil {
                             workspaceSection(newSession: newSession, branch: branch)
-                        }
-
-                        if isBusy {
-                            hint(Text("Options can't be changed while the agent is responding."))
                         }
 
                         switch options.phase {
@@ -228,15 +229,33 @@ private struct AgentOptionsSheet: View {
     /// conversation is bound to its working dir); the branch row is switchable in
     /// both cases.
     private func workspaceSection(newSession ns: NewSessionAgentConfig?, branch: SessionBranchConfig) -> some View {
-        OptionSection(title: Text("Workspace")) {
-            if let ns {
-                folderMenuRow(ns)
-            } else {
-                folderReadOnlyRow(branch)
+        let gate = availability(.branch)
+        return VStack(alignment: .leading, spacing: 6) {
+            OptionSection(title: Text("Workspace")) {
+                if let ns {
+                    folderMenuRow(ns)
+                } else {
+                    folderReadOnlyRow(branch)
+                }
+                rowSeparator
+                branchLinkRow(branch, enabled: gate.enabled)
             }
-            rowSeparator
-            branchLinkRow(branch)
+            if let note = gate.hint { sectionHint(note) }
         }
+    }
+
+    private func availability(_ item: AgentOptionsGate.Item) -> AgentOptionsGate.Availability {
+        AgentOptionsGate.availability(of: item, isBusy: isBusy, cardWaiting: cardWaiting, applying: options.applying)
+    }
+
+    /// A short note under one section (why it is locked, or what a change does now).
+    private func sectionHint(_ note: String) -> some View {
+        Text(verbatim: note)
+            .font(.caption)
+            .foregroundStyle(Theme.textTertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 4)
     }
 
     private func folderMenuRow(_ ns: NewSessionAgentConfig) -> some View {
@@ -322,9 +341,9 @@ private struct AgentOptionsSheet: View {
     }
 
     /// The current branch as a row that pushes the full branch picker. Disabled
-    /// while the agent is responding (switching the working tree mid-turn would
-    /// disrupt it — consistent with the other options being locked when busy).
-    private func branchLinkRow(_ branch: SessionBranchConfig) -> some View {
+    /// while the agent is responding: switching the working tree mid-turn would
+    /// change the files under the agent (mode and options stay changeable).
+    private func branchLinkRow(_ branch: SessionBranchConfig, enabled: Bool) -> some View {
         NavigationLink {
             BranchPickerView(config: branch, dismissSheet: dismissSheet)
         } label: {
@@ -333,7 +352,7 @@ private struct AgentOptionsSheet: View {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.triangle.branch")
                     .font(.caption)
-                    .foregroundStyle(isBusy ? Theme.textTertiary : Theme.accent)
+                    .foregroundStyle(enabled ? Theme.accent : Theme.textTertiary)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Branch")
                         .font(.callout.weight(.medium))
@@ -361,8 +380,8 @@ private struct AgentOptionsSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isBusy)
-        .opacity(isBusy ? 0.5 : 1)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
     }
 
     // MARK: - States
@@ -408,18 +427,23 @@ private struct AgentOptionsSheet: View {
         // When an agent exposes config options, its mode is represented there, so
         // showing the Mode section too would duplicate it.
         if hasModes, !hasConfig, let modes {
-            OptionSection(title: Text("Mode")) {
-                ForEach(Array(modes.availableModes.enumerated()), id: \.element.id) { index, mode in
-                    if index > 0 { rowSeparator }
-                    OptionRow(
-                        title: mode.name,
-                        subtitle: mode.description,
-                        isSelected: options.selectedModeId == mode.id,
-                        isApplying: options.applying.contains("mode") && options.selectedModeId == mode.id,
-                        disabled: isBusy || options.applying.contains("mode"),
-                        action: { options.selectMode(mode.id) }
-                    )
+            let gate = availability(.modeList)
+            VStack(alignment: .leading, spacing: 6) {
+                OptionSection(title: Text("Mode")) {
+                    ForEach(Array(modes.availableModes.enumerated()), id: \.element.id) { index, mode in
+                        if index > 0 { rowSeparator }
+                        OptionRow(
+                            title: mode.name,
+                            subtitle: mode.description,
+                            isSelected: options.selectedModeId == mode.id,
+                            isApplying: options.applying.contains(AgentOptionsModel.modeKey)
+                                && options.selectedModeId == mode.id,
+                            disabled: !gate.enabled,
+                            action: { options.selectMode(mode.id) }
+                        )
+                    }
                 }
+                if let note = gate.hint { sectionHint(note) }
             }
         }
 
@@ -434,6 +458,15 @@ private struct AgentOptionsSheet: View {
     /// duplicate rows when both were rendered).
     @ViewBuilder
     private func configSection(_ option: SessionConfigOption) -> some View {
+        let gate = availability(.config(option))
+        VStack(alignment: .leading, spacing: 6) {
+            configRows(option, enabled: gate.enabled)
+            if let note = gate.hint { sectionHint(note) }
+        }
+    }
+
+    @ViewBuilder
+    private func configRows(_ option: SessionConfigOption, enabled: Bool) -> some View {
         let groups = option.kind.selectGroups ?? []
         let flat = option.kind.selectOptions ?? []
         if !groups.isEmpty {
@@ -443,7 +476,7 @@ private struct AgentOptionsSheet: View {
                     groupHeader(group.name)
                     ForEach(Array(group.options.enumerated()), id: \.element.id) { index, choice in
                         if index > 0 { rowSeparator }
-                        optionRow(option: option, choice: choice)
+                        optionRow(option: option, choice: choice, enabled: enabled)
                     }
                 }
             }
@@ -451,19 +484,19 @@ private struct AgentOptionsSheet: View {
             OptionSection(title: Text(verbatim: option.name)) {
                 ForEach(Array(flat.enumerated()), id: \.element.id) { index, choice in
                     if index > 0 { rowSeparator }
-                    optionRow(option: option, choice: choice)
+                    optionRow(option: option, choice: choice, enabled: enabled)
                 }
             }
         }
     }
 
-    private func optionRow(option: SessionConfigOption, choice: SessionConfigSelectOption) -> some View {
+    private func optionRow(option: SessionConfigOption, choice: SessionConfigSelectOption, enabled: Bool) -> some View {
         OptionRow(
             title: choice.name,
             subtitle: choice.description,
             isSelected: options.selectedConfig[option.id] == choice.value,
             isApplying: options.applying.contains(option.id) && options.selectedConfig[option.id] == choice.value,
-            disabled: isBusy || options.applying.contains(option.id),
+            disabled: !enabled,
             action: { options.selectConfig(optionId: option.id, valueId: choice.value) }
         )
     }

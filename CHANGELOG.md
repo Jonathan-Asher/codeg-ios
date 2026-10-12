@@ -93,6 +93,17 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Changed
 
+- The mode and every agent option can be changed while the agent works
+  (1.3.7), as on the desktop: switch from Plan or Manual to Bypass
+  permissions mid-turn, also while a permission card waits, or change the
+  model or effort. The pick applies to the running turn at once; a change
+  the server or the agent refuses goes back to what the session is on, with
+  a message saying why. Only the branch stays locked while the agent
+  responds. A permission card raised before the switch still needs an
+  answer (the desktop does the same) and says so.
+- The options sheet follows the session live (1.3.7): when the agent leaves
+  plan mode after an approved plan, or the mode or model is changed on the
+  desktop, the phone shows it at once.
 - Long sessions open with their latest 120 turns (1.3.6), and earlier ones load
   as you scroll up, instead of downloading the whole transcript each time:
   8.7 MB became 1.0 MB for a 1,700-turn session with pictures. Refreshes after
@@ -141,6 +152,10 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- A mode or option change that failed during a turn (from the phone or the
+  desktop) ended the reply on the phone as an error (1.3.7). Such errors
+  (`set_mode_failed`, `set_config_option_failed` and the other per-action
+  ones) are now a notice and the turn goes on, as on the web client.
 - Turning a Plus or Pro Max iPhone to landscape left the open session, closed
   and reopened its connection, and switched the app to the iPad's three-column
   layout (1.3.6). The iPhone now keeps its tabs in every orientation, and the

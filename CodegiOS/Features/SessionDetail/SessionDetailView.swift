@@ -99,6 +99,7 @@ struct SessionDetailView: View {
                     agentType: model.agentTypeForUI,
                     workingDir: model.folder?.path,
                     isBusy: model.isInFlight,
+                    cardWaiting: model.pendingPermission != nil || model.pendingPlanApproval != nil,
                     options: model.agentOptions,
                     newSession: model.isDraftEditable ? NewSessionAgentConfig(
                         availableAgents: model.availableAgents,
@@ -345,7 +346,7 @@ struct SessionDetailView: View {
                 // aren't offset mid-animation. `.id` resets per-card state when a
                 // fresh request replaces a showing one.
                 if let pending = model.pendingPermission {
-                    PermissionRequestCard(pending: pending) { optionId in
+                    PermissionRequestCard(pending: pending, modeNote: model.permissionModeNote) { optionId in
                         await model.respondPermission(optionId: optionId)
                     }
                     .id(pending.requestId)
