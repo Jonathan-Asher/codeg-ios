@@ -295,6 +295,48 @@ live updates), `AgentOptionsButton.swift`, the event mapping of
   within 100 ms, the card stayed pending, and after it was answered the turn
   ran its next command without asking and completed.
 
+### Right-to-left messages (1.3.9)
+
+`Features/SessionDetail/Rendering/TextDirection.swift`, `MarkdownContent.swift`,
+`MarkdownText.swift` and the question, permission and plan cards.
+
+- **The rule** is codeg web's `src/lib/text-direction.ts`, ported as
+  `TextDirection.detect`. Code (fenced and inline), `file:` and `codeg:`
+  links, other links' targets (not their labels), URLs, e-mail addresses,
+  `@handles`, `$skills` and tokens with a `/` or `\` (unless they hold a
+  Hebrew or Arabic letter, `ו/או`) are dropped; then quoted spans, unless
+  nothing else is left. A quote opens after a space, a bracket or a dash and
+  closes before a space or punctuation, so gershayim, geresh and English
+  apostrophes stay. Then words are counted: a word is a letter followed by
+  letters, combining marks, joiners and apostrophes between letters, and it
+  is right to left when its first letter is in U+0590–U+08FF,
+  U+FB1D–U+FDFF, U+FE70–U+FEFF, U+10800–U+10FFF or U+1E800–U+1EFFF. No
+  words: no direction (the block inherits). Only one kind: that one. A first
+  word right to left, or at least 40% of the words: right to left.
+- **Blocks.** `MarkdownContent.parseBlocks` decides each block's direction
+  from its Markdown source and caches it with the block: paragraphs,
+  headings, quotes, a list (from all its items) and each item, a table (from
+  all its cells) and each cell. A block is laid out with
+  `.environment(\.layoutDirection, …)` (`blockDirection`), so `.leading`
+  alignment, a list row's marker and the quote bar go to the right, and
+  SwiftUI resolves the text's bidi runs against a right-to-left base
+  direction. A list row follows its item's direction, or the list's when the
+  item has no letters. `CodeBlockView` is always left to right.
+- **Your messages** are plain text with inline Markdown, so
+  `TextDirection.lineRuns` splits them into runs of lines that share a
+  direction; a line without letters stays with the run before it, and blank
+  lines between two runs go with the second. An English message is one run
+  and renders as before. Streaming reasoning (verbatim text) takes one
+  direction for the whole text.
+- **Cards.** The question and each option's label and description of a
+  question card, the Other answer field, plan checklist entries, task and
+  to-do entries, and a permission card's allowed-action prompts and web
+  query or prompt get their own direction. Icons, chips and buttons stay
+  where they are.
+- **Cost.** A pattern runs only when the text holds a character it needs,
+  and the e-mail and path patterns start only at a token's start, so a long
+  streaming reply is re-checked in a few milliseconds per update.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one

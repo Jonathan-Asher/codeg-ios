@@ -1,18 +1,49 @@
 import SwiftUI
 
+/// Inline Markdown, parsed, with the direction its own source text reads in
+/// (`TextDirection.detect`): `nil` when it has no letters (a number, a code
+/// span), so it inherits its block's.
+struct MarkdownInline {
+    let text: AttributedString
+    let direction: LayoutDirection?
+}
+
 /// A parsed block of Markdown. Inline spans (bold, italic, code, links) are
 /// pre-parsed into `AttributedString` at parse time so the whole block list can
 /// be cached per source string — the recycling `List` then re-displays a turn
 /// for free. Fenced code keeps its raw text (rendered by `CodeBlockView`).
+///
+/// Each block also carries the direction of its own text, decided at parse
+/// time from the Markdown source, so a Hebrew paragraph under an English one
+/// lays out right to left on its own.
 enum MarkdownBlock {
-    case paragraph(AttributedString)
-    case heading(level: Int, AttributedString)
-    case bulletList([AttributedString])
-    case numberedList([(marker: String, content: AttributedString)])
-    case quote([AttributedString])
+    case paragraph(MarkdownInline)
+    case heading(level: Int, MarkdownInline)
+    /// `direction` is the whole list's, from all its items' text.
+    case bulletList([MarkdownInline], direction: LayoutDirection?)
+    case numberedList([(marker: String, content: MarkdownInline)], direction: LayoutDirection?)
+    case quote(MarkdownInline)
     case code(language: String?, code: String)
     case rule
-    case table(header: [AttributedString], rows: [[AttributedString]])
+    /// `direction` is the whole table's, from all its cells' text.
+    case table(header: [MarkdownInline], rows: [[MarkdownInline]], direction: LayoutDirection?)
+
+    /// The direction the block lays out in. A list's or a table's sets the
+    /// side its markers sit on and the order of its columns; an item or a cell
+    /// with letters of its own then follows its own text. Code is always left
+    /// to right; a rule has no direction.
+    var direction: LayoutDirection? {
+        switch self {
+        case .paragraph(let inline), .heading(_, let inline), .quote(let inline):
+            return inline.direction
+        case .bulletList(_, let direction), .numberedList(_, let direction), .table(_, _, let direction):
+            return direction
+        case .code:
+            return .leftToRight
+        case .rule:
+            return nil
+        }
+    }
 }
 
 /// Block-level Markdown for finalized assistant text. Unlike `MarkdownText`
@@ -46,6 +77,7 @@ struct MarkdownContent: View {
                 // Streaming "typing" caret rides the trailing paragraph only —
                 // a code/list/table tail is self-evidently in progress already.
                 view(for: block, caret: streaming && idx == lastIndex && Self.isParagraph(block))
+                    .blockDirection(block.direction)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -59,60 +91,63 @@ struct MarkdownContent: View {
     @ViewBuilder
     private func view(for block: MarkdownBlock, caret: Bool = false) -> some View {
         switch block {
+        // Every block is laid out in its own direction (applied in `body`), so
+        // `.leading` here is the right edge of a right-to-left block.
         case .paragraph(let a):
             if caret {
-                CaretParagraph(base: a)
+                CaretParagraph(base: a.text)
             } else {
-                Text(a)
+                Text(a.text)
                     .font(Theme.Typography.messageBody)
                     .lineSpacing(Theme.Typography.messageLineSpacing)
                     .foregroundStyle(Theme.textPrimary)
                     .textSelection(.enabled)
                     .tint(Theme.accent)
+                    .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
         case .heading(let level, let a):
-            Text(a)
+            Text(a.text)
                 .font(Theme.Typography.heading(level))
                 .lineSpacing(Theme.Typography.headingLineSpacing)
                 .fontWeight(Theme.Typography.headingWeight(level))
                 .foregroundStyle(Theme.textPrimary)
                 .textSelection(.enabled)
+                .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 2)
 
-        case .bulletList(let items):
+        case .bulletList(let items, _):
             VStack(alignment: .leading, spacing: Theme.Typography.listItemSpacing) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     listRow(marker: "•", content: item)
                 }
             }
 
-        case .numberedList(let items):
+        case .numberedList(let items, _):
             VStack(alignment: .leading, spacing: Theme.Typography.listItemSpacing) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     listRow(marker: item.marker, content: item.content)
                 }
             }
 
-        case .quote(let items):
+        case .quote(let item):
+            // The bar sits on the quote's leading side: the right of a
+            // right-to-left quote.
             HStack(alignment: .top, spacing: 8) {
                 RoundedRectangle(cornerRadius: 1).fill(Theme.accent.opacity(0.5)).frame(width: 3)
-                VStack(alignment: .leading, spacing: Theme.Typography.listItemSpacing) {
-                    ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                        Text(item)
-                            .font(Theme.Typography.quote)
-                            .lineSpacing(Theme.Typography.quoteLineSpacing)
-                            .foregroundStyle(Theme.textSecondary)
-                            .italic()
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
+                Text(item.text)
+                    .font(Theme.Typography.quote)
+                    .lineSpacing(Theme.Typography.quoteLineSpacing)
+                    .foregroundStyle(Theme.textSecondary)
+                    .italic()
+                    .textSelection(.enabled)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
         case .code(let lang, let code):
@@ -121,29 +156,34 @@ struct MarkdownContent: View {
         case .rule:
             Rectangle().fill(Theme.hairline).frame(height: 0.5).padding(.vertical, 2)
 
-        case .table(let header, let rows):
+        case .table(let header, let rows, _):
             MarkdownTable(header: header, rows: rows)
         }
     }
 
-    private func listRow(marker: String, content: AttributedString) -> some View {
+    /// One list item. The row (marker and text) follows the item's own
+    /// direction, or the list's when the item has no letters, so the marker
+    /// sits on the side the item's text starts from.
+    private func listRow(marker: String, content: MarkdownInline) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Text(marker)
                 .font(Theme.Typography.messageBody)
                 .foregroundStyle(Theme.textTertiary)
-                // Marker hugs the block's left edge (no leading indent) so lists
-                // line up with paragraphs/headings; the small min-width keeps
-                // multi-line item text aligned past the marker.
+                // Marker hugs the block's leading edge (no leading indent) so
+                // lists line up with paragraphs/headings; the small min-width
+                // keeps multi-line item text aligned past the marker.
                 .frame(minWidth: 14, alignment: .leading)
-            Text(content)
+            Text(content.text)
                 .font(Theme.Typography.messageBody)
                 .lineSpacing(Theme.Typography.messageLineSpacing)
                 .foregroundStyle(Theme.textPrimary)
                 .textSelection(.enabled)
                 .tint(Theme.accent)
+                .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .blockDirection(content.direction)
     }
 }
 
@@ -191,9 +231,12 @@ private struct CaretParagraph: View {
 
 /// A minimal GFM table: fixed-width columns in a horizontally scrollable grid.
 /// Not a full layout engine — just enough that a table reads as a table.
+///
+/// Its columns run in the table's direction; each cell's text aligns by its
+/// own.
 private struct MarkdownTable: View {
-    let header: [AttributedString]
-    let rows: [[AttributedString]]
+    let header: [MarkdownInline]
+    let rows: [[MarkdownInline]]
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -212,14 +255,16 @@ private struct MarkdownTable: View {
         }
     }
 
-    private func row(_ cells: [AttributedString], isHeader: Bool) -> some View {
+    private func row(_ cells: [MarkdownInline], isHeader: Bool) -> some View {
         HStack(alignment: .top, spacing: 0) {
             ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
-                Text(cell)
+                Text(cell.text)
                     .font(.caption)
                     .fontWeight(isHeader ? .semibold : .regular)
                     .foregroundStyle(isHeader ? Theme.textPrimary : Theme.textSecondary)
+                    .multilineTextAlignment(.leading)
                     .frame(width: 130, alignment: .leading)
+                    .blockDirection(cell.direction)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
             }
@@ -253,7 +298,9 @@ extension MarkdownContent {
         let lines = raw.components(separatedBy: "\n")
         var blocks: [MarkdownBlock] = []
         var i = 0
-        func inline(_ s: String) -> AttributedString { MarkdownText.attributed(from: s) }
+        func inline(_ s: String) -> MarkdownInline {
+            MarkdownInline(text: MarkdownText.attributed(from: s), direction: TextDirection.detect(s))
+        }
 
         while i < lines.count {
             let line = lines[i]
@@ -292,7 +339,7 @@ extension MarkdownContent {
                     quoted.append(String(t.dropFirst()).trimmingCharacters(in: .whitespaces))
                     i += 1
                 }
-                blocks.append(.quote([inline(quoted.joined(separator: "\n"))]))
+                blocks.append(.quote(inline(quoted.joined(separator: "\n"))))
                 continue
             }
 
@@ -305,7 +352,9 @@ extension MarkdownContent {
                       !lines[i].trimmingCharacters(in: .whitespaces).isEmpty {
                     rows.append(tableCells(lines[i])); i += 1
                 }
-                blocks.append(.table(header: header.map(inline), rows: rows.map { $0.map(inline) }))
+                blocks.append(.table(
+                    header: header.map(inline), rows: rows.map { $0.map(inline) },
+                    direction: TextDirection.detect((header + rows.joined()).joined(separator: "\n"))))
                 continue
             }
 
@@ -317,19 +366,22 @@ extension MarkdownContent {
                     guard let c = bulletContent(t) else { break }
                     items.append(c); i += 1
                 }
-                blocks.append(.bulletList(items.map(inline)))
+                blocks.append(.bulletList(
+                    items.map(inline), direction: TextDirection.detect(items.joined(separator: "\n"))))
                 continue
             }
 
             // Numbered list.
             if orderedContent(trimmed) != nil {
-                var items: [(marker: String, content: AttributedString)] = []
+                var items: [(marker: String, content: MarkdownInline)] = []
+                var sources: [String] = []
                 while i < lines.count {
                     let t = lines[i].trimmingCharacters(in: .whitespaces)
                     guard let (m, c) = orderedContent(t) else { break }
-                    items.append((marker: m, content: inline(c))); i += 1
+                    items.append((marker: m, content: inline(c))); sources.append(c); i += 1
                 }
-                blocks.append(.numberedList(items))
+                blocks.append(.numberedList(
+                    items, direction: TextDirection.detect(sources.joined(separator: "\n"))))
                 continue
             }
 

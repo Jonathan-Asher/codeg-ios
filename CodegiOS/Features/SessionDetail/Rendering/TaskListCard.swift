@@ -124,19 +124,25 @@ private struct TaskRow: View {
                             .font(.mono(10.5))
                             .foregroundStyle(Theme.textTertiary)
                     }
+                    // Title and description read in their own direction.
                     Text(row.title)
                         .font(.subheadline)
                         .foregroundStyle(titleColor)
                         .strikethrough(struck, color: Theme.textTertiary)
+                        .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .blockDirection(TextDirection.detect(row.title))
                 }
                 if let desc = row.description, !desc.isEmpty {
                     Text(desc)
                         .font(.caption)
                         .foregroundStyle(Theme.textTertiary)
                         .lineLimit(2)
+                        .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .blockDirection(TextDirection.detect(desc))
                 }
             }
         }

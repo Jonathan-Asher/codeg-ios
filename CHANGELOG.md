@@ -12,6 +12,17 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Hebrew and Arabic messages read right to left (1.3.9), as on the desktop.
+  Every paragraph, heading, list, list item, quote and table of a reply, and
+  every run of lines of your own message, takes the direction of its own
+  words: right-aligned, list markers and the quote bar on the right, and
+  punctuation, parentheses and English terms inside a Hebrew sentence where
+  they belong. A Hebrew sentence that opens with an English term, a path or
+  a code span stays right to left; an English sentence quoting a few Hebrew
+  words stays left to right. Code blocks, commands and JSON stay left to
+  right. The agent's questions and their options, plan and task entries,
+  and the prompts in a permission card follow their text too. English
+  messages look as before.
 - Archived folders (1.3.8), following codeg's new sidebar Archive. A folder
   archived on the desktop or from the phone (long-press a folder in the
   Folders tab: Archive Folder, Unarchive Folder, or the same for its desktop

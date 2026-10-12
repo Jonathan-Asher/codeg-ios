@@ -341,12 +341,15 @@ private struct TodoInputBody: View {
                     Image(systemName: todoIcon(status))
                         .font(.system(size: 11))
                         .foregroundStyle(todoTint(status))
-                    Text((todo["content"] as? String) ?? (todo["title"] as? String) ?? "")
+                    let text = (todo["content"] as? String) ?? (todo["title"] as? String) ?? ""
+                    Text(text)
                         .font(.caption)
                         .foregroundStyle(status == "completed" ? Theme.textTertiary : Theme.textSecondary)
                         .strikethrough(status == "completed")
+                        .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .blockDirection(TextDirection.detect(text))
                 }
             }
         }

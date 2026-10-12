@@ -152,7 +152,10 @@ struct PermissionRequestCard: View {
                                 Text(verbatim: item.prompt)
                                     .font(.subheadline)
                                     .foregroundStyle(Theme.textPrimary)
+                                    .multilineTextAlignment(.leading)
                                     .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .blockDirection(TextDirection.detect(item.prompt))
                             }
                         }
                     }
@@ -171,12 +174,20 @@ struct PermissionRequestCard: View {
                         if let url = parsed.url {
                             Text(verbatim: url).font(.caption.monospaced()).foregroundStyle(Theme.textPrimary)
                         }
+                        // A search query and a fetch prompt are prose in the
+                        // user's language; the URL stays left to right.
                         if let query = parsed.query {
                             Text(verbatim: query).font(.subheadline).foregroundStyle(Theme.textPrimary)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .blockDirection(TextDirection.detect(query))
                         }
                         if let prompt = parsed.prompt {
                             Text(verbatim: prompt).font(.subheadline).foregroundStyle(Theme.textSecondary)
+                                .multilineTextAlignment(.leading)
                                 .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .blockDirection(TextDirection.detect(prompt))
                         }
                     }
                 }

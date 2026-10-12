@@ -56,12 +56,15 @@ private struct PlanChecklistRow: View {
             PlanStatusIcon(status: item.status, isStreaming: isStreaming)
                 .frame(width: 16, height: 16)
                 .padding(.top, 1.5)
+            // The entry reads in its own direction; the marker stays put.
             Text(item.content)
                 .font(.subheadline)
                 .foregroundStyle(item.status == .completed ? Theme.textTertiary : Theme.textPrimary)
                 .strikethrough(item.status == .completed, color: Theme.textTertiary)
+                .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .blockDirection(TextDirection.detect(item.content))
             if item.priority == .high {
                 Text("High")
                     .font(.caption2.weight(.semibold))

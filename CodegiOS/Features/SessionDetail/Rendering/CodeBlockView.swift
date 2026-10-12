@@ -82,6 +82,9 @@ struct CodeBlockView: View {
         }
         .background(Self.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
         .hairlineBorder(Theme.Radius.sm)
+        // Code reads left to right in every language, also inside a
+        // right-to-left reply.
+        .environment(\.layoutDirection, .leftToRight)
     }
 
     private var header: some View {

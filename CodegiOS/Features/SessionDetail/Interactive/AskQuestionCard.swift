@@ -170,10 +170,15 @@ struct AskQuestionCard: View {
                 Spacer(minLength: 0)
             }
 
+            // The agent's own words read in their own direction; the card's
+            // chrome (indicators, chips, buttons) stays where it is.
             Text(verbatim: question.question)
                 .font(.subheadline)
                 .foregroundStyle(Theme.textPrimary)
+                .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .blockDirection(TextDirection.detect(question.question))
 
             VStack(spacing: 6) {
                 ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
@@ -199,6 +204,7 @@ struct AskQuestionCard: View {
                         Text(verbatim: parts.text)
                             .font(.subheadline)
                             .foregroundStyle(Theme.textPrimary)
+                            .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
                         if parts.recommended {
                             Text("Recommended")
@@ -208,13 +214,22 @@ struct AskQuestionCard: View {
                                 .background(Theme.accent.opacity(0.14), in: Capsule())
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .blockDirection(TextDirection.detect(parts.text))
                     if !description.isEmpty {
                         Text(verbatim: description)
                             .font(.caption)
                             .foregroundStyle(Theme.textSecondary)
+                            .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .blockDirection(TextDirection.detect(description))
                     }
                 }
+                // The text column takes the row's width (so right-to-left text
+                // can sit at its right edge) and leaves the spacer nothing, as
+                // the spacer left it before.
+                .layoutPriority(1)
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -257,6 +272,7 @@ struct AskQuestionCard: View {
                 TextField("Type your answer…", text: otherBinding(question.id), axis: .vertical)
                     .font(.subheadline)
                     .lineLimit(1...3)
+                    .blockDirection(TextDirection.detect(otherText[question.id] ?? ""))
                     .padding(8)
                     .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
                     .hairlineBorder(Theme.Radius.sm)
