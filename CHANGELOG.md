@@ -12,6 +12,15 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Sessions with background work show as running (1.3.10). A session whose
+  turn has ended while its sub-agents, background shells or monitors keep
+  going now sits in Activity's "Running" section and counts in the Folders
+  badges, and its row reads "Background · 2" instead of nothing. When that
+  work wakes the agent and it runs a turn of its own, the row says "Working"
+  until the agent is done; a turn held open only for background work reads
+  as background rather than "Working". It follows codeg's new live
+  background status on the session list. Against a codeg server without it
+  the app behaves exactly as 1.3.9.
 - Hebrew and Arabic messages read right to left (1.3.9), as on the desktop.
   Every paragraph, heading, list, list item, quote and table of a reply, and
   every run of lines of your own message, takes the direction of its own

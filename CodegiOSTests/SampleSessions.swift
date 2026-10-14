@@ -101,8 +101,8 @@ enum SampleSessions {
     static func activitySplit(_ all: [ConversationSummary], now: Date = Date())
         -> (running: [ConversationSummary], recent: [ConversationSummary]) {
         let cutoff = now.addingTimeInterval(-24 * 3600)
-        let running = all.filter { $0.status.isLive }.sorted { $0.updatedAt > $1.updatedAt }
-        let recent = all.filter { !$0.status.isLive && $0.updatedAt >= cutoff }
+        let running = all.filter { $0.isRunningForLists }.sorted { $0.updatedAt > $1.updatedAt }
+        let recent = all.filter { !$0.isRunningForLists && $0.updatedAt >= cutoff }
             .sorted { $0.updatedAt > $1.updatedAt }
         return (running, recent)
     }

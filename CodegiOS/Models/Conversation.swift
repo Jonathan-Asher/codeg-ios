@@ -221,11 +221,16 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
     /// mangle config ids like `reasoning_effort`, so this is filled from the raw
     /// JSON afterwards (`ConversationSelectorState.patch`), never here.
     var selectorState: ConversationSelectorState? = nil
+    /// What the session is doing in the background, from its live connection
+    /// as of the list fetch (see ``ConversationBackground``). Nil when nothing,
+    /// and always from a server that predates the field.
+    var background: ConversationBackground? = nil
 
     private enum CodingKeys: String, CodingKey {
         case id, folderId, title, agentType, status, model, gitBranch, externalId
         case messageCount, createdAt, updatedAt, pinnedAt
         case turnState, critical, limitPause, limitAutoContinue
+        case background
     }
 
     init(from decoder: Decoder) throws {
@@ -249,6 +254,7 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         critical = (try? c.decodeIfPresent(Bool.self, forKey: .critical)) ?? false
         limitPause = (try? c.decodeIfPresent(LimitPause.self, forKey: .limitPause)) ?? nil
         limitAutoContinue = (try? c.decodeIfPresent(Bool.self, forKey: .limitAutoContinue)) ?? true
+        background = (try? c.decodeIfPresent(ConversationBackground.self, forKey: .background)) ?? nil
     }
 
     func encode(to encoder: Encoder) throws {
@@ -274,6 +280,7 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         try c.encode(critical, forKey: .critical)
         try c.encodeIfPresent(limitPause, forKey: .limitPause)
         try c.encode(limitAutoContinue, forKey: .limitAutoContinue)
+        try c.encodeIfPresent(background, forKey: .background)
     }
 
     /// Non-empty, trimmed user-provided title, or `nil` for an unnamed session.

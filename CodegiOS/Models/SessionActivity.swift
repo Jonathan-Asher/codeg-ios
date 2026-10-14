@@ -8,12 +8,15 @@ import Foundation
 /// cancelled) and cannot say whether a session is working, waiting for you,
 /// idle for days, or cut off mid-turn. This can.
 enum SessionActivity: Equatable, Sendable {
-    /// A turn is in flight.
+    /// A turn is in flight: one codeg sent, or one the agent runs by itself
+    /// after its background work woke it (known from the server's
+    /// `background.out_of_turn`; `turn_state` never shows it).
     case working
-    /// A turn is in flight only because background work holds it open: the
-    /// agent itself answered and is idle, and a message runs right away.
-    /// Known only with this client's own live connection. `count` 0 means
-    /// "running, count unknown".
+    /// The agent is idle while its background work runs: a turn held open
+    /// only for background tasks (a message runs right away), or tasks still
+    /// running after the turn ended. Known from this client's own live
+    /// connection, or for any session from the server's `background`.
+    /// `count` 0 means "running, count unknown".
     case background(count: Int)
     /// Blocked on a permission, a question or a plan approval.
     case needsYou
@@ -57,6 +60,10 @@ struct SessionActivityInputs: Sendable {
     var backgroundCount: Int = 0
     /// The summary's usage-limit pause.
     var limitPause: LimitPause? = nil
+    /// The server's live background status (`background`): tasks running,
+    /// the agent working out of turn, a turn held open. Nil when nothing and
+    /// against an older server, which then reads exactly as before.
+    var background: ConversationBackground? = nil
 
     enum ConnectAttempt: Equatable, Sendable {
         case connecting(phase: String?)
@@ -80,17 +87,28 @@ extension SessionActivity {
         case .connecting(let phase): return .connecting(phase: phase)
         case nil: break
         }
+        // The agent runs a turn of its own (its background work woke it): no
+        // turn codeg sent is in flight, so only the server's status knows.
+        if i.background?.outOfTurn == true { return .working }
         // A live connection sitting idle is first-hand proof that no turn runs.
         let liveAndIdle = i.connectionStatus == .connected
+        let tasks = max(0, i.background?.taskCount ?? 0)
+        // The turn is held open only for background work, by the server's word.
+        if i.background?.heldOpen == true, !liveAndIdle { return .background(count: tasks) }
         if i.turnState != .running, let pause = i.limitPause, pause.isWaiting {
             return .limitPaused(pause)
         }
         if i.turnState == .interrupted { return .interrupted }
-        if i.turnState == .running { return liveAndIdle ? .idle : .working }
+        if i.turnState == .running {
+            if !liveAndIdle { return .working }
+            return tasks > 0 ? .background(count: tasks) : .idle
+        }
         if !i.turnStateReported, i.status == .inProgress, !liveAndIdle {
             // Server predates `turn_state`: fall back to what the list always read.
             return .working
         }
+        // The turn ended; the work it started didn't.
+        if tasks > 0 { return .background(count: tasks) }
         return .idle
     }
 
@@ -101,7 +119,8 @@ extension SessionActivity {
             turnState: summary.turnState,
             turnStateReported: summary.turnStateReported,
             status: summary.status,
-            limitPause: summary.limitPause
+            limitPause: summary.limitPause,
+            background: summary.background
         ))
     }
 }

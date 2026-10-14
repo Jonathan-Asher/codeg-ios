@@ -127,6 +127,18 @@ remains.
   (`list_conversation_attention`, refreshed with the session list), and, on
   the open session, its own live connection (`awaiting_background`,
   `background_outstanding`). Session rows and the session title show it.
+- **Background work in the lists (1.3.10).** The summary's `background`
+  (`Models/ConversationBackground.swift`): `task_count`, `tasks` (`id`,
+  `kind`, `label`), `out_of_turn`, `held_open`, from the server's live
+  connection as of the list read; absent when there is nothing and from an
+  older server. `SessionActivity.derive` reads it as codeg's
+  `deriveSessionActivity` does: `out_of_turn` is Working, `held_open` (unless
+  this client's own connection is idle) and tasks after the turn ended are
+  `background(count:)`, attention and an interrupted turn keep their place.
+  `ConversationSummary.isRunningForLists` (an open turn, or anything in the
+  background) decides Activity's "Running" section, the Activity badge and the
+  Folders running counts. The session screen's header leaves it out: its
+  summary is refreshed by detail reads, which don't carry it.
 - **Insert into the current turn.** While a turn runs, the send button offers
   "Insert into current turn" when the attach snapshot says
   `native_steering_available`. It calls `submit_session_feedback
@@ -225,11 +237,11 @@ and the send path of `SessionDetailViewModel`.
   snapshot is retried three times (0.5, 1, 2 s), so the screen doesn't stay
   unattached.
 
-What the app can't fix: the session list only has `turn_state`, which stays
-`running` while a turn is held open for background work (the open session
-shows "Idle — background work running" from its live connection), and is
-null while the agent works out of turn. See the codeg server for the live
-status the list would need.
+`turn_state` alone stays `running` while a turn is held open for background
+work and is null while the agent works out of turn; since 1.3.10 the list
+reads the server's live `background` status for both (see "Background work
+in the lists" above). Against an older server the list still has only
+`turn_state`.
 
 ### Mode and options during a turn (1.3.7)
 

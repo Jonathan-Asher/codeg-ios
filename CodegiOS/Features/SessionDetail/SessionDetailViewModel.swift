@@ -2517,6 +2517,9 @@ final class SessionDetailViewModel {
             turnStateReported: summary?.turnStateReported ?? true,
             status: summary?.status,
             limitPause: summary?.limitPause
+            // `summary.background` is deliberately left out: this screen's
+            // summary is refreshed by detail reads, which don't carry it, so
+            // it would linger from whichever list read last set it.
         )
         if inputs.attention == nil, !isInFlight, let id = conversationID {
             inputs.attention = AttentionStore.shared.kind(for: id)

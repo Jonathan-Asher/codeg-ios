@@ -46,9 +46,12 @@ final class ActivityModel {
 
     // MARK: - Derived
 
-    /// Sessions currently running, most recently updated first.
+    /// Sessions currently running, most recently updated first: an open
+    /// turn, or work in the background (tasks running after the turn ended,
+    /// the agent running a turn of its own, a turn held open) — see
+    /// ``ConversationSummary/isRunningForLists``.
     var running: [ConversationSummary] {
-        conversations.filter { $0.status.isLive }
+        conversations.filter { $0.isRunningForLists }
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
@@ -59,7 +62,7 @@ final class ActivityModel {
         let cutoff = Self.recentCutoff()
         let archived = archivedFolderIDs
         return conversations.filter {
-            !$0.status.isLive && $0.updatedAt >= cutoff && !archived.contains($0.folderId)
+            !$0.isRunningForLists && $0.updatedAt >= cutoff && !archived.contains($0.folderId)
         }
         .sorted { $0.updatedAt > $1.updatedAt }
     }
@@ -71,7 +74,7 @@ final class ActivityModel {
         let cutoff = Self.recentCutoff()
         let archived = archivedFolderIDs
         return conversations.filter {
-            !$0.status.isLive && $0.updatedAt < cutoff && !archived.contains($0.folderId)
+            !$0.isRunningForLists && $0.updatedAt < cutoff && !archived.contains($0.folderId)
         }
         .sorted { $0.updatedAt > $1.updatedAt }
     }
@@ -144,7 +147,7 @@ final class ActivityModel {
     func runningCount(folderID: Int) -> Int {
         conversations.lazy.filter {
             FolderVisibility.mergedFolderId($0.folderId, childToParent: self.childToParent) == folderID
-                && $0.status.isLive
+                && $0.isRunningForLists
         }.count
     }
 

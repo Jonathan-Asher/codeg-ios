@@ -189,8 +189,10 @@ struct SessionRow: View {
             return .init(live: true, symbol: nil, text: "Working",
                          spoken: String(localized: "Working"), tint: Theme.accent)
         case .background(let count):
+            // Idle while background work runs (codeg's "Background · N tasks"):
+            // quieter than Working, and it says how much is still going.
             if count > 0 {
-                return .init(symbol: "hourglass", text: "\(count) background",
+                return .init(symbol: "hourglass", text: "Background · \(count)",
                              spoken: String(localized: "Idle, \(count) background tasks running"),
                              tint: Theme.textSecondary)
             }
