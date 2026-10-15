@@ -416,6 +416,19 @@ live updates), `AgentOptionsButton.swift`, the event mapping of
 - **The row's long press.** Open, Fork Session, Pin or Unpin, Copy Title,
   and the Archive item of the folder the Folders tab shows the session
   under (a worktree's repo).
+- **Checked live** against the codeg server on Jonathan's box
+  (0.32.3-fork.187, Claude, a throwaway folder). Both endpoint checks
+  answered "connection not found". With no live connection the session was
+  resumed (`connected` after 0.5 s, `fork_supported: true`) and `acp_fork` at
+  the first reply took 1.7 s: the row became `[Fork] …`, ending at that reply,
+  and a sibling row held the whole original. A tail fork kept every turn.
+  During a running turn `acp_fork` answered 409 `turn_in_progress`, and
+  `acp_fork_to_new_conversation` at the latest finished reply made a new
+  `[Fork] …` row while the turn kept running. A reply after the last saved
+  prompt is refused ("this reply is still being written…"): Claude saves the
+  running prompt only after a while, so until then the latest reply the
+  server accepts is the one before the previous prompt, and that is what
+  Fork Session forks.
 
 `CodegiOSTests/SessionForkTests.swift` covers the rules (server, agent,
 running turn, the reply being written, an unnamed reply), the bodies of both

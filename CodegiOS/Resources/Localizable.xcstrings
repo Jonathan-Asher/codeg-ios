@@ -151,16 +151,6 @@
         }
       }
     },
-    "No reply has finished yet" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "还没有已完成的回复"
-          }
-        }
-      }
-    },
     "Can’t fork yet: no reply has finished in this session" : {
       "localizations" : {
         "zh-Hans" : {

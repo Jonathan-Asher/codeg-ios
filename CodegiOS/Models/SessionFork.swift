@@ -150,20 +150,10 @@ enum SessionForkRules {
     static let reasonBetweenTurns = String(localized: "This agent can only fork between turns")
     static let reasonNotReady = String(localized: "Can’t fork from this reply just yet — try again in a moment")
     static let reasonInFlight = String(localized: "This reply is still running. Fork from an earlier reply, or from this one once it finishes")
-    static let reasonNoFinishedReply = String(localized: "No reply has finished yet")
     static let reasonServerTooOld = String(localized: "Needs a newer codeg server")
 
     static func reasonAgentCannotFork(_ agent: AgentType) -> String {
         String(localized: "\(agent.displayName) can’t fork sessions")
-    }
-
-    /// The fork point of the reply that ends at `turns[index]`: the LAST turn
-    /// of the run of assistant turns `index` belongs to (a reply codeg persists
-    /// as several turns forks "up to and including" its last one).
-    static func replyEnd(in turns: [MessageTurn], from index: Int) -> Int {
-        var end = index
-        while end + 1 < turns.count, turns[end + 1].role == .assistant { end += 1 }
-        return end
     }
 
     /// The last turn of the latest reply that finished before a running turn's
