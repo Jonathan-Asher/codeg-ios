@@ -29,6 +29,8 @@ struct SessionDetailView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    /// Forking (and where a fork opens); absent in previews.
+    @Environment(SessionActions.self) private var actions: SessionActions?
     /// Set on any `.background` frame, consumed on the next `.active` — see the
     /// `onChange(of: scenePhase)` below for why this beats comparing adjacent phases.
     @State private var wasBackgrounded = false
@@ -132,10 +134,12 @@ struct SessionDetailView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     SessionActionsMenu(
                         model: model,
+                        fork: sessionForkAvailability,
                         onRename: {
                             renameText = model.summary?.title ?? ""
                             showRename = true
                         },
+                        onFork: { startFork(at: .latest) },
                         onShowDetails: { showDetails = true },
                         onDelete: { showDeleteConfirm = true }
                     )
@@ -235,6 +239,47 @@ struct SessionDetailView: View {
         .sensoryFeedback(.selection, trigger: model.userToggleTick)
     }
 
+    // MARK: - Fork
+
+    private var isForking: Bool {
+        guard let actions, let id = model.conversationID else { return false }
+        return actions.isForking(id)
+    }
+
+    /// "Fork Session" in the ⋯ menu.
+    private var sessionForkAvailability: ForkAvailability {
+        guard actions != nil else { return .hidden }
+        return model.sessionForkAvailability(forking: isForking)
+    }
+
+    /// "Fork from here" on the replies of this session.
+    private var replyForkAction: ReplyForkAction? {
+        guard let actions, model.canManageConversation else { return nil }
+        let model = self.model
+        return ReplyForkAction(
+            availability: { turnID in
+                let forking = model.conversationID.map { actions.isForking($0) } ?? false
+                return model.replyForkAvailability(turnID: turnID, forking: forking)
+            },
+            perform: { turnID in startFork(at: .reply(turnID)) },
+            explain: { reason in model.notice = reason }
+        )
+    }
+
+    /// Fork this session at `point`, on its own connection (found, or the
+    /// session resumed). The fork opens with this session under it, so Back
+    /// returns here; a failure is said in the notice line.
+    private func startFork(at point: ForkPoint) {
+        guard let actions, let target = model.forkTarget else { return }
+        let model = self.model
+        actions.start(
+            target, at: point, origin: .session(target.conversationID), client: client,
+            resolveConnection: { try await model.resolveConnectionForOptions() },
+            onConnection: { model.adoptForkConnection($0) },
+            onError: { model.notice = $0 }
+        )
+    }
+
     private func toggleCameraTalk() {
         if cameraTalk.isEnabled {
             cameraTalk.setEnabled(false)
@@ -330,6 +375,7 @@ struct SessionDetailView: View {
             .padding(.bottom, 6)
         }
         .environment(\.codegImageSource, model.imageSource)
+        .environment(\.replyFork, replyForkAction)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.snappy(duration: 0.28), value: model.pendingUserTurns)
         .animation(.snappy(duration: 0.28), value: model.liveTurn?.id)
@@ -502,11 +548,15 @@ private struct NewSessionHeaderCard: View {
 // MARK: - Actions menu
 
 /// The nav-bar "…" menu of per-conversation actions, mirroring codeg web's
-/// per-conversation context menu: rename, pin, details, status, delete. Presented
-/// just after the agent avatar once the conversation is server-linked.
+/// per-conversation context menu: rename, pin, fork, details, status, delete.
+/// Presented just after the agent avatar once the conversation is
+/// server-linked.
 private struct SessionActionsMenu: View {
     let model: SessionDetailViewModel
+    /// "Fork Session": greyed out with the reason when it can't be taken now.
+    let fork: ForkAvailability
     let onRename: () -> Void
+    let onFork: () -> Void
     let onShowDetails: () -> Void
     let onDelete: () -> Void
 
@@ -521,6 +571,9 @@ private struct SessionActionsMenu: View {
                 } else {
                     Label("Pin", systemImage: "pin")
                 }
+            }
+            if fork != .hidden {
+                ForkSessionMenuItem(availability: fork, action: onFork)
             }
             Button(action: onShowDetails) {
                 Label("Session Details", systemImage: "info.circle")

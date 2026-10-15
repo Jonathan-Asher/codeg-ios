@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// One session in a list: the Chats folder cards, a folder's full list,
 /// Activity and Search. Each session is a separate tap target with a clear
@@ -27,30 +28,33 @@ struct SessionRow: View {
     /// Tap handler. When `nil`, the row is display-only (no Button, no context
     /// menu).
     var onTap: (() -> Void)? = nil
-    /// When set, a long-press context menu (and a VoiceOver action) offers
-    /// Pin/Unpin; the label follows `conversation.isPinned`.
+    /// The list's own Pin/Unpin for the long-press menu (and a VoiceOver
+    /// action); without it the app's ``SessionActions`` pins. The label
+    /// follows `conversation.isPinned`.
     var onTogglePin: (() -> Void)?
     var style: SessionRowStyle = .card
 
     @ScaledMetric(relativeTo: .headline) private var avatarSize: CGFloat = 34
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// The app's session actions (Fork Session, Pin, Archive Folder); absent
+    /// in previews and the screenshot tests.
+    @Environment(SessionActions.self) private var actions: SessionActions?
 
     var body: some View {
         if let onTap {
             Button(action: onTap) { rowContent }
                 .buttonStyle(SessionRowButtonStyle(style: style, isSelected: isSelected))
                 .contentShape(.contextMenuPreview, style.shape)
-                .contextMenu {
-                    if let onTogglePin {
-                        Button(action: onTogglePin) { pinLabel }
-                    }
-                }
+                .contextMenu { menuItems(open: onTap) }
                 .accessibilityLabel(Text(verbatim: accessibilityText))
                 .accessibilityHint(Text("Opens the session"))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
                 .accessibilityActions {
-                    if let onTogglePin {
-                        Button(action: onTogglePin) { pinLabel }
+                    if let actions, actions.forkAvailability(for: conversation).isEnabled {
+                        Button("Fork Session") { actions.fork(conversation) }
+                    }
+                    if let pin = pinAction {
+                        Button(action: pin) { pinLabel }
                     }
                 }
         } else {
@@ -60,6 +64,52 @@ struct SessionRow: View {
                 .accessibilityLabel(Text(verbatim: accessibilityText))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
+    }
+
+    /// The long-press menu: Open, Fork Session (greyed out with the reason
+    /// when it can't be taken now), Pin or Unpin, Copy Title, and the
+    /// session's folder's Archive item.
+    @ViewBuilder
+    private func menuItems(open: @escaping () -> Void) -> some View {
+        Button(action: open) {
+            Label("Open", systemImage: "arrow.up.forward.app")
+        }
+        if let actions {
+            let fork = actions.forkAvailability(for: conversation)
+            if fork != .hidden {
+                ForkSessionMenuItem(availability: fork) { actions.fork(conversation) }
+            }
+        }
+        if let pin = pinAction {
+            Button(action: pin) { pinLabel }
+        }
+        if let title = conversation.trimmedTitle {
+            Button {
+                UIPasteboard.general.string = title
+            } label: {
+                Label("Copy Title", systemImage: "doc.on.doc")
+            }
+        }
+        if let actions, let folder = actions.archiveFolder(for: conversation) {
+            let state = actions.archiveState(of: folder)
+            if state != .unsupported {
+                Divider()
+                FolderArchiveMenuItems(
+                    state: state,
+                    group: actions.group(of: folder),
+                    onSetArchived: { actions.setArchived(folder, $0) },
+                    onSetGroupArchived: { actions.setGroupArchived($0, $1) }
+                )
+            }
+        }
+    }
+
+    /// The list's own pin action, else the app's.
+    private var pinAction: (() -> Void)? {
+        if let onTogglePin { return onTogglePin }
+        guard let actions else { return nil }
+        let conversation = conversation
+        return { actions.togglePin(conversation) }
     }
 
     private var pinLabel: some View {

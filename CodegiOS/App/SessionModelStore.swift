@@ -97,6 +97,20 @@ final class SessionModelStore {
         entries.first { $0.key.target == .conversation(conversationID) }?.value.model
     }
 
+    /// A fork moved `conversationID` to the forked session in place (its
+    /// history now ends where the fork was taken): reload a kept model, so no
+    /// screen shows the original's history under the fork's id, and forget a
+    /// cached transcript of it.
+    func reloadAfterInPlaceFork(server: ServerProfile, client: CodegClient, conversationID: Int,
+                                connectionID: String?) async {
+        let key = key(server: server, client: client, target: .conversation(conversationID))
+        if let model = entries[key]?.model {
+            await model.reloadAfterInPlaceFork(connectionID: connectionID)
+        } else if let cache = transcriptCache {
+            await cache.remove(serverKey: key.endpoint, conversationID: conversationID)
+        }
+    }
+
     /// Conversations a screen shows right now.
     var heldConversationIDs: Set<Int> {
         Set(entries.compactMap { key, entry in

@@ -57,6 +57,8 @@ struct RootView: View {
         // live SessionDetail streams.
         .environment(\.codegAccent, appearance.accent)
         .environment(appearance)
+        // Forking and the session rows' long-press actions.
+        .environment(model.actions)
         // App display language: overriding `\.locale` re-resolves every
         // `LocalizedStringKey` live (no `.id(...)` teardown, so live streams
         // survive). `.system` hands back the device locale (a no-op override).
@@ -80,8 +82,32 @@ struct RootView: View {
             guard scenePhase == .active else { return }
             await model.activity.autoRefresh(client: model.selectedClient())
         }
+        // Which fork endpoints the server has, checked once per server, so a
+        // fork the server can't take is greyed out before it is tapped.
+        .task(id: "\(activityPulseID)|fork") {
+            guard scenePhase == .active, let client = model.selectedClient() else { return }
+            await model.actions.capabilities.probeIfNeeded(client: client)
+        }
         .sheet(isPresented: $model.serversSheetPresented) {
             ManageServersSheet(store: model.serverStore, selectedServerID: $model.selectedServerID)
+        }
+        // A fork taken from a list row, while it runs (resuming the session
+        // can take a few seconds) …
+        .overlay(alignment: .top) {
+            if !model.actions.forking.isEmpty {
+                ForkProgressBanner()
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.25), value: model.actions.forking.isEmpty)
+        // … and why one didn't happen (or a row's Pin or Archive).
+        .alert(model.actions.alert?.title ?? "", isPresented: Binding(
+            get: { model.actions.alert != nil },
+            set: { if !$0 { model.actions.alert = nil } }
+        ), presenting: model.actions.alert) { _ in
+            Button("OK", role: .cancel) { }
+        } message: { alert in
+            Text(verbatim: alert.message)
         }
         // A notification was tapped (also on a cold launch from it).
         .onAppear { openPendingPush() }
@@ -555,6 +581,24 @@ private struct SettingsSheet: View {
                     }
                 }
         }
+    }
+}
+
+/// "Forking session…" at the top of the screen while a fork runs.
+private struct ForkProgressBanner: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Forking session…")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Theme.textPrimary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .glassEffect(.regular, in: Capsule())
+        .padding(.top, 6)
+        .accessibilityElement(children: .combine)
     }
 }
 

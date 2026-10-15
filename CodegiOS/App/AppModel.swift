@@ -21,6 +21,10 @@ final class AppModel {
     /// Brings Activity's finished sessions into the transcript cache.
     let prefetcher: TranscriptPrefetcher
 
+    /// Forking and the session rows' long-press actions, shared through the
+    /// environment.
+    let actions: SessionActions
+
     /// The Chats list's model, shared by the list and a group pushed from it.
     @ObservationIgnored private var chatsList: (server: UUID, model: SessionListViewModel)?
 
@@ -101,6 +105,7 @@ final class AppModel {
         sessionStore.transcriptCache = transcriptCache
         self.sessions = sessionStore
         self.prefetcher = TranscriptPrefetcher(cache: transcriptCache)
+        self.actions = SessionActions()
         // Restore the last-used server, falling back to the first. With servers
         // demoted out of the tab bar there is no "pick a server" landing screen
         // anymore — the app must come up already pointed at a server.
@@ -109,6 +114,7 @@ final class AppModel {
         if let raw = defaults.string(forKey: Self.lastTabKey), let tab = AppTab(rawValue: raw) {
             self.selectedTab = tab
         }
+        actions.app = self
         let activity = self.activity
         sessionStore.summaryLookup = { id in activity.conversations.first { $0.id == id } }
         activity.onRefreshed = { [weak self] in self?.activityRefreshed() }
@@ -288,6 +294,30 @@ final class AppModel {
             if sidebarSection == nil { sidebarSection = .activity }
             open(route)
         }
+    }
+
+    /// Open a fork that just happened. From a list it opens on top of the
+    /// list, so Back returns there. From the session it was taken from, the
+    /// original goes under it (after an in-place fork that is the sibling row
+    /// now holding the original history), so Back returns to the original.
+    /// On iPad it fills the detail column.
+    func openFork(_ outcome: ForkOutcome, from origin: ForkOrigin) {
+        let fork = Route.conversation(outcome.forkConversationID)
+        lastOpenedConversationID = outcome.forkConversationID
+        guard isCompact else {
+            pendingNewSession = nil
+            selectedConversationID = outcome.forkConversationID
+            return
+        }
+        var path = paths[selectedTab] ?? []
+        if case .session(let sourceID) = origin, let index = path.lastIndex(of: .conversation(sourceID)) {
+            path.removeSubrange(index...)
+            path.append(.conversation(outcome.originalConversationID))
+            path.append(fork)
+        } else if path.last != fork {
+            path.append(fork)
+        }
+        paths[selectedTab] = path
     }
 
     // MARK: - Chats list

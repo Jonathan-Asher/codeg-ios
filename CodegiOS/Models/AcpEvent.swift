@@ -105,6 +105,9 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     /// The agent settled a `set_config_option` on another value than the one
     /// asked for (labels for the message, `actualValue` the raw id).
     case configOptionRejected(configId: String, optionName: String, requested: String, actual: String, actualValue: String)
+    /// Whether the agent can fork its session (`session/fork`), once it has
+    /// started.
+    case forkSupported(Bool)
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -117,6 +120,7 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         case phase, elapsedMs, awaiting, nativeSteering, outstanding, item, ids
         case images
         case modeId, modes, configOptions, configId, optionName, requested, actual, actualValue
+        case supported
     }
 
     init(from decoder: Decoder) throws {
@@ -259,6 +263,12 @@ enum AcpEvent: Hashable, Sendable, Decodable {
                 actual: (try? c.decodeIfPresent(String.self, forKey: .actual)) ?? "",
                 actualValue: (try? c.decodeIfPresent(String.self, forKey: .actualValue)) ?? ""
             )
+        case "fork_supported":
+            if let supported = (try? c.decodeIfPresent(Bool.self, forKey: .supported)) ?? nil {
+                self = .forkSupported(supported)
+            } else {
+                self = .unknown(type: type)
+            }
         default:
             self = .unknown(type: type)
         }
@@ -331,6 +341,9 @@ struct LiveSessionSnapshot: Sendable, Decodable {
     let modes: SessionModeState?
     let currentMode: String?
     let configOptions: [SessionConfigOption]?
+    /// The agent can fork its session (`fork_supported`, from its
+    /// `session/fork` capability). nil from a server that doesn't say.
+    let forkSupported: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case connectionId, conversationId, folderId, status, externalId, eventSeq
@@ -338,6 +351,7 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         case awaitingBackground, backgroundOutstanding, nativeSteeringAvailable
         case pendingUserMessage, feedback
         case modes, currentMode, configOptions
+        case forkSupported
     }
 
     private struct PendingUserMessageRef: Decodable {
@@ -366,6 +380,7 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         modes = (try? c.decodeIfPresent(SessionModeState.self, forKey: .modes)) ?? nil
         currentMode = (try? c.decodeIfPresent(String.self, forKey: .currentMode)) ?? nil
         configOptions = (try? c.decodeIfPresent([SessionConfigOption].self, forKey: .configOptions)) ?? nil
+        forkSupported = (try? c.decodeIfPresent(Bool.self, forKey: .forkSupported)) ?? nil
     }
 }
 

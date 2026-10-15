@@ -349,6 +349,82 @@ live updates), `AgentOptionsButton.swift`, the event mapping of
   and the e-mail and path patterns start only at a token's start, so a long
   streaming reply is re-checked in a few milliseconds per update.
 
+### Forking a session (1.3.11)
+
+`Models/SessionFork.swift` (wire shapes and `SessionForkRules`),
+`Networking/CodegClient+Fork.swift`, `Features/SessionFork/` (`ForkCapabilities`,
+`SessionForker`, `SessionActions`) and the reply footer in
+`Timeline/TimelineNodeBody.swift`.
+
+- **What codeg web offers.** "Fork from here" on the footer of every finished
+  reply, its only fork entry point: the sidebar, the conversation header and
+  the tab menus have no fork, and there is no Duplicate. It needs the tab's
+  live connection, a saved conversation and the agent's `fork_supported` (its
+  `session/fork` capability). Between turns it forks in place (`acp_fork`, a
+  plain branch): the conversation's row and connection move to the fork,
+  titled `[Fork] …`, and a new sibling row keeps the original history under
+  the original title, at Review. While a turn runs only Claude Code
+  (`forks_while_running`) forks, a finished reply, in an agent process of its
+  own into a new row (`acp_fork_to_new_conversation`) that opens in a new tab;
+  the running turn carries on. Other agents' buttons grey out with "This
+  agent can only fork between turns", and the reply being written says "This
+  reply is still running…". An in-place fork that meets a turn started under
+  it (409 `turn_in_progress`) goes the new-conversation way. Failures read
+  "Can't fork yet: this agent can only fork between turns" or "Failed to fork
+  session: <the server's message>".
+- **On the phone.** Fork in each reply's footer, beside Copy and Read, and
+  "Fork from Here" in a long press on the footer; "Fork Session" in the
+  session's ⋯ menu and in the long press on every session row (Activity, the
+  Chats cards, a folder's list, Search). Fork Session is the web's "Fork from
+  here" on the latest reply, so there is no separate Duplicate: between turns
+  it forks at the tail (no turn id), a copy of the whole session that
+  continues on its own; while a turn runs (Claude Code) it forks the latest
+  finished reply, the last assistant turn before the running prompt
+  (`in_flight_user_turn_id`, else the last user turn, which is what the
+  server's `settle_mid_run_fork_point` accepts). A reply's fork point is its
+  last turn: codeg saves one reply as several turns.
+- **A live connection.** The app keeps none for an idle session. The forker
+  finds the session's connection (`acp_find_connection_for_conversation`) or
+  resumes it (`acp_connect` with its `external_id`; the session screen uses
+  its own, as the options sheet does), polls `acp_get_session_snapshot` until
+  it is `connected` or `prompting`, takes `fork_supported` and whether a turn
+  runs from it, and then forks. `acp_fork` carries `conversationId` and
+  `folderId`, so a resumed connection that hasn't prompted yet adopts its
+  row. A connection that went away in between is resumed once more.
+- **After the fork.** From a list, the fork opens on top of the list, so
+  Back returns there. From the session, the original goes under the fork (in
+  place: the sibling row that now holds it; a new conversation: the session
+  itself), so Back returns to the original. An in-place fork reloads that
+  row's model from the end (its history shrank) and drops its cached
+  transcript, so no screen shows the original under the fork's id. The lists
+  refresh at once. On iPad the fork fills the detail column. "Forking
+  session…" shows at the top while it runs; a failure is said in the
+  session's notice line or, from a list, in an alert.
+- **When it is offered** (`SessionForkRules`). Greyed out with the reason:
+  an older server ("Needs a newer codeg server"), an agent that said it can't
+  fork (learned from every snapshot and `fork_supported` event), a running
+  turn for an agent that forks only between turns, the reply still being
+  written, a reply the server has no name for (one built on the phone) unless
+  it is the last, and a fork under way ("Forking…"). The footer's Fork dims
+  and a tap says why; a menu shows the reason under the item.
+- **Older servers.** `ForkCapabilities` asks each server once about both
+  endpoints, for a connection that can't exist (an empty id): "connection not
+  found" means the endpoint is there, 501 `not_implemented` that it isn't, a
+  network failure asks again later. Without `acp_fork` the replies have no
+  Fork, as in 1.3.10, and Fork Session is greyed out; without
+  `acp_fork_to_new_conversation` only forks between turns are offered.
+- **The row's long press.** Open, Fork Session, Pin or Unpin, Copy Title,
+  and the Archive item of the folder the Folders tab shows the session
+  under (a worktree's repo).
+
+`CodegiOSTests/SessionForkTests.swift` covers the rules (server, agent,
+running turn, the reply being written, an unnamed reply), the bodies of both
+fork calls and the endpoint check, where a fork lands and how the refusals
+read (in place, a turn that started under it, an agent that forks only
+between turns, one that can't fork, an older server), where the fork opens
+from a list, the session and on iPad, a fork from an Activity row from tap to
+open, and an in-place fork reloading the open session.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one
@@ -373,14 +449,15 @@ it was unclear which one a tap had opened.
   and "Show all" open the full list (upstream zoomed the whole card open on any
   tap). Since 1.3.6 the full list is pushed (`Route.sessionGroup`, with the
   same zoom), not presented over the tabs, so Back from a session opened in it
-  returns to it. Pin/Unpin stays on a long press.
+  returns to it. A long press offers Open, Fork Session, Pin/Unpin, Copy
+  Title and Archive Folder (1.3.11, see "Forking a session").
 - **The session you came from.** `AppModel.lastOpenedConversationID` records
   the conversation opened last, from a list, a link or a notification. On
   iPhone every list draws that row with an accent outline; on iPad the lists
   mark the session open in the detail column.
 - **Accessibility.** VoiceOver reads a row as one element: title, status,
-  agent, folder and the time in words (`RelativeTime.spoken`), with Pin/Unpin
-  as an action and the selected trait on the marked row. The avatar scales
+  agent, folder and the time in words (`RelativeTime.spoken`), with Fork
+  Session and Pin/Unpin as actions and the selected trait on the marked row. The avatar scales
   with Dynamic Type, titles get four lines at accessibility sizes, and the
   details line stacks instead of squeezing.
 

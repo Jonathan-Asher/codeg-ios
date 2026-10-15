@@ -12,6 +12,23 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Fork a session (1.3.11), as on the desktop. Every finished reply has Fork
+  beside Copy and Read (and in a long press on its footer): the session
+  continues from that reply in a session titled "[Fork] …", which opens with
+  the original under it, so Back returns to the original. Fork Session in the
+  session's ⋯ menu, and in a long press on a session in Activity, Chats, a
+  folder's list or Search, forks the whole session: a duplicate that
+  continues on its own. From a list the fork opens on top of the list. Between
+  turns it is taken as codeg web takes it: the session moves to the fork and
+  a new row keeps the original, under the original title. While a turn runs,
+  a Claude Code session forks a finished reply (Fork Session: the latest)
+  into a new session and the turn carries on; other agents fork only between
+  turns, and the
+  item is greyed out with "This agent can only fork between turns". A
+  session with no agent running is resumed for the fork. The long press on a
+  session also has Open, Pin or Unpin, Copy Title and Archive Folder. Against
+  a codeg server without forking the replies have no Fork, and Fork Session
+  is greyed out with "Needs a newer codeg server".
 - Sessions with background work show as running (1.3.10). A session whose
   turn has ended while its sub-agents, background shells or monitors keep
   going now sits in Activity's "Running" section and counts in the Folders

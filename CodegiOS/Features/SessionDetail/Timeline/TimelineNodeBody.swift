@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The content to the right of a timeline node's marker. Dispatches on the node's
 /// `Content` and reuses the existing rendering leaves verbatim — `MarkdownContent`,
@@ -51,8 +52,8 @@ struct NodeBody: View {
             ContextCompactionDivider(before: before, after: after, running: running)
         case .continuation(let variant):
             ContinuationDivider(variant: variant)
-        case .footer(let turn, let questionID):
-            TurnFooter(turn: turn, questionID: questionID)
+        case .footer(let turn, let questionID, let forkTurnID):
+            TurnFooter(turn: turn, questionID: questionID, forkTurnID: forkTurnID)
         case .plan(let entries, let streaming):
             LivePlanView(entries: entries, isStreaming: streaming)
         case .thinking:
@@ -163,6 +164,17 @@ private struct LiveReasoningNode: View {
 private struct TurnFooter: View {
     let turn: MessageTurn
     var questionID: String?
+    /// The reply's last turn, where "Fork from here" forks.
+    var forkTurnID: String?
+    @Environment(\.replyFork) private var replyFork
+
+    /// "Fork from here" for this reply, when the session screen offers it.
+    private var fork: (action: ReplyForkAction, turnID: String, availability: ForkAvailability)? {
+        guard let replyFork, let forkTurnID else { return nil }
+        let availability = replyFork.availability(forkTurnID)
+        guard availability != .hidden else { return nil }
+        return (replyFork, forkTurnID, availability)
+    }
 
     private var copyText: String {
         turn.blocks.compactMap { block -> String? in
@@ -180,10 +192,18 @@ private struct TurnFooter: View {
     }
 
     var body: some View {
+        let fork = self.fork
         HStack(spacing: 10) {
             if !copyText.isEmpty {
                 CopyButton(text: copyText, label: "Copy")
                 ReadAloudButton(id: turn.id, blocks: turn.blocks)
+            }
+            if let fork {
+                ForkReplyButton(availability: fork.availability) {
+                    fork.action.perform(fork.turnID)
+                } explain: { reason in
+                    fork.action.explain(reason)
+                }
             }
             if let questionID {
                 JumpToQuestionButton(questionID: questionID)
@@ -202,6 +222,91 @@ private struct TurnFooter: View {
                 .fixedSize()
         }
         .padding(.top, 2)
+        // A long press on the reply's footer: Copy and Fork from Here, the
+        // reason under a greyed-out fork.
+        .contentShape(Rectangle())
+        .contextMenu {
+            if !copyText.isEmpty {
+                Button {
+                    UIPasteboard.general.string = copyText
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+            }
+            if let fork {
+                Button {
+                    fork.action.perform(fork.turnID)
+                } label: {
+                    Label {
+                        Text("Fork from Here")
+                        if let reason = fork.availability.reason { Text(verbatim: reason) }
+                    } icon: {
+                        Image(systemName: "arrow.triangle.branch")
+                    }
+                }
+                .disabled(!fork.availability.isEnabled)
+            }
+        }
+    }
+}
+
+/// "Fork from here" in a reply's footer, beside Copy and Read: a new
+/// session that continues from this reply (codeg web's split icon). Greyed out
+/// when the fork can't be taken now; a tap then says why.
+private struct ForkReplyButton: View {
+    let availability: ForkAvailability
+    let perform: () -> Void
+    let explain: (String) -> Void
+
+    var body: some View {
+        Button {
+            if availability.isEnabled {
+                perform()
+            } else if let reason = availability.reason {
+                explain(reason)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                if availability == .forking {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                (availability == .forking ? Text("Forking…") : Text("Fork"))
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(Theme.textTertiary)
+            .opacity(availability.isEnabled || availability == .forking ? 1 : 0.45)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text("Fork from here"))
+        .accessibilityHint(availability.reason.map { Text(verbatim: $0) }
+            ?? Text("Opens a new session that continues from this reply"))
+    }
+}
+
+/// What a reply's "Fork from here" does on the open session. Set by the
+/// session screen; absent (no fork offered) anywhere else.
+struct ReplyForkAction {
+    /// Whether the reply ending at this turn can be forked now.
+    let availability: (String) -> ForkAvailability
+    /// Fork at this turn.
+    let perform: (String) -> Void
+    /// Say why a greyed-out fork can't be taken now.
+    let explain: (String) -> Void
+}
+
+private struct ReplyForkKey: EnvironmentKey {
+    static let defaultValue: ReplyForkAction? = nil
+}
+
+extension EnvironmentValues {
+    var replyFork: ReplyForkAction? {
+        get { self[ReplyForkKey.self] }
+        set { self[ReplyForkKey.self] = newValue }
     }
 }
 

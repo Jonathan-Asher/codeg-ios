@@ -44,7 +44,9 @@ struct TimelineNode: Identifiable {
         /// a restart, the continuation after a usage-limit reset), drawn as a
         /// slim divider instead of a message card.
         case continuation(ContinuePrompt.Variant)
-        case footer(MessageTurn, questionID: String?)
+        /// The footer under a reply. `forkTurnID` is the reply's LAST turn,
+        /// where "Fork from here" forks ("up to and including this reply").
+        case footer(MessageTurn, questionID: String?, forkTurnID: String?)
         case plan([PlanEntry], streaming: Bool)
         case thinking
         case error(String)
@@ -154,7 +156,8 @@ enum TranscriptTimeline {
                 var j = i + 1
                 while j < turns.count, turns[j].role == .assistant { j += 1 }
                 let merged = merge(Array(turns[i..<j]))
-                nodes.append(contentsOf: assistantNodes(merged: merged, questionID: lastUserID, agent: agent))
+                nodes.append(contentsOf: assistantNodes(merged: merged, questionID: lastUserID,
+                                                        forkTurnID: turns[j - 1].id, agent: agent))
                 i = j
             }
         }
@@ -217,14 +220,17 @@ enum TranscriptTimeline {
 
     // MARK: Assistant reply → nodes
 
-    private static func assistantNodes(merged: MessageTurn, questionID: String?, agent: AgentType) -> [TimelineNode] {
+    private static func assistantNodes(merged: MessageTurn, questionID: String?, forkTurnID: String?,
+                                       agent: AgentType) -> [TimelineNode] {
         var out = MessageRender.adaptTurn(merged).enumerated().map { idx, part in
             node(for: part, ownerID: merged.id, index: idx, agent: agent)
         }
         // The footer (reply time / model / tokens / copy / jump) is always emitted
         // — even when the reply has no renderable parts — so an empty or tool-only
         // turn still shows its metadata instead of vanishing.
-        out.append(TimelineNode(id: "\(merged.id)#footer", content: .footer(merged, questionID: questionID), agent: agent))
+        out.append(TimelineNode(id: "\(merged.id)#footer",
+                                content: .footer(merged, questionID: questionID, forkTurnID: forkTurnID),
+                                agent: agent))
         return out
     }
 

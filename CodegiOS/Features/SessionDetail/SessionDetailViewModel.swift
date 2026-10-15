@@ -1956,6 +1956,9 @@ final class SessionDetailViewModel {
             agentOptions.applyRejection(configId: configId, optionName: optionName, requested: requested,
                                         actual: actual, actualValue: actualValue)
 
+        case .forkSupported(let supported):
+            ForkCapabilities.shared.note(agent: agentTypeForUI, forks: supported, client: client)
+
         case .sessionStarted, .conversationStatusChanged, .userPromptSent, .unknown:
             break
         }
@@ -1984,6 +1987,7 @@ final class SessionDetailViewModel {
         agentOptions.applyLiveSnapshot(modes: snap.modes, currentMode: snap.currentMode,
                                        configOptions: snap.configOptions)
         if snap.nativeSteeringAvailable { nativeSteeringAvailable = true }
+        ForkCapabilities.shared.note(agent: agentTypeForUI, forks: snap.forkSupported, client: client)
         awaitingBackground = snap.awaitingBackground && snap.status == .prompting
         backgroundOutstanding = snap.backgroundOutstanding
         if awaitingBackground { drainIntoHeldTurnIfPossible() }
@@ -2923,6 +2927,80 @@ final class SessionDetailViewModel {
         } catch {
             notice = Self.describe(error)
             return false
+        }
+    }
+
+    // MARK: - Fork
+
+    /// The session a fork is taken from, once the conversation is server-linked.
+    var forkTarget: ForkTarget? {
+        guard let id = conversationID, let summary else { return nil }
+        return ForkTarget(conversationID: id, folderID: summary.folderId, agentType: summary.agentType,
+                          sessionID: summary.externalId, workingDir: folder?.path)
+    }
+
+    /// "Fork Session" in the ⋯ menu (see ``SessionForkRules/listAvailability``),
+    /// with this screen's own knowledge of whether a turn runs.
+    func sessionForkAvailability(forking: Bool) -> ForkAvailability {
+        guard canManageConversation else { return .hidden }
+        return SessionForkRules.listAvailability(
+            endpoints: ForkCapabilities.shared.endpoints(for: client),
+            agent: agentTypeForUI,
+            agentForks: ForkCapabilities.shared.agentForks(agentTypeForUI, client: client),
+            turnRunning: isInFlight,
+            forking: forking
+        )
+    }
+
+    /// "Fork from here" on the reply that ends at `turnID`
+    /// (see ``SessionForkRules/replyAvailability``).
+    func replyForkAvailability(turnID: String, forking: Bool) -> ForkAvailability {
+        guard canManageConversation else { return .hidden }
+        return SessionForkRules.replyAvailability(
+            turnID: turnID,
+            turns: turns,
+            pendingPrompt: !pendingUserTurns.isEmpty,
+            endpoints: ForkCapabilities.shared.endpoints(for: client),
+            agent: agentTypeForUI,
+            agentForks: ForkCapabilities.shared.agentForks(agentTypeForUI, client: client),
+            turnRunning: isInFlight,
+            forking: forking
+        )
+    }
+
+    /// The connection a fork ran on is this conversation's: the next send
+    /// reuses it, unless a send is already being handed over on another.
+    func adoptForkConnection(_ conn: String) {
+        guard !isHandingOffSend else { return }
+        connectionID = conn
+    }
+
+    /// A fork moved this conversation to the forked session in place: its
+    /// history now ends where the fork was taken, under a `[Fork] …` title, and
+    /// the original lives on in another row. Reload it from the end, letting
+    /// the transcript shrink, and forget the cached copy of the original.
+    func reloadAfterInPlaceFork(connectionID conn: String?) async {
+        guard case .existing(let id) = mode else { return }
+        cacheSaveTask?.cancel()
+        if let cache = transcriptCache { await cache.remove(serverKey: cacheServerKey, conversationID: id) }
+        if let conn { adoptForkConnection(conn) }
+        openedFromCache = false
+        do {
+            let outcome = try await TranscriptSync.fetch(client: client, id: id, held: nil, overlap: 0)
+            summary = outcome.detail.summary
+            sessionStats = outcome.detail.sessionStats ?? sessionStats
+            adoptWindow(outcome, allowShrink: true)
+            phase = .loaded
+            requestStickToBottom()
+        } catch {
+            // Never leave the original's history standing for the fork's: a
+            // suspended screen loads it afresh when it is shown again, one on
+            // screen offers to try again.
+            turns = []
+            turnsOffset = 0
+            windowPrefixHash = nil
+            windowTotal = nil
+            if !isSuspended { phase = .failed(Self.describe(error)) }
         }
     }
 

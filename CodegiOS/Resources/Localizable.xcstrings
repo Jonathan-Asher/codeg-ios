@@ -1,6 +1,256 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Fork" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分叉"
+          }
+        }
+      }
+    },
+    "Fork from Here" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从此处分叉"
+          }
+        }
+      }
+    },
+    "Fork from here" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从此处分叉"
+          }
+        }
+      }
+    },
+    "Fork Session" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分叉会话"
+          }
+        }
+      }
+    },
+    "Forking…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在分叉…"
+          }
+        }
+      }
+    },
+    "Forking session…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在分叉会话…"
+          }
+        }
+      }
+    },
+    "Open" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开"
+          }
+        }
+      }
+    },
+    "Copy Title" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制标题"
+          }
+        }
+      }
+    },
+    "Couldn’t Fork the Session" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法分叉会话"
+          }
+        }
+      }
+    },
+    "Couldn’t Change the Pin" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法更改置顶"
+          }
+        }
+      }
+    },
+    "Opens a new session that continues from this reply" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开一个从这条回复继续的新会话"
+          }
+        }
+      }
+    },
+    "This agent can only fork between turns" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此智能体只能在回合之间分叉"
+          }
+        }
+      }
+    },
+    "Can’t fork yet: this agent can only fork between turns" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时无法分叉：此智能体只能在回合之间分叉"
+          }
+        }
+      }
+    },
+    "Can’t fork from this reply just yet — try again in a moment" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这条回复暂时还不能作为分叉点，请稍后再试"
+          }
+        }
+      }
+    },
+    "This reply is still running. Fork from an earlier reply, or from this one once it finishes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这条回复仍在进行中。可从更早的回复分叉，或等它完成后再从这里分叉"
+          }
+        }
+      }
+    },
+    "No reply has finished yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有已完成的回复"
+          }
+        }
+      }
+    },
+    "Can’t fork yet: no reply has finished in this session" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时无法分叉：此会话中还没有已完成的回复"
+          }
+        }
+      }
+    },
+    "Needs a newer codeg server" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要更新的 codeg 服务器"
+          }
+        }
+      }
+    },
+    "This codeg server can’t fork sessions. Update codeg to fork from the phone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 codeg 服务器无法分叉会话。请更新 codeg 以便从手机分叉。"
+          }
+        }
+      }
+    },
+    "%@ can’t fork sessions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 无法分叉会话"
+          }
+        }
+      }
+    },
+    "%@ can’t fork sessions." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 无法分叉会话。"
+          }
+        }
+      }
+    },
+    "Failed to fork session: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话分叉失败：%@"
+          }
+        }
+      }
+    },
+    "Couldn’t connect to the agent to fork: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法连接到智能体以进行分叉：%@"
+          }
+        }
+      }
+    },
+    "the agent didn’t start" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "智能体未能启动"
+          }
+        }
+      }
+    },
+    "the agent took too long to start" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "智能体启动超时"
+          }
+        }
+      }
+    },
     "Archived" : {
       "localizations" : {
         "zh-Hans" : {
