@@ -27,6 +27,9 @@ struct TimelineNode: Identifiable {
 
     enum Content {
         case user(MessageTurn)
+        /// A message the user sent into the running turn, inside the reply
+        /// where the agent took it (native steering).
+        case insertedUser(MessageTurn)
         case system(MessageTurn)
         case assistantText(String)
         case liveText(LiveTextRun, streaming: Bool)
@@ -56,7 +59,7 @@ struct TimelineNode: Identifiable {
     /// The gutter marker for this node — drives the icon and the state tint.
     var marker: MarkerKind {
         switch content {
-        case .user: return .user
+        case .user, .insertedUser: return .user
         case .system: return .system
         case .assistantText, .liveText: return .assistant(agent)
         case .reasoning, .liveReasoning: return .reasoning
@@ -234,6 +237,10 @@ enum TranscriptTimeline {
         return out
     }
 
+    /// The live reply's nodes. A message the user sent into the turn sits
+    /// between the agent's output before it and the reply to it, as a message
+    /// of the user's, never above the message bar only. The output between two
+    /// such messages is grouped on its own, so a tool run never spans one.
     private static func liveNodes(_ live: LiveTurn, agent: AgentType) -> [TimelineNode] {
         var out: [TimelineNode] = []
         if !live.livePlan.isEmpty {
@@ -242,13 +249,47 @@ enum TranscriptTimeline {
         if live.isEmpty && live.isStreaming {
             out.append(TimelineNode(id: "\(live.id)#thinking", content: .thinking, agent: agent))
         }
-        out.append(contentsOf: MessageRender.adaptLive(live).enumerated().map { idx, part in
-            node(for: part, ownerID: live.id, index: idx, agent: agent)
-        })
+        let streamingID = live.isStreaming ? live.segments.last?.id : nil
+        var chunk: [LiveSegment] = []
+        var part = 0
+        func flush() {
+            guard !chunk.isEmpty else { return }
+            // The first part keeps the turn's own id, so the ids of what was on
+            // screen don't change when a message is sent into the turn.
+            let owner = part == 0 ? live.id : "\(live.id)~\(part)"
+            out.append(contentsOf: MessageRender.adaptLive(segments: chunk, streamingID: streamingID).enumerated().map {
+                node(for: $1, ownerID: owner, index: $0, agent: agent)
+            })
+            chunk = []
+        }
+        for segment in live.segments {
+            if case .steered(let message) = segment {
+                flush()
+                part += 1
+                out.append(steeredNode(message, agent: agent))
+            } else {
+                chunk.append(segment)
+            }
+        }
+        flush()
+        // The agent has the message and hasn't answered yet.
+        if live.isStreaming, live.endsWithSteered {
+            out.append(TimelineNode(id: "\(live.id)#thinking~\(part)", content: .thinking, agent: agent))
+        }
         if let error = live.errorMessage {
             out.append(TimelineNode(id: "\(live.id)#error", content: .error(error), agent: agent))
         }
         return out
+    }
+
+    /// A message sent into the turn: a message card marked as sent during the
+    /// turn, or the Continue divider for a bare Continue.
+    private static func steeredNode(_ message: SteeredMessage, agent: AgentType) -> TimelineNode {
+        let turn = message.turn
+        if let variant = ContinuePrompt.variant(of: turn) {
+            return TimelineNode(id: turn.id, content: .continuation(variant), agent: agent, startsGroup: true)
+        }
+        return TimelineNode(id: turn.id, content: .insertedUser(turn), agent: agent, startsGroup: true)
     }
 
     // MARK: Part → node

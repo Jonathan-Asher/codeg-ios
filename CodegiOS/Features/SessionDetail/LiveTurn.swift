@@ -77,14 +77,58 @@ enum LiveSegment: Identifiable {
     case text(LiveTextRun)
     case thinking(LiveTextRun)
     case tool(LiveToolCall)
+    /// A message the user sent into the turn, where the agent took it: it
+    /// ends what the agent said so far, and the reply to it follows.
+    case steered(SteeredMessage)
 
     var id: String {
         switch self {
         case .text(let run): return "t-\(run.id)"
         case .thinking(let run): return "k-\(run.id)"
         case .tool(let call): return "x-\(call.id)"
+        case .steered(let message): return "s-\(message.id)"
         }
     }
+}
+
+/// A message delivered into the running turn (native steering), as the
+/// conversation shows it: a message of the user's inside the reply, as on
+/// the desktop. The agent writes its own copy into the transcript, which
+/// replaces this one once the turn is reconciled.
+struct SteeredMessage: Hashable, Sendable {
+    /// Row identity: the phone's own id for a message sent from here, else
+    /// `fb-` and the server's note id.
+    let id: String
+    /// The server's note id, once known (the `feedback_submitted` echo or the
+    /// response). Ties the echo, the response and a snapshot's `feedback`
+    /// to this message.
+    var serverID: String?
+    /// The text as sent, for matching.
+    let text: String
+    /// What renders: the text, then any pictures.
+    let blocks: [ContentBlock]
+    let timestamp: Date
+    /// Where it sits among the agent's output (see ``SteerAnchor``).
+    var anchor: SteerAnchor
+
+    /// The message as a user turn of the conversation.
+    var turn: MessageTurn {
+        MessageTurn(id: "steer-\(id)", role: .user, blocks: blocks, timestamp: timestamp)
+    }
+}
+
+/// Where a message delivered into the turn sits among the agent's output: after
+/// the last tool call before it, and after so many bytes of text and reasoning
+/// that followed that call. A snapshot's live message marks no such point and
+/// joins the text on both sides into one block, so this is what puts the
+/// message back in its place when the turn is rebuilt from a snapshot (a
+/// reconnect, the app coming back to the foreground).
+struct SteerAnchor: Hashable, Sendable {
+    /// The last tool call before the message; nil when none came before it.
+    let afterToolID: String?
+    /// UTF-8 bytes of text and reasoning between that tool call (or the
+    /// start of the reply) and the message.
+    let proseBytes: Int
 }
 
 /// A growing run of text (either assistant prose or reasoning). A reference type
@@ -187,7 +231,21 @@ final class LiveTurn: Identifiable {
     }
 
     /// True before any content has streamed — used to show a "waiting" shimmer.
+    /// A message the user sent into the turn counts as content: it must never
+    /// be dropped with an empty placeholder.
     var isEmpty: Bool { segments.isEmpty && errorMessage == nil && livePlan.isEmpty }
+
+    /// The messages the user sent into this turn, in order.
+    var steeredMessages: [SteeredMessage] {
+        segments.compactMap { if case .steered(let message) = $0 { return message } else { return nil } }
+    }
+
+    /// The reply so far ends on a message the user sent into it: the agent
+    /// hasn't answered it yet.
+    var endsWithSteered: Bool {
+        if case .steered? = segments.last { return true }
+        return false
+    }
 
     /// Replace the live plan from a `plan_update` event (or snapshot `plan` block).
     func updatePlan(_ entries: [PlanEntry]) {
@@ -221,9 +279,134 @@ final class LiveTurn: Identifiable {
         for segment in segments {
             switch segment {
             case .text(let run), .thinking(let run): run.flushNow()
-            case .tool: break
+            case .tool, .steered: break
             }
         }
+    }
+
+    // MARK: - Messages sent into the turn
+
+    /// Whether this turn shows the message with this row id or server note id.
+    func containsSteered(id: String? = nil, serverID: String? = nil) -> Bool {
+        segments.contains { segment in
+            guard case .steered(let message) = segment else { return false }
+            if let id, message.id == id { return true }
+            if let serverID, message.serverID == serverID { return true }
+            return false
+        }
+    }
+
+    /// Show a message the agent took into this turn at the current end of the
+    /// reply: what the agent says next is the reply to it. Idempotent by row
+    /// id and by server note id (the echo and the response both report it).
+    @discardableResult
+    func insertSteered(id: String, serverID: String?, text: String, blocks: [ContentBlock],
+                       timestamp: Date = Date()) -> Bool {
+        if containsSteered(id: id, serverID: serverID) {
+            if let serverID { bindSteered(id: id, serverID: serverID) }
+            return false
+        }
+        // Publish the text before the message, so the run it ends shows whole.
+        flushAllText()
+        let message = SteeredMessage(id: id, serverID: serverID, text: text,
+                                     blocks: blocks.isEmpty ? [.text(text)] : blocks,
+                                     timestamp: timestamp, anchor: currentAnchor())
+        segments.append(.steered(message))
+        return true
+    }
+
+    /// Record the server's note id of a message shown by row id.
+    func bindSteered(id: String, serverID: String) {
+        for index in segments.indices {
+            guard case .steered(var message) = segments[index], message.id == id,
+                  message.serverID == nil else { continue }
+            message.serverID = serverID
+            segments[index] = .steered(message)
+        }
+    }
+
+    /// Put the messages of `old` (the same turn, as this screen showed it before
+    /// this copy was rebuilt from a snapshot) back where they were, so a
+    /// reconnect never takes them out of the conversation. `keep` says which
+    /// still belong to the turn the snapshot runs.
+    func adoptSteered(from old: LiveTurn, keep: (SteeredMessage) -> Bool = { _ in true }) {
+        for message in old.steeredMessages where keep(message) && !containsSteered(id: message.id, serverID: message.serverID) {
+            place(message)
+        }
+    }
+
+    /// Where a message sent now sits among the agent's output.
+    private func currentAnchor() -> SteerAnchor {
+        var bytes = 0
+        for segment in segments.reversed() {
+            switch segment {
+            case .tool(let call): return SteerAnchor(afterToolID: call.id, proseBytes: bytes)
+            case .text(let run), .thinking(let run): bytes += run.fullText.utf8.count
+            case .steered: break
+            }
+        }
+        return SteerAnchor(afterToolID: nil, proseBytes: bytes)
+    }
+
+    /// Insert `message` at its anchor. When this copy doesn't hold the tool
+    /// call it came after (a trimmed snapshot), or holds less text than it
+    /// came after, it goes at the end: never dropped.
+    private func place(_ message: SteeredMessage) {
+        var index = 0
+        if let tool = message.anchor.afterToolID {
+            guard let found = segments.firstIndex(where: {
+                if case .tool(let call) = $0 { return call.id == tool } else { return false }
+            }) else {
+                segments.append(.steered(message))
+                return
+            }
+            index = found + 1
+        }
+        var remaining = message.anchor.proseBytes
+        while index < segments.count {
+            switch segments[index] {
+            case .steered:
+                // An earlier message at the same point stays first.
+                index += 1
+                continue
+            case .tool:
+                segments.insert(.steered(message), at: index)
+                return
+            case .text(let run), .thinking(let run):
+                if remaining == 0 {
+                    segments.insert(.steered(message), at: index)
+                    return
+                }
+                let full = run.fullText
+                let length = full.utf8.count
+                if remaining < length {
+                    let split = Self.splitIndex(in: full, utf8Offset: remaining)
+                    let head = LiveTextRun(String(full[..<split]))
+                    let tail = LiveTextRun(String(full[split...]))
+                    let isThinking: Bool
+                    if case .thinking = segments[index] { isThinking = true } else { isThinking = false }
+                    segments.replaceSubrange(index...index, with: [
+                        isThinking ? .thinking(head) : .text(head),
+                        .steered(message),
+                        isThinking ? .thinking(tail) : .text(tail),
+                    ])
+                    return
+                }
+                remaining -= length
+                index += 1
+            }
+        }
+        segments.append(.steered(message))
+    }
+
+    /// The character boundary at or before `offset` UTF-8 bytes into `text`.
+    private static func splitIndex(in text: String, utf8Offset offset: Int) -> String.Index {
+        let utf8 = text.utf8
+        var index = utf8.index(utf8.startIndex, offsetBy: min(offset, utf8.count))
+        while index > text.startIndex, String.Index(index, within: text) == nil {
+            index = utf8.index(before: index)
+        }
+        return index
     }
 
     func upsertToolCall(id: String, title: String, kind: String, status: String, rawInput: String?, rawOutput: String?,
@@ -311,32 +494,60 @@ final class LiveTurn: Identifiable {
         return nil
     }
 
-    /// Snapshot this (finalized) turn as an immutable assistant `MessageTurn`, so a
-    /// reply that finished streaming but isn't yet in the server transcript can be
-    /// folded into the persisted list — surviving a subsequent send — until a
-    /// reconcile replaces it with the authoritative copy. Segment→block mapping
-    /// mirrors `MessageRender.adaptLive` so the folded copy renders the same; a
-    /// tool's diff `content` rides in the result preview (its only persisted slot)
-    /// when there's no separate output text.
+    /// Snapshot this (finalized) turn's agent output as one immutable assistant
+    /// `MessageTurn`, leaving out the messages the user sent into it.
     func snapshotAsMessageTurn() -> MessageTurn {
+        MessageTurn(id: id, role: .assistant, blocks: segments.flatMap(Self.blocks(of:)), timestamp: Date())
+    }
+
+    /// Snapshot this (finalized) turn as immutable turns, so a reply that
+    /// finished streaming but isn't yet in the server transcript can be folded
+    /// into the persisted list — surviving a subsequent send — until a reconcile
+    /// replaces it with the authoritative copy. A message the user sent into the
+    /// turn becomes a user turn where it was, between the assistant turns of
+    /// the reply around it, as the server's transcript has it. Assistant turns
+    /// with nothing in them are left out.
+    func snapshotAsMessageTurns() -> [MessageTurn] {
+        var out: [MessageTurn] = []
         var blocks: [ContentBlock] = []
+        var part = 0
+        func flush() {
+            if !blocks.isEmpty {
+                out.append(MessageTurn(id: part == 0 ? id : "\(id)~\(part)", role: .assistant,
+                                       blocks: blocks, timestamp: Date()))
+            }
+            blocks = []
+        }
         for segment in segments {
-            switch segment {
-            case .text(let run):
-                if !run.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    blocks.append(.text(run.fullText))
-                }
-            case .thinking(let run):
-                if !run.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    blocks.append(.thinking(run.fullText))
-                }
-            case .tool(let call):
-                blocks.append(.toolUse(id: call.id, name: call.title, inputPreview: call.rawInput, meta: call.meta))
-                let output = call.rawOutput.isEmpty ? call.content : call.rawOutput
-                blocks.append(.toolResult(id: call.id, outputPreview: output, isError: call.isError,
-                                          images: call.images))
+            if case .steered(let message) = segment {
+                flush()
+                part += 1
+                out.append(message.turn)
+            } else {
+                blocks.append(contentsOf: Self.blocks(of: segment))
             }
         }
-        return MessageTurn(id: id, role: .assistant, blocks: blocks, timestamp: Date())
+        flush()
+        return out
+    }
+
+    /// Segment→block mapping, mirroring `MessageRender.adaptLive` so a folded
+    /// copy renders the same; a tool's diff `content` rides in the result
+    /// preview (its only persisted slot) when there's no separate output text.
+    private static func blocks(of segment: LiveSegment) -> [ContentBlock] {
+        switch segment {
+        case .text(let run):
+            return run.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [.text(run.fullText)]
+        case .thinking(let run):
+            return run.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [.thinking(run.fullText)]
+        case .tool(let call):
+            let output = call.rawOutput.isEmpty ? call.content : call.rawOutput
+            return [
+                .toolUse(id: call.id, name: call.title, inputPreview: call.rawInput, meta: call.meta),
+                .toolResult(id: call.id, outputPreview: output, isError: call.isError, images: call.images),
+            ]
+        case .steered:
+            return []
+        }
     }
 }

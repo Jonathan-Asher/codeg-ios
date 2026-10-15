@@ -76,7 +76,10 @@ final class StreamRecoveryTests: XCTestCase {
 
     func testTheSnapshotCarriesTheTurnsDeliveredMessages() {
         let snap = Fixtures.snapshot(status: "prompting", feedback: [(id: "fb-1", text: "Ship it")])
-        XCTAssertEqual(snap.feedback, [FeedbackNoteSnapshot(id: "fb-1", text: "Ship it")])
+        XCTAssertEqual(snap.feedback.map(\.id), ["fb-1"])
+        XCTAssertEqual(snap.feedback.first?.text, "Ship it")
+        XCTAssertEqual(snap.feedback.first?.status, .delivered)
+        XCTAssertEqual(snap.feedback.first?.createdAtMillis, TranscriptTime.millis("2026-10-04T16:35:00Z"))
         // An older server sends neither field.
         let bare = try! CodegJSON.decoder.decode(LiveSessionSnapshot.self,
                                                  from: Data(#"{"status": "connected"}"#.utf8))

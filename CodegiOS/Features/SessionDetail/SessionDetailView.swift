@@ -415,8 +415,8 @@ struct SessionDetailView: View {
                     .transition(.opacity)
                     .zIndex(2)
                 }
-                if !model.insertedNotes.isEmpty {
-                    InsertedNotesView(notes: model.insertedNotes)
+                if !model.stripNotes.isEmpty {
+                    InsertedNotesView(notes: model.stripNotes)
                         .padding(.horizontal, ComposeBar.sideMargin(focused: composeFocused))
                         .transition(.opacity)
                 }

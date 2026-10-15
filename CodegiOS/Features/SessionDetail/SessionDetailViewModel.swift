@@ -254,15 +254,37 @@ final class SessionDetailViewModel {
         let holdUntilTurnEnd: Bool
     }
     private(set) var queuedMessages: [QueuedMessage] = []
-    /// A message delivered into the running turn, shown above the composer
-    /// until the turn ends.
+    /// A message sent into the running turn (`submit_session_feedback`). It
+    /// waits above the composer only while it is on its way, or, on the pull
+    /// channel, until the agent reads it. Once the agent has it, it is in the
+    /// conversation: a message of the user's inside the reply, where the agent
+    /// took it (``LiveTurn/insertSteered(id:serverID:text:blocks:timestamp:)``).
     struct InsertedNote: Identifiable, Hashable {
         let id: UUID
         let text: String
+        /// What the conversation shows: the text, then any pictures.
+        let blocks: [ContentBlock]
+        /// The server's note id, from the echo, the response or a snapshot.
         var serverID: String?
+        /// What the server said about it, when it said.
+        var serverStatus: FeedbackNoteSnapshot.Status?
+        /// The server answered the request.
+        var resolved: Bool
+        /// The agent has the message.
         var delivered: Bool
+        /// It shows in the conversation, inside the reply.
+        var inThread: Bool
+        /// The turn it was sent into (``SessionDetailViewModel/turnSerial``).
+        let turnSerial: Int
     }
     private(set) var insertedNotes: [InsertedNote] = []
+    /// The messages above the composer: on their way into the turn, or
+    /// waiting for an agent that reads them through its feedback tool.
+    var stripNotes: [InsertedNote] { insertedNotes.filter { !$0.inThread } }
+    /// Counts the turns this screen shows, so a message whose delivery is
+    /// confirmed after its turn ended isn't put into the next one. A reply
+    /// rebuilt from a snapshot is the same turn.
+    private var turnSerial = 0
     /// A queued message is being delivered into the held turn.
     private var deliveringQueued = false
 
@@ -582,13 +604,21 @@ final class SessionDetailViewModel {
     /// stale. `reattachIfLive`, called right after, re-discovers the true state:
     /// a fresh stream if it's still going, or nothing further if the server-
     /// fetched `turns` already carry its finished reply.
+    ///
+    /// What the live turn showed is kept: its optimistic prompt, its reply and
+    /// the messages sent into it fold into `turns` as phone-made turns, which
+    /// the re-fetch replaces with the server's copies. Dropping only the live
+    /// turn left the optimistic prompt behind, beside the server's copy of the
+    /// same message.
     private func discardStaleLiveState() {
-        guard liveTurn != nil else { return }
+        guard let live = liveTurn else { return }
         isTurnActive = false
         sendTask?.cancel()
         consumerTask?.cancel()
         closeStream()
-        liveTurn = nil
+        live.flushAllText()
+        live.isStreaming = false
+        promoteUnreconciled(live)
         sendState = .idle
     }
 
@@ -688,7 +718,7 @@ final class SessionDetailViewModel {
     /// connection, attaching or being sent, or a message into the turn not yet
     /// confirmed. Suspension waits for it (`SessionModelStore`).
     var isHandingOffSend: Bool {
-        sendsInProgress > 0 || insertedNotes.contains { !$0.delivered }
+        sendsInProgress > 0 || insertedNotes.contains { !$0.resolved }
     }
 
     /// No screen shows this session any more (`SessionModelStore`): close
@@ -1049,7 +1079,8 @@ final class SessionDetailViewModel {
         attachPhase = nil
         awaitingBackground = false
         backgroundOutstanding = 0
-        insertedNotes = []
+        retireSettledNotes()
+        turnSerial &+= 1
         notice = nil
         echoedUserMessageIDs = []
         // This send attaches its own stream; a cold reattach still waiting to
@@ -1460,6 +1491,9 @@ final class SessionDetailViewModel {
                         // finished reply: `turns` is never refetched mid-turn, so it
                         // holds no partial copy of THIS reply to double-render.
                         if let rebuilt = buildLiveTurn(from: snap) {
+                            // The snapshot marks no messages sent into the turn:
+                            // put this screen's back where they were.
+                            rebuilt.adoptSteered(from: live) { Self.steered($0, belongsTo: snap) }
                             live = rebuilt
                             liveTurn = rebuilt
                             // Recovery parked the status line on "connecting"; the reply
@@ -1682,6 +1716,13 @@ final class SessionDetailViewModel {
                 let resuming = isTurnActive && liveTurn != nil
                 applyLiveSignals(from: snap)
                 if let rebuilt = buildLiveTurn(from: snap) {
+                    if resuming, let shown = liveTurn {
+                        // The same turn again: the messages sent into it stay
+                        // where they were (the snapshot marks none).
+                        rebuilt.adoptSteered(from: shown) { Self.steered($0, belongsTo: snap) }
+                    } else {
+                        turnSerial &+= 1
+                    }
                     live = rebuilt
                     liveTurn = rebuilt
                     // This live turn is the snapshot's in-flight reply; the
@@ -1749,6 +1790,15 @@ final class SessionDetailViewModel {
                 return
             }
         }
+    }
+
+    /// Whether a message sent into the turn on screen belongs to the turn a
+    /// snapshot runs. The server keeps a turn's messages in its `feedback`
+    /// until the next turn starts, so one it doesn't list was sent into an
+    /// earlier turn. One whose note id never arrived is kept.
+    static func steered(_ message: SteeredMessage, belongsTo snap: LiveSessionSnapshot) -> Bool {
+        guard let serverID = message.serverID else { return true }
+        return snap.feedback.contains { $0.id == serverID }
     }
 
     /// Rebuild an in-flight assistant turn from a reattach snapshot. Returns nil
@@ -1931,12 +1981,13 @@ final class SessionDetailViewModel {
         case .backgroundActivity(let outstanding):
             backgroundOutstanding = max(0, outstanding)
 
-        case .feedbackSubmitted(let id, let text):
-            if let idx = insertedNotes.firstIndex(where: { $0.serverID == nil && $0.text == text }) {
-                insertedNotes[idx].serverID = id
-            }
+        case .feedbackSubmitted(let note):
+            noteRecorded(note, live: live)
 
         case .feedbackConsumed(let ids):
+            // The pull channel: the agent read these through its tool, as a
+            // tool result rather than a message, so they stay above the
+            // composer (as on the desktop), marked read.
             for idx in insertedNotes.indices where insertedNotes[idx].serverID.map({ ids.contains($0) }) == true {
                 insertedNotes[idx].delivered = true
             }
@@ -2058,7 +2109,7 @@ final class SessionDetailViewModel {
         requestScrollToBottom()
         // Replace the optimistic + live turns with the authoritative server copy.
         Task { [weak self] in await self?.refreshAfterTurn(reconciling: live) }
-        insertedNotes = []
+        retireSettledNotes()
         awaitingBackground = false
         backgroundOutstanding = 0
         // The keep-planning turn just ended — deliver the revision notes as the
@@ -2280,7 +2331,7 @@ final class SessionDetailViewModel {
                 pendingUserTurns.removeAll()
                 liveTurn = nil
                 sendState = .idle
-                insertedNotes = []
+                retireSettledNotes()
                 awaitingBackground = false
                 backgroundOutstanding = 0
                 closeStream()
@@ -2465,16 +2516,14 @@ final class SessionDetailViewModel {
         guard liveTurn === live else { return }
         turns.append(contentsOf: pendingUserTurns)
         pendingUserTurns.removeAll()
-        // Only fold in an assistant turn that actually has renderable content. A
+        // Only fold in assistant turns that actually have renderable content. A
         // finalized turn can be non-empty *solely* because of an inline error /
-        // "Cancelled." message (which `snapshotAsMessageTurn` can't represent as a
-        // persisted block, since ContentBlock has no error case) — appending its
+        // "Cancelled." message (which the snapshot can't represent as a
+        // persisted block, since ContentBlock has no error case) — appending a
         // zero-block snapshot would render as "No content". Such a transient error
-        // placeholder is simply dropped on the next send; the user turn is kept.
-        let snapshot = live.snapshotAsMessageTurn()
-        if !snapshot.blocks.isEmpty {
-            turns.append(snapshot)
-        }
+        // placeholder is simply dropped on the next send; the user turn is kept,
+        // and so is every message the user sent into the turn, where it was.
+        turns.append(contentsOf: live.snapshotAsMessageTurns())
         liveTurn = nil
         requestScrollToBottom()
     }
@@ -2649,10 +2698,18 @@ final class SessionDetailViewModel {
 
     /// `submit_session_feedback`. When the turn already ended (`NoActiveTurn`)
     /// the message is sent as an ordinary prompt instead.
+    ///
+    /// The message waits above the composer while it is on its way. Once the
+    /// server says the agent has it (the `feedback_submitted` echo or the
+    /// response, whichever comes first), it moves into the conversation, inside
+    /// the reply where the agent took it, as the desktop shows it.
     private func deliverIntoTurn(text: String, attachments sending: [Attachment], connectionID conn: String,
                                  restoreToComposer: Bool) async {
-        let note = InsertedNote(id: UUID(), text: text.isEmpty ? "(image)" : text, serverID: nil,
-                                delivered: false)
+        var shown: [ContentBlock] = text.isEmpty ? [] : [.text(text)]
+        shown.append(contentsOf: sending.map(\.optimisticBlock))
+        let note = InsertedNote(id: UUID(), text: text.isEmpty ? "(image)" : text, blocks: shown,
+                                serverID: nil, serverStatus: nil, resolved: false, delivered: false,
+                                inThread: false, turnSerial: turnSerial)
         insertedNotes.append(note)
         requestScrollToBottom()
         var blocks: [PromptInputBlock]?
@@ -2660,8 +2717,9 @@ final class SessionDetailViewModel {
             blocks = (text.isEmpty ? [] : [PromptInputBlock.text(text)]) + sending.map(\.promptInputBlock)
         }
         var failure: Error?
+        var recorded: FeedbackNoteSnapshot?
         do {
-            try await client.submitSessionFeedback(connectionId: conn, text: text, blocks: blocks)
+            recorded = try await client.submitSessionFeedback(connectionId: conn, text: text, blocks: blocks)
         } catch {
             failure = error
         }
@@ -2673,8 +2731,14 @@ final class SessionDetailViewModel {
            await insertWasRecorded(noteID: note.id, text: text, connectionID: conn) {
             failure = nil
         }
+        // The stream's echo already said the server recorded it (it echoes only
+        // a note it keeps), so whatever the response says, the agent has it:
+        // handing it back would send it twice.
+        if failure != nil, insertedNotes.first(where: { $0.id == note.id })?.serverID != nil {
+            failure = nil
+        }
         guard let error = failure else {
-            markInsertDelivered(note.id)
+            insertAccepted(note.id, recorded: recorded)
             return
         }
         if let api = error as? APIError, api.isNoActiveTurn {
@@ -2699,12 +2763,97 @@ final class SessionDetailViewModel {
         notice = Self.describe(error)
     }
 
-    /// Native steering reaches the agent at once, so a message the server took
-    /// is delivered.
-    private func markInsertDelivered(_ noteID: UUID) {
-        if let idx = insertedNotes.firstIndex(where: { $0.id == noteID }), nativeSteeringAvailable {
-            insertedNotes[idx].delivered = true
+    /// The server took a message sent into the turn. `recorded` is the note
+    /// its response described (nil from an older server, or when the response
+    /// was lost and a snapshot confirmed it).
+    private func insertAccepted(_ noteID: UUID, recorded: FeedbackNoteSnapshot?) {
+        guard let idx = insertedNotes.firstIndex(where: { $0.id == noteID }) else { return }
+        insertedNotes[idx].resolved = true
+        if let recorded {
+            if insertedNotes[idx].serverID == nil { insertedNotes[idx].serverID = recorded.id }
+            insertedNotes[idx].serverStatus = recorded.status
         }
+        let status = insertedNotes[idx].serverStatus ?? .unknown
+        // Native steering hands the agent the message at once; the pull channel
+        // waits for its tool. A server that says neither: go by the channel.
+        let delivered = status == .delivered || (status == .unknown && nativeSteeringAvailable)
+        guard delivered else { return }
+        insertedNotes[idx].delivered = true
+        placeInThread(noteID)
+    }
+
+    /// A `feedback_submitted` echo: the server recorded a message for the turn,
+    /// sent from here or from another client.
+    private func noteRecorded(_ recorded: FeedbackNoteSnapshot, live: LiveTurn) {
+        guard !recorded.id.isEmpty else { return }
+        // `submit_session_feedback` takes no client id, so the text is what ties
+        // the echo to a message sent from here.
+        let wanted = recorded.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let idx = insertedNotes.firstIndex(where: { $0.serverID == recorded.id })
+            ?? insertedNotes.firstIndex(where: {
+                $0.serverID == nil && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == wanted
+            })
+        if let idx {
+            if insertedNotes[idx].serverID == nil { insertedNotes[idx].serverID = recorded.id }
+            insertedNotes[idx].serverStatus = recorded.status
+        }
+        // A note on the pull channel waits for the agent's tool, which reads it
+        // as a tool result, never as a message: it stays above the composer.
+        guard recorded.status == .delivered else { return }
+        if let idx {
+            insertedNotes[idx].delivered = true
+            placeInThread(insertedNotes[idx].id)
+        } else if liveTurn === live, live.isStreaming {
+            // Sent into this turn from another client (the desktop): the
+            // conversation shows it too, as the desktop shows the phone's.
+            if live.insertSteered(id: "fb-\(recorded.id)", serverID: recorded.id, text: recorded.text,
+                                  blocks: recorded.displayBlocks, timestamp: recorded.createdAt ?? Date()) {
+                requestScrollToBottom()
+            }
+        }
+    }
+
+    /// Move a message the agent has from above the composer into the
+    /// conversation: into the reply of the turn it was sent into, at the point
+    /// the agent took it. When that turn is no longer on screen (it ended, and
+    /// the server's transcript replaced it), the transcript holds the agent's
+    /// own copy of the message, so it is fetched once nothing runs.
+    private func placeInThread(_ noteID: UUID) {
+        guard let idx = insertedNotes.firstIndex(where: { $0.id == noteID }), !insertedNotes[idx].inThread
+        else { return }
+        let note = insertedNotes[idx]
+        guard let live = liveTurn, note.turnSerial == turnSerial else {
+            insertedNotes.remove(at: idx)
+            showLateInsert()
+            return
+        }
+        live.insertSteered(id: note.id.uuidString, serverID: note.serverID, text: note.text,
+                           blocks: note.blocks)
+        insertedNotes[idx].inThread = true
+        requestScrollToBottom()
+    }
+
+    /// A message the agent took into a turn this screen no longer shows: the
+    /// transcript has it (the agent writes its own copy), so fetch what changed
+    /// once no turn runs. A turn that runs reconciles with the transcript when
+    /// it ends, which brings it then.
+    private func showLateInsert() {
+        guard let id = conversationID else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, self.liveTurn == nil, !self.isInFlight, self.pendingUserTurns.isEmpty,
+                  let outcome = try? await self.fetchTranscript(id: id, overlap: TranscriptSync.liveOverlap),
+                  self.liveTurn == nil, !self.isInFlight, self.pendingUserTurns.isEmpty else { return }
+            self.adoptWindow(outcome, allowShrink: false)
+            self.requestScrollToBottom()
+        }
+    }
+
+    /// The turn ended (or a new one starts): drop the messages above the
+    /// composer that are settled. One still on its way stays until the server
+    /// answers, so it is never lost in between.
+    private func retireSettledNotes() {
+        insertedNotes.removeAll { $0.resolved || $0.inThread }
     }
 
     /// Whether the server recorded a message sent into the turn whose response
@@ -2720,10 +2869,12 @@ final class SessionDetailViewModel {
             let snap: LiveSessionSnapshot?
             do { snap = try await client.liveSessionSnapshot(connectionId: conn) } catch { break }
             if echoed() { return true }
-            let claimed = Set(insertedNotes.compactMap { $0.id == noteID ? nil : $0.serverID })
+            var claimed = Set(insertedNotes.compactMap { $0.id == noteID ? nil : $0.serverID })
+            if let live = liveTurn { claimed.formUnion(live.steeredMessages.compactMap(\.serverID)) }
             if let recorded = SendConfirmation.recordedNote(text: text, in: snap?.feedback ?? [], excluding: claimed) {
                 if let idx = insertedNotes.firstIndex(where: { $0.id == noteID }) {
                     insertedNotes[idx].serverID = recorded.id
+                    insertedNotes[idx].serverStatus = recorded.status
                 }
                 return true
             }
@@ -2734,7 +2885,9 @@ final class SessionDetailViewModel {
 
     /// The thread ends on the agent's reply (a finished live reply counts).
     private var endsWithAgentReply: Bool {
-        if let live = liveTurn, !live.isStreaming { return !live.isEmpty && live.errorMessage == nil }
+        if let live = liveTurn, !live.isStreaming {
+            return !live.isEmpty && live.errorMessage == nil && !live.endsWithSteered
+        }
         guard pendingUserTurns.isEmpty else { return false }
         return ContinuePrompt.endsWithAgentReply(turns)
     }

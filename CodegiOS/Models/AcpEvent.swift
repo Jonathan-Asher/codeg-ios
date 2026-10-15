@@ -90,8 +90,10 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     /// Background tasks (async sub-agents, background shells) still running,
     /// from the transcript watcher. Only the count is read here.
     case backgroundActivity(outstanding: Int)
-    /// A live-feedback note was stored for the running turn.
-    case feedbackSubmitted(id: String, text: String)
+    /// A message was recorded for the running turn: delivered into it (native
+    /// steering, where the agent has it at once) or waiting for the agent's
+    /// `check_user_feedback`. Broadcast to every client of the connection.
+    case feedbackSubmitted(FeedbackNoteSnapshot)
     /// The agent read one or more feedback notes.
     case feedbackConsumed(ids: [String])
     /// The session's mode changed: the agent left plan mode on its own, or a
@@ -233,11 +235,11 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         case "background_activity":
             self = .backgroundActivity(outstanding: (try? c.decodeIfPresent(Int.self, forKey: .outstanding)) ?? 0)
         case "feedback_submitted":
-            let item = (try? c.decodeIfPresent(AnyJSON.self, forKey: .item)) ?? nil
-            self = .feedbackSubmitted(
-                id: item?.object?["id"]?.string ?? "",
-                text: item?.object?["text"]?.string ?? ""
-            )
+            if let item = (try? c.decodeIfPresent(FeedbackNoteSnapshot.self, forKey: .item)) ?? nil {
+                self = .feedbackSubmitted(item)
+            } else {
+                self = .unknown(type: type)
+            }
         case "feedback_consumed":
             self = .feedbackConsumed(ids: (try? c.decodeIfPresent([String].self, forKey: .ids)) ?? [])
         case "mode_changed":
@@ -384,23 +386,73 @@ struct LiveSessionSnapshot: Sendable, Decodable {
     }
 }
 
-/// One message delivered into the running turn, as the snapshot lists it
-/// (Rust `FeedbackItem`; only what the app matches on).
-struct FeedbackNoteSnapshot: Sendable, Decodable, Equatable {
-    let id: String
-    let text: String
-
-    init(id: String, text: String) {
-        self.id = id
-        self.text = text
+/// One message sent into the running turn (Rust `FeedbackItem`), as the
+/// `feedback_submitted` event, the `submit_session_feedback` response and the
+/// snapshot's `feedback` carry it.
+struct FeedbackNoteSnapshot: Sendable, Decodable, Hashable {
+    /// `FeedbackStatus`.
+    enum Status: Hashable, Sendable {
+        /// The agent has it: pushed into the turn over native steering (such a
+        /// note is delivered from the start), or read through the pull tool.
+        case delivered
+        /// Waiting for the agent's `check_user_feedback` (the pull channel).
+        case pending
+        /// No status, or one this build doesn't know.
+        case unknown
     }
 
-    private enum CodingKeys: String, CodingKey { case id, text }
+    let id: String
+    let text: String
+    let status: Status
+    /// When the server recorded it, in epoch milliseconds: before the agent
+    /// took it (`created_at`).
+    let createdAtMillis: Int64?
+    /// What was sent when it was more than text (pictures); empty otherwise.
+    let blocks: [UserMessageBlock]
+
+    init(id: String, text: String, status: Status = .delivered, createdAtMillis: Int64? = nil,
+         blocks: [UserMessageBlock] = []) {
+        self.id = id
+        self.text = text
+        self.status = status
+        self.createdAtMillis = createdAtMillis
+        self.blocks = blocks
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, text, status, createdAt, blocks }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? ""
         text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
+        switch (try? c.decodeIfPresent(String.self, forKey: .status)) ?? nil {
+        case "delivered": status = .delivered
+        case "pending": status = .pending
+        default: status = .unknown
+        }
+        // Read the text: the shared date decoder drops 6-digit fractions.
+        createdAtMillis = ((try? c.decodeIfPresent(String.self, forKey: .createdAt)) ?? nil).flatMap(TranscriptTime.millis)
+        blocks = ((try? c.decodeIfPresent([UserMessageBlock].self, forKey: .blocks)) ?? nil) ?? []
+    }
+
+    /// When it was recorded, if the server said.
+    var createdAt: Date? {
+        createdAtMillis.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) }
+    }
+
+    /// The message as the conversation shows it: what was sent when the note
+    /// carries it (text and pictures; `text` is then only its display form,
+    /// which words the pictures), else its text.
+    var displayBlocks: [ContentBlock] {
+        var out: [ContentBlock] = []
+        for block in blocks {
+            switch block {
+            case .text(let t): if !t.isEmpty { out.append(.text(t)) }
+            case .image(let image): out.append(.image(image))
+            case .unknown: break
+            }
+        }
+        return out.isEmpty ? [.text(text)] : out
     }
 }
 

@@ -174,22 +174,30 @@ enum MessageRender {
         return grouped
     }
 
+    /// The live turn's agent output as parts (messages the user sent into the
+    /// turn left out; the timeline places those between the parts).
     static func adaptLive(_ turn: LiveTurn) -> [RenderPart] {
+        adaptLive(segments: turn.segments, streamingID: turn.isStreaming ? turn.segments.last?.id : nil)
+    }
+
+    /// `segments` as parts. Only the turn's *final* segment is still growing —
+    /// it alone carries the streaming flag (the typing caret + cache bypass), and
+    /// `streamingID` names it (nil once the turn ended, or when its last segment
+    /// is a message the user sent). Earlier text/reasoning runs are frozen the
+    /// moment the agent moved on to the next segment, so they render as
+    /// finalized (no caret, cached). Without this, every text segment showed
+    /// its own blinking caret.
+    static func adaptLive(segments: [LiveSegment], streamingID: String?) -> [RenderPart] {
         var parts: [RenderPart] = []
-        let segments = turn.segments
-        // Only the *final* segment is still growing — it alone carries the
-        // streaming flag (the typing caret + cache bypass). Earlier text/reasoning
-        // runs are frozen the moment the agent moved on to the next segment, so
-        // they render as finalized (no caret, cached). Without this, every text
-        // segment showed its own blinking caret.
-        let lastIndex = segments.count - 1
-        for (idx, segment) in segments.enumerated() {
-            let isLast = idx == lastIndex
+        for segment in segments {
+            let isStreaming = streamingID != nil && segment.id == streamingID
             switch segment {
+            case .steered:
+                continue
             case .text(let run):
-                parts.append(.liveText(run, streaming: turn.isStreaming && isLast))
+                parts.append(.liveText(run, streaming: isStreaming))
             case .thinking(let run):
-                parts.append(.liveReasoning(run, streaming: turn.isStreaming && isLast))
+                parts.append(.liveReasoning(run, streaming: isStreaming))
             case .tool(let call):
                 let state: ToolCallState = call.isFinished ? (call.isError ? .error : .done) : .running
                 // Same boundary-marker treatment as the persisted path: codex emits

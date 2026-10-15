@@ -68,7 +68,10 @@ struct ComposeSteering: Equatable {
     var deliverNow = false
 }
 
-/// Messages delivered into the running turn, shown until it ends.
+/// Messages on their way into the running turn, above the message bar. Once
+/// the agent has one it moves into the conversation, inside the reply; only a
+/// message for an agent that reads them through its feedback tool stays here
+/// until the turn ends, marked when the agent has read it.
 struct InsertedNotesView: View {
     let notes: [SessionDetailViewModel.InsertedNote]
 
@@ -84,7 +87,7 @@ struct InsertedNotesView: View {
                         .foregroundStyle(Theme.textSecondary)
                         .lineLimit(2)
                     Spacer(minLength: 0)
-                    Text(verbatim: note.delivered ? "Inserted" : "Inserting…")
+                    Text(verbatim: Self.status(of: note))
                         .font(.caption2)
                         .foregroundStyle(Theme.textTertiary)
                 }
@@ -95,6 +98,11 @@ struct InsertedNotesView: View {
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
         .hairlineBorder(Theme.Radius.md)
         .padding(.bottom, 6)
+    }
+
+    static func status(of note: SessionDetailViewModel.InsertedNote) -> String {
+        if !note.resolved { return "Inserting…" }
+        return note.delivered ? "Read by the agent" : "Waiting for the agent"
     }
 }
 

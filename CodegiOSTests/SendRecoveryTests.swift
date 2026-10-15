@@ -181,6 +181,9 @@ final class SendRecoveryTests: XCTestCase {
         let confirmed = await eventually { model.insertedNotes.first?.serverID == "fb-1" }
         XCTAssertTrue(confirmed)
         XCTAssertEqual(model.insertedNotes.first?.delivered, true)
+        let placed = await eventually { model.liveTurn?.steeredMessages.map(\.text) == ["Ship it"] }
+        XCTAssertTrue(placed, "the message is in the conversation, inside the reply")
+        XCTAssertTrue(model.stripNotes.isEmpty, "and not left above the message bar")
         XCTAssertNil(model.notice, "no false network error")
         XCTAssertEqual(model.draft, "")
         XCTAssertTrue(model.queuedMessages.isEmpty)
@@ -206,6 +209,7 @@ final class SendRecoveryTests: XCTestCase {
         XCTAssertTrue(failed)
         XCTAssertEqual(model.draft, "Ship it")
         XCTAssertTrue(model.insertedNotes.isEmpty)
+        XCTAssertEqual(model.liveTurn?.steeredMessages.count, 0, "nothing the server never got is shown as sent")
     }
 
     // MARK: - Working on the list, idle on the screen (and back)

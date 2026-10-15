@@ -416,12 +416,19 @@ struct CodegClient: Sendable {
     /// the agent's `check_user_feedback`. Throws `APIError.server` with a
     /// "no active turn" message when the turn already ended
     /// (``APIError/isNoActiveTurn``): the caller then sends it as a prompt.
-    func submitSessionFeedback(connectionId: String, text: String, blocks: [PromptInputBlock]?) async throws {
-        _ = try await send("submit_session_feedback", body: SubmitFeedbackBody(
+    /// Returns the note the server recorded (its id and whether the agent has
+    /// it), or nil when the answer carries none (an older server).
+    @discardableResult
+    func submitSessionFeedback(connectionId: String, text: String,
+                               blocks: [PromptInputBlock]?) async throws -> FeedbackNoteSnapshot? {
+        let data = try await send("submit_session_feedback", body: SubmitFeedbackBody(
             connectionId: connectionId,
             text: text,
             blocks: (blocks?.isEmpty ?? true) ? nil : blocks
         ), session: Self.steeringSession)
+        guard let note = try? CodegJSON.decoder.decode(FeedbackNoteSnapshot.self, from: data), !note.id.isEmpty
+        else { return nil }
+        return note
     }
 
     // MARK: - Compose "+" menu sources

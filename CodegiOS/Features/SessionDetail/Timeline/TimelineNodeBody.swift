@@ -15,6 +15,8 @@ struct NodeBody: View {
         switch node.content {
         case .user(let turn):
             UserNodeBody(turn: turn)
+        case .insertedUser(let turn):
+            UserNodeBody(turn: turn, sentDuringTurn: true)
         case .system(let turn):
             SystemNodeBody(turn: turn)
         case .assistantText(let s):
@@ -75,6 +77,8 @@ struct NodeBody: View {
 /// message cards, so a user turn and the reply it prompts read as one column.
 private struct UserNodeBody: View {
     let turn: MessageTurn
+    /// Sent into the running turn: the agent took it while it worked.
+    var sentDuringTurn = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -88,6 +92,12 @@ private struct UserNodeBody: View {
                 default:
                     ContentBlockView(block: block)
                 }
+            }
+            if sentDuringTurn {
+                Label("Sent during the turn", systemImage: "arrow.turn.down.right")
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption2)
+                    .foregroundStyle(Theme.textTertiary)
             }
         }
         .padding(.horizontal, 14)
