@@ -198,6 +198,23 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- A message sent into a running turn stayed above the message bar (1.3.12).
+  One delivered into a turn held open for background work, or with "Insert
+  into current turn", sat in a strip there until the turn ended, while the
+  agent's answer to it streamed into the conversation above it. A Camera
+  Control recording is sent the way Send sends, so one made while background
+  work held the turn ended up there too. Once the agent has the message, it is
+  now in the conversation, inside the reply where the agent took it, marked
+  "Sent during the turn", with the answer after it, as on the desktop; when the
+  turn ends the server's copy takes its place, so it shows once. Only a
+  message still on its way, or one waiting for an agent that reads its notes
+  through its feedback tool, stays above the bar. A message sent into the turn
+  from the desktop shows too, and a reconnect or a return to the app keeps
+  each message where it was.
+- Coming back to the app after a reply that failed or was cancelled could
+  show your message twice (1.3.12): the reply was dropped but its message
+  stayed beside the server's copy. Both are now kept until the server's copy
+  replaces them.
 - A mode or option change that failed during a turn (from the phone or the
   desktop) ended the reply on the phone as an error (1.3.7). Such errors
   (`set_mode_failed`, `set_config_option_failed` and the other per-action

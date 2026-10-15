@@ -143,9 +143,11 @@ remains.
   "Insert into current turn" when the attach snapshot says
   `native_steering_available`. It calls `submit_session_feedback
   {connectionId, text, blocks?}`; a "no active turn" rejection sends the
-  message as a normal prompt. Without steering, or with "Send when this turn
-  ends", the message waits in a queue above the composer (send now, edit,
-  remove) and goes out when the turn finishes.
+  message as a normal prompt. Once the agent has it, the message is in the
+  conversation, inside the reply (see "Messages sent into a running turn"
+  below). Without steering, or with "Send when this turn ends", the message
+  waits in a queue above the composer (send now, edit, remove) and goes out
+  when the turn finishes, as a prompt of its own.
 - **Background work.** While the turn is held only for background tasks
   (`awaiting_background`) and steering is available, send delivers at once, and
   the queue drains into the held turn one message at a time.
@@ -437,6 +439,80 @@ read (in place, a turn that started under it, an agent that forks only
 between turns, one that can't fork, an older server), where the fork opens
 from a list, the session and on iPad, a fork from an Activity row from tap to
 open, and an in-place fork reloading the open session.
+
+### Messages sent into a running turn (1.3.12)
+
+`LiveTurn.swift` (`SteeredMessage`, `SteerAnchor`), the insert path of
+`SessionDetailViewModel` and `Timeline/TimelineNode.swift` (`liveNodes`).
+
+- **The bug.** A message delivered into the turn (Send while the turn is
+  held open for background work, "Insert into current turn", a queued
+  message drained into a held turn, Continue into a held turn) sat in a strip
+  above the message bar, "Inserted", until the turn ended. The agent's answer
+  to it streamed into the live reply above it, so the conversation read as if
+  the agent had answered nothing. Only the reload at the end of the turn put
+  the message in place, and a turn held open for background work can last a
+  long time. The Camera Control's send is the message bar's Send
+  (`ComposeBar.sendAfterDictation` calls `sendFromComposer`), so a recording
+  made while background work held the turn ended up there.
+- **What the server says.** Checked live (codeg on the box, Claude Code and
+  Pi, a throwaway folder): `submit_session_feedback` answers with the note it
+  recorded, `{id, text, created_at, status, delivered_at, blocks?}`, and the
+  same note reaches every client of the connection as `feedback_submitted`,
+  sent just before the response. Native steering records it `delivered` from
+  the start; the pull channel (`check_user_feedback`) records it `pending`
+  until `feedback_consumed`. The snapshot's `feedback` lists the turn's notes
+  until the next turn's prompt. The snapshot's `live_message` marks no point
+  for them. The agent writes its own copy into the transcript as a user turn,
+  where it took the message (Claude Code after the running tool call; at once
+  in a held turn), and the reply to it follows.
+- **Placement.** Once the echo or the response says `delivered` (an older
+  server's empty response counts when native steering is on), the message
+  leaves the strip and goes into the live reply as a `.steered` segment at its
+  current end: it closes the agent's output so far, and what the agent says
+  next starts after it. It renders as the user's message card with "Sent
+  during the turn" (a bare `continue` is the Continued divider). The codeg web
+  client does the same (`STEERING_MESSAGE`). A message sent from another
+  client (the desktop) shows the same way. When the turn ends, the reconcile
+  replaces the live reply with the transcript, where the agent's copy of the
+  message stands in for it, so it shows once.
+- **What stays above the message bar.** A message still on its way
+  ("Inserting…"), and on the pull channel one waiting for the agent ("Waiting
+  for the agent", then "Read by the agent"): the agent reads those as a tool
+  result, never as a message. Queued messages stay in the queue until they
+  are sent, as a prompt of their own when the turn ends or delivered into a
+  held turn, and then join the conversation.
+- **Never twice, never lost.** The echo and the response are matched to the
+  message by the note id (by text until the id is known, since the request
+  carries no client id), so either one places it and the other changes
+  nothing. A message the server confirms after its turn left the screen
+  isn't put into the next turn: the transcript is fetched once nothing runs.
+  One still on its way when the turn ends stays in the strip until the server
+  answers. A reply folded into `turns` before the server's copy arrives keeps
+  each message as a user turn between the halves of the reply.
+- **Rebuilt from a snapshot.** A reconnect, the app coming back to the
+  foreground, or a session shown again rebuilds the live reply from the
+  snapshot, which joins the text before and after a message into one block.
+  Each message keeps a `SteerAnchor`: the last tool call before it and the
+  UTF-8 bytes of text and reasoning after that call. The rebuilt reply puts it
+  back there (splitting the text block on a character boundary), and at the
+  end when the snapshot lacks that tool call. Only messages the snapshot's
+  `feedback` still lists are carried over, so one from an earlier turn never
+  joins the next.
+- **Where the answer's order can differ.** The message goes where the stream
+  was when the agent took it. Claude Code and Pi write their copy after the
+  tool call that was running, so a tool call that started in between moves
+  ahead of the message when the turn is reconciled.
+- **Coming back after a failed reply.** Returning to the app with a reply
+  that had failed or was cancelled dropped the live reply but left its
+  optimistic prompt, beside the server's copy of the same message. The live
+  state is now folded into `turns` as phone-made turns, which the re-fetch
+  replaces.
+- **Not covered.** A session opened while its turn runs, with no earlier
+  copy of the turn on this screen, has no anchors for the messages sent
+  before it opened: the transcript copies of those the agent already took
+  show as before, and the others when the turn ends. Messages sent after it
+  opened are placed as above.
 
 ## Session lists
 
@@ -1263,7 +1339,10 @@ use Control Center or turn the mode off.
 
 **Sending.** The strip's Send switch starts on for a Camera Control recording,
 whatever the mic's Send setting, and switching it off keeps that one message
-in the bar. No speech: "No speech detected", nothing sent. Without the speech
+in the bar. The send is the message bar's Send (`sendFromComposer`): a prompt
+when the session is idle, into the turn when it is held open for background
+work (the message then shows inside the reply), and queued while the agent
+replies. No speech: "No speech detected", nothing sent. Without the speech
 model, the press shows the same download prompt as the mic. A press while the
 last dictation is still being transcribed shows a notice.
 
@@ -1409,7 +1488,8 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   and bottom pin, the Camera Control press and gating, dictation clean-up with
   a mock server, the audio session owner and microphone hand-off, the
   event socket's recovery and send confirmation against a mock server with
-  scripted sockets, transcript windows and the transcript cache against a
+  scripted sockets, where a sent message lands in the conversation on each
+  route, transcript windows and the transcript cache against a
   mock windowed server, navigation and Back, the session model store, the
   whole app rotated in a running session, and the mode and options changed
   during a turn) on an
