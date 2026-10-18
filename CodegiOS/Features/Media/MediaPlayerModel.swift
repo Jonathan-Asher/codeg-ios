@@ -64,10 +64,10 @@ final class MediaPlayerModel: MediaPlaybackClient {
     /// While the user drags the scrubber, the playhead doesn't move it.
     var isScrubbing = false
 
-    @ObservationIgnored let engine: MediaPlaybackEngine
-    @ObservationIgnored private let provider: MediaSourceProviding
-    @ObservationIgnored private let center: MediaPlaybackCenter
-    @ObservationIgnored private let now: () -> Date
+    let engine: MediaPlaybackEngine
+    private let provider: MediaSourceProviding
+    private let center: MediaPlaybackCenter
+    private let now: () -> Date
     @ObservationIgnored private(set) var source: MediaSource?
     /// Last play, pause or seek: how long the stream has sat unused.
     @ObservationIgnored private var lastActivity: Date?

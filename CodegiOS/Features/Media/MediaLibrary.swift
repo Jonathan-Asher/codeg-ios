@@ -66,7 +66,7 @@ final class MediaLibrary: MediaSourceProviding {
     /// keeps a copy per reply (a file written again under the same name is
     /// fetched again for the newer reply).
     func localFile(for ref: MediaRef, maxBytes: Int64) async throws -> URL {
-        let key = "\(serverKey)|\(ref.path)|\(ref.scope)"
+        let key = fileKey(for: ref)
         if let hit = disk.lookup(key, ext: ref.ext) { return hit }
         if let running = downloads[key] { return try await running.value }
         let client = self.client
@@ -136,13 +136,19 @@ final class MediaLibrary: MediaSourceProviding {
     /// The poster frame and length of a video, from its stream. A link that
     /// has lapsed is minted again once.
     func videoPreview(for ref: MediaRef) async throws -> VideoPreview {
-        if let hit = previews[ref.path] { return hit }
+        let previewKey = "\(ref.path)|\(ref.scope)"
+        if let hit = previews[previewKey] { return hit }
         var stream = try await self.stream(for: ref)
+        let probe: MediaProbeResult
         do {
-            _ = try await MediaProbe.head(stream.url, session: MediaProbe.session)
+            probe = try await MediaProbe.head(stream.url, session: MediaProbe.session)
         } catch MediaError.expired {
             stream = try await streams.refresh(rootPath: ref.directory, path: ref.name)
-            _ = try await MediaProbe.head(stream.url, session: MediaProbe.session)
+            probe = try await MediaProbe.head(stream.url, session: MediaProbe.session)
+        }
+        // AVFoundation doesn't read Matroska (WebM, MKV): say so on the card.
+        if probe.isMatroska {
+            throw MediaError.unplayable("\(ref.ext.uppercased()) (Matroska) files don't play on the iPhone.")
         }
         let posterKey = "poster|\(serverKey)|\(ref.path)|\(stream.capability.size)"
         let asset = AVURLAsset(url: stream.url)
@@ -159,14 +165,24 @@ final class MediaLibrary: MediaSourceProviding {
                 let image = UIImage(cgImage: frame)
                 poster = image
                 if let jpeg = image.jpegData(compressionQuality: 0.8) {
-                    try? disk.store(jpeg, key: posterKey, ext: "jpg")
+                    _ = try? disk.store(jpeg, key: posterKey, ext: "jpg")
                 }
             }
         }
         let seconds = duration.flatMap { $0.isNumeric && $0.seconds > 0 ? $0.seconds : nil }
         let preview = VideoPreview(poster: poster, duration: seconds, size: stream.capability.size)
-        previews[ref.path] = preview
+        previews[previewKey] = preview
         return preview
+    }
+
+    /// A preview known without the server (the screenshots).
+    func seedPreview(_ preview: VideoPreview, for ref: MediaRef) {
+        previews["\(ref.path)|\(ref.scope)"] = preview
+    }
+
+    /// The disk cache key of a downloaded file, as ``localFile(for:maxBytes:)`` keeps it.
+    func fileKey(for ref: MediaRef) -> String {
+        "\(serverKey)|\(ref.path)|\(ref.scope)"
     }
 
     // MARK: MediaSourceProviding

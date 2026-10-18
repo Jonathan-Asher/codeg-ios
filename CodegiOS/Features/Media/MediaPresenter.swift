@@ -44,7 +44,11 @@ final class MediaPresenter {
 
     /// A picture from the session, full screen: zoom, share, save to Photos.
     func showImage(_ item: MediaImageItem) {
-        let viewer = UIHostingController(rootView: MediaImageViewer(item: item))
+        let holder = PresentedController()
+        let viewer = UIHostingController(rootView: MediaImageViewer(item: item) {
+            holder.controller?.dismiss(animated: true)
+        })
+        holder.controller = viewer
         viewer.modalPresentationStyle = .overFullScreen
         viewer.modalTransitionStyle = .crossDissolve
         viewer.view.backgroundColor = .clear
@@ -53,7 +57,11 @@ final class MediaPresenter {
 
     /// An SVG, drawn by WebKit with scripts off.
     func showVector(fileURL: URL, name: String) {
-        let viewer = UIHostingController(rootView: VectorImageViewer(fileURL: fileURL, name: name))
+        let holder = PresentedController()
+        let viewer = UIHostingController(rootView: VectorImageViewer(fileURL: fileURL, name: name) {
+            holder.controller?.dismiss(animated: true)
+        })
+        holder.controller = viewer
         viewer.modalPresentationStyle = .overFullScreen
         viewer.modalTransitionStyle = .crossDissolve
         present(viewer)
@@ -101,6 +109,13 @@ final class MediaPresenter {
         }
         return top
     }
+}
+
+/// The controller a SwiftUI viewer closes: UIKit presented it, so SwiftUI's
+/// own dismiss doesn't reach it.
+@MainActor
+private final class PresentedController {
+    weak var controller: UIViewController?
 }
 
 // MARK: - Video session
@@ -164,9 +179,11 @@ private final class VideoPlayerSession: NSObject, AVPlayerViewControllerDelegate
 
     nonisolated func playerViewController(_ playerViewController: AVPlayerViewController,
                                           willEndFullScreenPresentationWithAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator) {
-        coordinator.animate(alongsideTransition: nil) { [weak self] context in
-            guard !context.isCancelled else { return }
-            MainActor.assumeIsolated { self?.check() }
+        MainActor.assumeIsolated {
+            coordinator.animate(alongsideTransition: nil) { [weak self] context in
+                guard !context.isCancelled else { return }
+                MainActor.assumeIsolated { self?.check() }
+            }
         }
     }
 

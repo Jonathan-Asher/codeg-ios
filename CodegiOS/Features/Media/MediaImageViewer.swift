@@ -70,8 +70,9 @@ extension MediaImageItem {
 /// Photos, Done. An animated GIF plays.
 struct MediaImageViewer: View {
     let item: MediaImageItem
+    /// Close the viewer (it is presented from UIKit).
+    let close: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var image: UIImage?
     @State private var file: URL?
     @State private var error: String?
@@ -118,7 +119,7 @@ struct MediaImageViewer: View {
     private var toolbar: some View {
         HStack(spacing: 12) {
             Button {
-                dismiss()
+                close()
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 15, weight: .semibold))
@@ -322,7 +323,7 @@ final class ZoomingScrollView: UIScrollView, UIScrollViewDelegate {
 struct VectorImageViewer: View {
     let fileURL: URL
     let name: String
-    @Environment(\.dismiss) private var dismiss
+    let close: () -> Void
 
     var body: some View {
         NavigationStack {
@@ -332,7 +333,7 @@ struct VectorImageViewer: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("Done") { dismiss() }
+                        Button("Done", action: close)
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         ShareLink(item: fileURL)

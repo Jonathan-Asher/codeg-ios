@@ -1614,8 +1614,8 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   player model with the audio session) on an
   iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
   `build`. It uploads the session list screenshots as the
-  `session-list-screenshots` artifact and the compose area as
-  `compose-screenshots`.
+  `session-list-screenshots` artifact, and the compose area and a reply's
+  media cards (`media-cards-*.png`) as `compose-screenshots`.
 - **`build`** runs on every push and pull request on GitHub-hosted `macos-26`
   with its default Xcode. It runs `brew install xcodegen`, `xcodegen generate`,
   then an unsigned `xcodebuild build` for `generic/platform=iOS Simulator`.
