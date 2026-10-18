@@ -47,7 +47,7 @@ final class MediaLibrary: MediaSourceProviding {
         self.client = client
         self.disk = disk
         streams = MediaStreamResolver(minter: client)
-        presence = MediaPresence(lister: client)
+        presence = MediaPresence(lister: client, statter: client)
     }
 
     private static var libraries: [String: MediaLibrary] = [:]

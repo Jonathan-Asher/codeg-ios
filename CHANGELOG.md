@@ -12,6 +12,23 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Large videos, uploaded in pieces that survive a dropped connection
+  (1.3.15). A codeg server from fork.191 on takes video and audio
+  attachments up to 1 GB (it says so through `upload_limits`), so a video
+  now goes as the iPhone recorded it, HEVC included, and is compressed only
+  when it is over that limit (to H.264 at 1080p, or smaller to fit). A long
+  press on the video's chip chooses Original or Compressed (H.264 at 720p, a
+  quicker upload that plays in any browser); the choice is kept for the next
+  video. The file goes up in pieces of 8 MB, its progress on the chip. When
+  the connection drops it waits for the network and carries on from what the
+  server already has; when you leave the app it keeps going for the time iOS
+  allows, pauses before the app is suspended and carries on when you are
+  back; a server that restarted meanwhile gets the file again from the start.
+  Removing the attachment stops the upload and the server throws away what
+  it had. Against an older codeg server, attaching works as in 1.3.14.
+- Attach audio files (1.3.15). Files takes mp3, m4a, wav, aac, flac and the
+  other audio formats; an audio file is uploaded as it is, the same way as a
+  video, and shows in your message as an audio card that plays.
 - Attach videos (1.3.14). The "+" menu's Photo Library offers videos as well
   as photos, the Camera records video, and Files takes movies. A video from
   iCloud downloads first, with its progress on the chip; one in HEVC, in
@@ -169,6 +186,12 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Changed
 
+- Checking that a message's files are still there takes one request
+  (1.3.15). Against codeg fork.191 or later the app asks `stat_paths` about
+  up to 200 files at once, under the session's folder, the home and the
+  folder a command moved to, instead of listing each of their directories;
+  hidden files are checked too. A file outside those folders, and every file
+  on an older server, is checked by listing its directory as before.
 - A message's media takes less room (1.3.14). One picture or video shows
   inline, at most 180 points tall; several files fold into one row with tiny
   thumbnails ("3 images · 1 PDF · 1 video") that opens into a list of them:
@@ -235,6 +258,9 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- An H.264 `.mp4` over the size limit (one from Files, say) couldn't be
+  compressed (1.3.15): its compressed copy was written over the original,
+  so the export failed. Compressed copies now go to a folder of their own.
 - Media cards for files that were never there (1.3.14). A reply whose
   commands worked in another folder showed a column of cards that said "The
   file is no longer there", some for names that aren't files at all

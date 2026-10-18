@@ -20,6 +20,9 @@ final class MockCodegServer: @unchecked Sendable {
         let body: [String: Any]
         /// The request body as sent (a multipart upload isn't JSON).
         var raw = Data()
+        /// The URL's query (`upload_attachment_chunk?uploadId=…&offset=N`).
+        var query: [String: String] = [:]
+        var method = "POST"
 
         var text: String {
             (try? JSONSerialization.data(withJSONObject: body)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
@@ -53,8 +56,9 @@ final class MockCodegServer: @unchecked Sendable {
         lock.withLock { log.filter { $0.path == path } }
     }
 
-    fileprivate func answer(path: String, body: [String: Any], raw: Data = Data()) -> Reply {
-        let call = Call(path: path, body: body, raw: raw)
+    fileprivate func answer(path: String, body: [String: Any], raw: Data = Data(),
+                            query: [String: String] = [:], method: String = "POST") -> Reply {
+        let call = Call(path: path, body: body, raw: raw, query: query, method: method)
         let route = lock.withLock { () -> ((Call) -> Reply)? in
             log.append(call)
             return routes[path]
@@ -91,7 +95,12 @@ final class MockURLProtocol: URLProtocol {
         }
         let raw = Self.rawBody(of: request)
         let body = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any] ?? [:]
-        let reply = server.answer(path: url.lastPathComponent, body: body, raw: raw)
+        var query: [String: String] = [:]
+        for item in URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [] {
+            query[item.name] = item.value ?? ""
+        }
+        let reply = server.answer(path: url.lastPathComponent, body: body, raw: raw, query: query,
+                                  method: request.httpMethod ?? "GET")
         switch reply {
         case .fail(let code):
             client?.urlProtocol(self, didFailWithError: URLError(code))
