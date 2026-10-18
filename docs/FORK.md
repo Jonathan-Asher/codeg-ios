@@ -534,17 +534,15 @@ the stream resolver, the player model, the cards and the viewers).
   capability (`video-preview.tsx`) and pictures through `read_file_base64`;
   nothing previews audio. Every request splits the path as `splitAbsPath`
   does: the file's directory is the `rootPath`, its name the path.
-- **What the phone finds.** `MediaDetector` takes the same links, Markdown
-  pictures (inside the folder only) and written files, and also what the web
-  can't open from a phone: paths written out in prose or in a code span
-  (`out/clip.mp4`, `` `my clip.mov` ``, `~/Music/a.m4a`, `/tmp/x.png:12`), the
-  paths in a command (an `ffmpeg` output), and a path another tool printed
-  ("Saved to …"). A printout naming more than six media files is a listing
-  (`ls`, `find`) and is skipped, as are Read and search calls, failed calls,
-  fenced code, web URLs and `codeg://` links. A Hebrew prefix letter joined
-  with a hyphen (`ו-clip.mp4`) isn't part of the name. Relative paths join
-  the session's folder, `~/` the server user's home (`get_home_directory`,
-  asked once per server). At most twelve files per message, each once.
+- **What the phone finds** (since 1.3.14; see the next section for why).
+  `MediaDetector` takes the same links and Markdown pictures (inside the
+  folder only), what Write / Edit / apply_patch wrote, paths written out in
+  full in prose or a code span (`/tmp/x.png:12`, `` `~/Movies/my clip.mov` ``),
+  and a "Saved to …" / "Wrote …" line another tool printed. It never reads a
+  command's own text. Relative paths of links and edits join the session's
+  folder, `~/` the server user's home (`get_home_directory`, asked once per
+  server); a relative name a command printed joins only the `cd` the same
+  command opens with. At most 24 files per message, each once.
 - **Formats.** Pictures: png, jpg, jpeg, gif (animated in the viewer), webp,
   heic, heif, bmp, tiff, ico; svg in a WebKit viewer with scripts off.
   Video: mp4, m4v, mov, 3gp; webm, mkv and ogv are tried and say plainly that
@@ -552,8 +550,9 @@ the stream resolver, the player model, the cards and the viewers).
   request, as the web marks them. Audio: mp3, m4a, aac, wav, flac, aif, aiff,
   caf; ogg, oga and opus are tried. Documents in Quick Look: pdf, doc(x),
   xls(x), ppt(x), key, pages, numbers, rtf, usdz.
-- **Where they show.** A `.media` timeline node of cards follows each
-  message and sits above each reply's footer; detection runs once per turn
+- **Where they show.** A reply's files are a `.media` timeline node above
+  its footer; a user message's own files show inside its card
+  (`TimelineNode.attachedMedia`). Detection runs once per turn
   (`MediaRefCache`). The live reply shows its media when it is persisted, as
   the web's card waits for the reply to complete. A link tapped in a message
   opens the file (`MediaLinks`, through the transcript's `openURL`); other
@@ -575,11 +574,12 @@ the stream resolver, the player model, the cards and the viewers).
   (`MediaProbe`): a 404 "Media link is invalid or expired" re-mints and
   resumes at the same position (twice at most), a missing file or a Matroska
   header says why.
-- **Audio, pictures, documents.** codeg mints capabilities for video files
-  only ("Only video files can be streamed for preview"), so audio is tried as
-  a stream once and then downloaded (`download_workspace_file`, up to
-  200 MB) and played from the iPhone. Pictures (up to 40 MB) and documents
-  (up to 100 MB) are downloaded too. Downloads are kept in
+- **Audio, pictures, documents.** Audio is tried as a stream first: codeg
+  fork.190 and later mint capabilities for audio too (`audio/mpeg`,
+  `audio/mp4`, …), so it streams like video. An older codeg answers "Only
+  video files can be streamed"; the phone then downloads audio
+  (`download_workspace_file`, up to 200 MB) and plays it from the iPhone.
+  Pictures (up to 40 MB) and documents (up to 100 MB) are downloaded. Downloads are kept in
   `Caches/Media` (`MediaDiskCache`, 256 MB, least recently used out), per
   reply, so a file written again under the same name is fetched again for the
   newer reply; decoded pictures are scaled off the main thread
@@ -619,17 +619,154 @@ the stream resolver, the player model, the cards and the viewers).
 
 #### What the codeg server should change
 
-- **Stream audio too.** `media_content_type` (`workspace_media.rs`) answers
-  only video extensions, so the phone downloads audio before it plays. Adding
-  `mp3 → audio/mpeg`, `m4a`/`aac → audio/mp4` (`audio/aac` for raw `.aac`),
-  `wav → audio/wav`, `flac → audio/flac`, `aif`/`aiff → audio/aiff`,
-  `caf → audio/x-caf`, `ogg`/`oga`/`opus → audio/ogg` would let the same
-  capability stream them; the phone tries a stream first and needs no change.
-  The refusal message ("Only video files…") should then read "Only audio and
-  video files…" (the phone matches "streamed" as well).
-- Pictures could stream the same way (`image/png`, `image/jpeg`, …, never
-  `image/svg+xml`, which a browser would run), but the download is enough for
-  them.
+- ~~Stream audio too.~~ Done in fork.190: `workspace_media_capability`
+  mints capabilities for audio as well, and the phone streams it with no
+  change. Pictures could stream the same way (`image/png`, `image/jpeg`, …,
+  never `image/svg+xml`, which a browser would run), but the download is
+  enough for them.
+
+### Media: only real files, one row, attaching videos (1.3.14)
+
+`Models/MediaReference.swift` (detection, `MediaGroup`, the attachment
+link), `Features/Media/MediaPresence.swift` (is it there),
+`Features/Media/MediaCards.swift` (the row and the list),
+`Features/SessionDetail/VideoAttachment.swift` (picking, compressing,
+uploading), `Networking/CodegClient+Media.swift` (`upload_attachment`).
+
+- **What went wrong.** In a session whose agent built a PDF guide in
+  `~/browser-check/guide/` while the session's folder was
+  `~/Work/legalix`, one reply showed twelve cards and eleven said "The file
+  is no longer there": `claude-listing.png`, `chatgpt-composer.png`,
+  `l.pdf`, `f.png`, `-short.png`, `signin-claude-en.png`, … Two causes,
+  both in 1.3.13's detection of names in commands:
+  - *Relative names, wrong folder.* The commands began
+    `cd ~/browser-check/guide && …` and then used bare names, which the phone
+    joined to the session's folder. The files were in `~/browser-check/guide/`
+    all along (the PDF too: it was built there, and only its `-v2` copies were
+    copied to the Mac's Downloads); `….pdf.png` was in its `ql/` subfolder,
+    named by an `ls ql/`.
+  - *Code taken for names.* `f.png` came from `[ -f $f.png ]` in a shell
+    loop, `l.pdf` from `pdfinfo …-$l.pdf`, `-short.png` from the Python
+    f-string `f"{f}-short.png"`; others were dictionary keys and a `sed`
+    swap in the same commands.
+  Over the whole session (2,605 turns) 1.3.13 showed 221 cards under 33
+  messages, 170 of them for files that weren't there.
+- **What shows now.** Only a file the agent clearly made or pointed at:
+  - a Write / Edit / apply_patch target (its `file_path` and codeg web's
+    other path keys; a relative one joins the session's folder, the edit
+    tools' working directory);
+  - a Markdown link or picture, as codeg web resolves it;
+  - a path written out in full, `/…` or `~/…`, in prose or a code span;
+  - a line a tool printed that says it saved the file ("Saved to",
+    "Wrote", "Written", "Created", "Exported", "Rendered", "Generated",
+    ffmpeg's "Output #0, mp4, to '…'"), with nothing but a few words ending in
+    "to" / "as" / "at" / "in" between the verb and the name, and no error
+    word on the line;
+  - an attachment (`[name](file://…)`).
+  A command's own text (a Bash body, a heredoc, Python or JS source, a sed
+  expression) is never read. A relative name a command printed joins only
+  the `cd <dir> &&` (or `;`) the same command opens with, absolute or `~/`,
+  with no other `cd`, `pushd` or `popd` after it; without one it is left out
+  rather than guessed. A name with `{`, `}`, `$` or `*` in it or around it
+  is a template.
+- **Is it there.** Before a card shows, `MediaPresence` asks the server, one
+  `list_directory_with_files` per directory however many files and messages
+  name it (codeg has no stat endpoint). A file that isn't listed doesn't
+  show; a directory that isn't there ("Path is not a directory") means its
+  files aren't either. The one exception is a file the reply wrote with
+  Write / Edit / apply_patch and that is gone since: it is listed, struck
+  through, as "Deleted". An answer is kept for 10 minutes when the file is
+  there and 30 s when it isn't, so a file made a moment later shows on the
+  next rebuild. A server that can't answer (an older codeg, the network) and
+  a hidden name (a listing leaves out dotfiles) leave the card to find out
+  on its own, as 1.3.13 did. The transcript rebuilds once per batch of
+  answers (`MediaPresence.version` in `TranscriptView`'s memo key).
+- **The row.** One picture or video under a message shows inline, at most
+  180 pt tall (`MediaCard(compact:)`); one audio file is its player, one
+  document its row. Several files fold into one row, as codeg web's "New
+  files" card folds a reply's files and as `ToolGroupCard` folds tool
+  calls: up to four 26 pt thumbnails (a picture's, a video's poster, a
+  symbol for audio and documents), the summary ("3 images · 1 video · 2
+  audio files · 1 PDF · 1 deleted") and a chevron. Tapped, it opens into a
+  list: a 36 pt thumbnail, the name (truncated in the middle), the type and
+  size from the listing; a picture opens full screen, a video plays, a
+  document opens in Quick Look, an audio file is its inline player. The
+  chevron and the order follow the layout direction, so Hebrew reads right
+  to left.
+- **Attaching a video.** The Photo Library picker matches images and videos
+  (`preferredItemEncoding: .current`, so the system doesn't transcode
+  first); the Camera can record (`UIImagePickerController` with the movie
+  type, high quality, five minutes at most); Files takes `.movie` types. A
+  video is an `Attachment` with an `AttachmentUpload` job:
+  - *fetching*: the picker's `loadTransferable` (a `FileRepresentation` of
+    `.movie`), its `Progress` shown while an iCloud video downloads; a
+    recording or a file from Files is copied into the app's own temporary
+    folder first;
+  - *compressing*: an H.264 MP4, MOV or M4V within the limit is sent as it is
+    ("Original"); HEVC, another codec or a larger file is exported with
+    `AVAssetExportSession` to H.264 MP4 at 720p, or 540p, 480p or medium
+    quality (about 360p) when AVFoundation's estimate
+    (`estimatedOutputFileLengthInBytes`) or the written size is still over
+    the limit; when even that is over, it says the video is too long and to
+    trim it in Photos;
+  - *uploading*: `upload_attachment`, multipart, with the conversation's
+    bucket as codeg web names it (`session_id` = `conv-<folder>-<agent>-<id>`,
+    `ios-<uuid>` before the session exists), its progress from the task
+    delegate. The answer's `path` is under codeg's uploads directory.
+  The chip shows the poster and length when it is done, and a ring with the
+  phase until then; a failed one has a red outline and, tapped, says why with
+  Try Again (the compressed file is kept for it) and Remove. Send is greyed
+  out until every video is uploaded; an attempt to send, insert or queue
+  earlier says to wait. The prompt sends a `resource_link`
+  (`{uri: file://…, name, mime_type}`), the block codeg web sends for a file
+  that isn't a picture; the server shows it as `[name](uri)` and Claude Code
+  records `[@name](uri)`. The optimistic message carries the same link, so
+  its card plays at once; in the message the link is replaced by the card.
+  The video plays through `workspace_media_capability` with the upload's
+  folder as `rootPath`, like any other video. The copies on the iPhone are
+  deleted once the server has the file, or when the video is removed.
+- **Checked live** against the codeg server on the box (fork.190, port 3080):
+  - *Detection*, conversation 101 read through `get_folder_conversation`
+    (read only) and run through the app's detector with its existence check
+    against `list_directory_with_files`: 1.3.13 showed 221 cards under 33
+    messages, 170 of them missing; 1.3.14 shows 3 cards under 2 messages, all
+    there (the attached `Legalix-כל-התובנות.pdf` in your message, and the two
+    guide PDFs a build script printed it wrote, resolved against its `cd`).
+    A mention of a picture in `~/Downloads` that is gone from the box is
+    left out. The reply of the report shows no cards.
+  - *Upload*, through the app's own client code: a 3 s H.264 MP4 made with
+    ffmpeg uploaded to a throwaway bucket as `take (1).mp4` (200, `path`
+    under `uploads/ios-livecheck-…/`, `mimeType` `video/mp4`, progress
+    reported), its link written and read back by the detector, found by the
+    existence check, a capability minted for it (`video/mp4`, 900 s) and the
+    byte endpoint answering `bytes=0-15` with 206 and the `ftyp` box. Files
+    of 21 MB were refused before sending; sent anyway with curl, codeg
+    answered 500 "Upload exceeds the maximum allowed size"
+    (`errors.upload.tooLarge`), which the chip reads as the limit. The bucket
+    was deleted afterwards. No prompt was sent.
+
+#### What the codeg server should change
+
+- **A larger limit for video attachments.** `upload_attachment` takes at
+  most 20 MiB a file (`UPLOAD_MAX_BYTES`, `web/handlers/files.rs`, mirrored in
+  `commands/remote_proxy.rs` and `src/lib/api.ts`), the cap meant for
+  pictures that `prompt_hydration` reads back into the prompt. A video is
+  only linked, never inlined, so it could take a cap of its own: for a part
+  whose content type is `video/*` or `audio/*`, a limit of a few hundred MB
+  (an env setting such as `CODEG_UPLOAD_MAX_MEDIA_BYTES`), with the route's
+  `DefaultBodyLimit` raised to match (the handler already streams to disk)
+  and the `CODEG_UPLOAD_MAX_TOTAL_BYTES` reservation sized from the request's
+  `Content-Length` rather than the picture cap. Until then the phone
+  compresses to fit, which keeps about half a minute at 720p and a couple of
+  minutes at 360p. A resumable upload (an upload id and an offset per chunk)
+  would let a large one survive a dropped cellular connection.
+  `upload_workspace_file` has no limit but writes into the project's folder,
+  which is not where a chat attachment belongs.
+- **A stat endpoint.** `stat_paths {paths: [...]}` →
+  `[{path, exists, isFile, size, modifiedMs}]` (a few hundred paths at most)
+  would answer the existence check in one request, without listing whole
+  directories (`list_directory_with_files` also opens every subdirectory to
+  fill `hasChildren`, and leaves out dotfiles).
 
 ## Session lists
 

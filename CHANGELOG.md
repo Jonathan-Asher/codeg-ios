@@ -12,6 +12,17 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Attach videos (1.3.14). The "+" menu's Photo Library offers videos as well
+  as photos, the Camera records video, and Files takes movies. A video from
+  iCloud downloads first, with its progress on the chip; one in HEVC, in
+  another codec or over the codeg server's 20 MB attachment limit is
+  compressed to H.264 MP4 (720p, or 540p, 480p or about 360p when it must be
+  smaller to fit), then uploaded to the server with its progress, the way
+  codeg web uploads a file that isn't a picture, and the message links to
+  it. The message can be sent once the upload is done; a video that didn't
+  upload says why on its chip and tries again on a tap. In your message the
+  video shows as a card that plays from the server. A video too long to fit
+  even at the smallest size says so and asks you to trim it.
 - Pictures, videos and audio from a session (1.3.13). A file the agent
   links or names in a reply, one its tools wrote (Write, Edit, apply_patch)
   or a command made, and a file attached to your message show as cards under
@@ -158,6 +169,13 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Changed
 
+- A message's media takes less room (1.3.14). One picture or video shows
+  inline, at most 180 points tall; several files fold into one row with tiny
+  thumbnails ("3 images · 1 PDF · 1 video") that opens into a list of them:
+  a picture opens full screen, a video plays, an audio file plays in the
+  list, a document opens in Quick Look. Hebrew lays the row out right to
+  left. A file attached to your message shows inside your message, in place
+  of its link.
 - The mode and every agent option can be changed while the agent works
   (1.3.7), as on the desktop: switch from Plan or Manual to Bypass
   permissions mid-turn, also while a permission card waits, or change the
@@ -217,6 +235,19 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- Media cards for files that were never there (1.3.14). A reply whose
+  commands worked in another folder showed a column of cards that said "The
+  file is no longer there", some for names that aren't files at all
+  (`f.png`, `-short.png`, `l.pdf`). Names were taken from the commands'
+  own code (Python f-strings, `$f.png` in a shell loop, sed expressions,
+  dictionary keys) and bare names were looked for in the session's folder
+  instead of the folder the command had moved to. Now a card shows only for
+  a file the agent wrote (Write, Edit, apply_patch), linked, named in full
+  (`/…` or `~/…`) or that a tool printed it saved; a relative name is
+  resolved only against the `cd` its own command starts with. Before a card
+  shows, the server is asked whether the file is there (one listing per
+  folder) and a file that isn't doesn't show; only a file the reply itself
+  wrote and that has since been deleted is listed, as deleted.
 - A message sent into a running turn stayed above the message bar (1.3.12).
   One delivered into a turn held open for background work, or with "Insert
   into current turn", sat in a strip there until the turn ended, while the

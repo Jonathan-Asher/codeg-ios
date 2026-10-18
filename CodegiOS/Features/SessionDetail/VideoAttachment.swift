@@ -223,7 +223,7 @@ enum VideoAttachmentError: LocalizedError, Equatable {
         case .tooLong(let estimate, let limit):
             let size = ByteCountFormatter.string(fromByteCount: estimate, countStyle: .memory)
             let cap = ByteCountFormatter.string(fromByteCount: limit, countStyle: .memory)
-            return "Too long to send: even at 480p it is about \(size), and the codeg server takes attachments up to \(cap). Trim it in Photos first."
+            return "Too long to send: even at 360p it is about \(size), and the codeg server takes attachments up to \(cap). Trim it in Photos first."
         case .export(let detail): return "The video couldn't be compressed: \(detail)"
         }
     }
@@ -246,8 +246,9 @@ protocol VideoPreparing: Sendable {
 
 /// Turns a picked video into one codeg takes: an H.264 MP4 or MOV under
 /// ``maxBytes`` is sent as it is; HEVC, another codec or a larger file is
-/// exported to H.264 MP4 at 720p, or 540p or 480p when 720p would still be
-/// over the limit (AVFoundation's estimate first, the real size after).
+/// exported to H.264 MP4 at 720p, or at 540p, 480p or AVFoundation's medium
+/// quality (about 360p) when the larger size would still be over the limit
+/// (AVFoundation's estimate first, the real size after).
 struct VideoAttachmentPrep: VideoPreparing {
     var maxBytes: Int64 = AttachmentUploadLimits.maxBytes
 
@@ -256,6 +257,7 @@ struct VideoAttachmentPrep: VideoPreparing {
         (AVAssetExportPreset1280x720, "720p"),
         (AVAssetExportPreset960x540, "540p"),
         (AVAssetExportPreset640x480, "480p"),
+        (AVAssetExportPresetMediumQuality, "360p"),
     ]
 
     /// The folder picked videos are copied to and compressed in.
