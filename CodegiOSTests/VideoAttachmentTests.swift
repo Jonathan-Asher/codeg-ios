@@ -291,8 +291,11 @@ final class VideoAttachmentTests: XCTestCase {
         XCTAssertNotNil(prepared.poster)
     }
 
-    func testAnotherCodecIsCompressedToH264MP4() async throws {
-        let movie = try await makeMovie("frames.mov", codec: .jpeg, fileType: .mov)
+    /// The simulator encodes only H.264, so the file that must be exported is
+    /// an H.264 movie in a container that isn't sent as it is (`.qt`); HEVC
+    /// takes the same path.
+    func testAVideoThatCantGoAsItIsIsExportedToH264MP4() async throws {
+        let movie = try await makeMovie("frames.qt", codec: .h264, fileType: .mov)
         defer { try? FileManager.default.removeItem(at: movie.deletingLastPathComponent()) }
         let prepared = try await VideoAttachmentPrep().prepare(movie) { _ in }
         XCTAssertEqual(prepared.name, "frames.mp4")
@@ -306,7 +309,7 @@ final class VideoAttachmentTests: XCTestCase {
     }
 
     func testAVideoTooLongForTheLimitSaysSo() async throws {
-        let movie = try await makeMovie("long.mov", codec: .jpeg, fileType: .mov)
+        let movie = try await makeMovie("long.qt", codec: .h264, fileType: .mov)
         defer { try? FileManager.default.removeItem(at: movie.deletingLastPathComponent()) }
         do {
             _ = try await VideoAttachmentPrep(maxBytes: 1024).prepare(movie) { _ in }
