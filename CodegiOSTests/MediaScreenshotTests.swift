@@ -44,6 +44,11 @@ final class MediaScreenshotTests: XCTestCase {
         let disk = MediaDiskCache.shared
         _ = try disk.store(try XCTUnwrap(picture(CGSize(width: 900, height: 520), hue: 0.55).pngData()),
                            key: library.fileKey(for: chart), ext: "png")
+        // The picture's whole path, from the cached file to a scaled-down
+        // decode; the card then draws it from memory at once.
+        let thumbnail = try await library.image(for: chart, maxPixelSize: 600)
+        XCTAssertEqual(max(thumbnail.size.width * thumbnail.scale, thumbnail.size.height * thumbnail.scale), 600)
+        _ = try await library.image(for: chart, maxPixelSize: 1200)
         let video = ref("/Users/j/proj/out/demo.mp4")
         library.seedPreview(VideoPreview(poster: picture(CGSize(width: 1280, height: 720), hue: 0.08),
                                          duration: 94, size: 18_400_000), for: video)
