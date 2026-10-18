@@ -29,7 +29,6 @@ struct MediaGroupDisclosure: View {
     let group: MediaGroup
     let library: MediaLibrary
     @State private var expanded: Bool
-    @Environment(\.layoutDirection) private var layoutDirection
 
     init(group: MediaGroup, library: MediaLibrary, expanded: Bool = false) {
         self.group = group
@@ -86,7 +85,9 @@ struct MediaGroupDisclosure: View {
             Image(systemName: "chevron.forward")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(Theme.textTertiary)
-                .rotationEffect(.degrees(expanded ? (layoutDirection == .rightToLeft ? -90 : 90) : 0))
+                // `chevron.forward` is mirrored right to left after the
+                // rotation, so a quarter turn points down either way.
+                .rotationEffect(.degrees(expanded ? 90 : 0))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -296,7 +297,11 @@ private struct MediaCaption: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             if let detail {
-                Text(verbatim: "· \(detail)")
+                // The separator stands on its own, so it stays between the
+                // name and the detail right to left too.
+                Text(verbatim: "·")
+                    .font(Theme.Typography.metaLabel)
+                Text(verbatim: detail)
                     .font(Theme.Typography.metaLabel.monospacedDigit())
                     .lineLimit(1)
             }

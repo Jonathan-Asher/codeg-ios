@@ -110,6 +110,9 @@ final class MediaScreenshotTests: XCTestCase {
         for (picture, hue) in pictures {
             _ = try disk.store(try XCTUnwrap(self.picture(CGSize(width: 900, height: 600), hue: hue).pngData()),
                                key: library.fileKey(for: picture), ext: "png")
+            // Decode the thumbnails (26 pt and 36 pt at 3x) and the inline
+            // picture up front, so the cards draw them from memory at once.
+            for size in [78, 108, 1200] { _ = try await library.image(for: picture, maxPixelSize: size) }
         }
         let demo = ref("/Users/j/proj/out/demo.mp4")
         library.seedPreview(VideoPreview(poster: picture(CGSize(width: 1280, height: 720), hue: 0.08),
