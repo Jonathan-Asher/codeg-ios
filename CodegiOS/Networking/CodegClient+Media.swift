@@ -226,7 +226,8 @@ enum AttachmentUploadError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .tooLarge(let limit):
-            return "The codeg server takes attachments up to \(ByteCountFormatter.string(fromByteCount: limit, countStyle: .file))."
+            // codeg counts its limit in binary megabytes (20 MiB).
+            return "The codeg server takes attachments up to \(ByteCountFormatter.string(fromByteCount: limit, countStyle: .memory))."
         case .quotaFull: return "The codeg server's upload space is full."
         case .unsupportedServer: return "This needs a newer codeg server."
         case .unauthorized: return "Authentication failed. Check the server token."

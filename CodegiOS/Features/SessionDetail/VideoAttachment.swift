@@ -221,8 +221,8 @@ enum VideoAttachmentError: LocalizedError, Equatable {
         case .noVideo: return "This file has no video in it."
         case .fetch(let detail): return "The video couldn't be loaded from the library: \(detail)"
         case .tooLong(let estimate, let limit):
-            let size = ByteCountFormatter.string(fromByteCount: estimate, countStyle: .file)
-            let cap = ByteCountFormatter.string(fromByteCount: limit, countStyle: .file)
+            let size = ByteCountFormatter.string(fromByteCount: estimate, countStyle: .memory)
+            let cap = ByteCountFormatter.string(fromByteCount: limit, countStyle: .memory)
             return "Too long to send: even at 480p it is about \(size), and the codeg server takes attachments up to \(cap). Trim it in Photos first."
         case .export(let detail): return "The video couldn't be compressed: \(detail)"
         }

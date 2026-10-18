@@ -36,7 +36,7 @@ struct Attachment: Identifiable, Hashable, Sendable {
     }
 
     /// A video on its way to the server.
-    init(id: UUID = UUID(), video upload: AttachmentUpload) {
+    @MainActor init(id: UUID = UUID(), video upload: AttachmentUpload) {
         self.id = id
         self.name = upload.displayName
         self.mimeType = "video/mp4"
