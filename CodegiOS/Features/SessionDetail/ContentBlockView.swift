@@ -163,14 +163,19 @@ struct InlineImageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let decoded {
-                Image(uiImage: decoded)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(maxHeight: 320)
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-                    .hairlineBorder(Theme.Radius.md)
-                    .transition(.opacity)
+                Button(action: openFullScreen) {
+                    Image(uiImage: decoded)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxHeight: 320)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                        .hairlineBorder(Theme.Radius.md)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text("Image"))
+                .accessibilityHint("Opens the picture full screen")
+                .transition(.opacity)
             } else {
                 placeholder
             }
@@ -184,6 +189,15 @@ struct InlineImageView: View {
         }
         .animation(Theme.Motion.content, value: decoded == nil)
         .task(id: cacheKey) { await decode() }
+    }
+
+    /// The picture full screen: zoom, share, save to Photos.
+    private func openFullScreen() {
+        if let ref = image.dataRef, let request = source?.request(for: ref) {
+            MediaPresenter.shared.showImage(.reference(request, mimeType: image.mimeType))
+        } else {
+            MediaPresenter.shared.showImage(.inline(image))
+        }
     }
 
     /// A calm decoding box (or a decode-failure note) shown until the image lands.

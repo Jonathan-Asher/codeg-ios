@@ -14,6 +14,8 @@ enum AudioSessionUse: String, Sendable {
     case recording
     /// Read aloud: `.playback`, spoken audio.
     case readAloud
+    /// A video, or an audio file from the session, playing: `.playback`.
+    case media
 }
 
 /// The calls ``AudioSessionOwner`` makes: `AVAudioSession` in the app
@@ -84,6 +86,12 @@ final class AudioSessionOwner: @unchecked Sendable {
             try work()
             return .alreadyActive
         }
+        if let previous = active, previous != use {
+            // Whoever held the session hears that it moves on (a clip pauses
+            // when dictation starts).
+            NotificationCenter.default.post(name: .audioSessionUseWillChange, object: self,
+                                            userInfo: ["from": previous.rawValue, "to": use.rawValue])
+        }
         do {
             try attempt(use, work)
             return .activated
@@ -148,6 +156,13 @@ final class AudioSessionOwner: @unchecked Sendable {
         defer { lock.unlock() }
         active = nil
     }
+}
+
+extension Notification.Name {
+    /// ``AudioSessionOwner/acquire(_:starting:)`` is about to take the session
+    /// from one use for another. `userInfo`: `from` and `to`, the raw values of
+    /// the two ``AudioSessionUse``s. Posted on the acquiring thread.
+    static let audioSessionUseWillChange = Notification.Name("codeg.audioSession.useWillChange")
 }
 
 /// An error the app throws itself, already in plain words.

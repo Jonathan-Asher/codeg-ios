@@ -155,6 +155,8 @@ final class DictationController {
     private var preRollWanted = false
     /// Read aloud has the audio session; standby steps aside meanwhile.
     private var readAloudActive = false
+    /// A video or audio file from the session plays; standby steps aside too.
+    private var mediaActive = false
     private var preRollRetry: Task<Void, Never>?
 
     /// Unload the model after this long without dictation.
@@ -180,6 +182,18 @@ final class DictationController {
         observers.append(center.addObserver(forName: .readAloudDidReleaseAudio, object: nil, queue: nil) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.readAloudActive = false
+                self?.updatePreRoll()
+            }
+        })
+        observers.append(center.addObserver(forName: .mediaPlaybackWillClaimAudio, object: nil, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.mediaActive = true
+                self?.updatePreRoll()
+            }
+        })
+        observers.append(center.addObserver(forName: .mediaPlaybackDidReleaseAudio, object: nil, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.mediaActive = false
                 self?.updatePreRoll()
             }
         })
@@ -252,7 +266,7 @@ final class DictationController {
 
     /// Start or stop standby to match what is wanted now.
     private func updatePreRoll(attempt: Int = 0) {
-        let should = preRollWanted && !readAloudActive && DictationRecorder.permission == .granted
+        let should = preRollWanted && !readAloudActive && !mediaActive && DictationRecorder.permission == .granted
             && UIApplication.shared.applicationState != .background
         guard should else {
             recorder.stopStandby()

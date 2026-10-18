@@ -19,6 +19,8 @@ final class SystemAudioSession: AudioSessionDriver {
             try configureRecording(options: Self.recordingOptions)
         case .readAloud:
             try session.setCategory(.playback, mode: .spokenAudio, options: [])
+        case .media:
+            try session.setCategory(.playback, mode: .moviePlayback, options: [])
         }
     }
 

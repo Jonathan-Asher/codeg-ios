@@ -6,8 +6,8 @@ This repository is a fork of [xintaofei/codeg-ios](https://github.com/xintaofei/
 in open pull requests. The fork carries those fixes and its own app identity, so it
 installs next to the upstream app. Features for Jonathan's own codeg server,
 push notifications, on-device voice (read aloud and voice typing, with
-clean-up and translation through the codeg server) and Camera Control to
-talk, are added here.
+clean-up and translation through the codeg server), Camera Control to
+talk, and the pictures, videos and audio a session refers to, are added here.
 
 `LICENSE` is kept as upstream ships it. `THIRD_PARTY_NOTICES.md` keeps
 upstream's entries and adds the fork's own dependencies at the end.
@@ -513,6 +513,123 @@ open, and an in-place fork reloading the open session.
   before it opened: the transcript copies of those the agent already took
   show as before, and the others when the turn ends. Messages sent after it
   opened are placed as above.
+
+### Media in a session (1.3.13)
+
+`Models/MediaReference.swift` (what a message refers to),
+`Networking/CodegClient+Media.swift`, and `Features/Media/` (the library,
+the stream resolver, the player model, the cards and the viewers).
+
+- **What codeg web does.** It links only Markdown link destinations
+  (`remark-file-uri-links.ts`, `rehype-relative-file-links.ts`,
+  `link-classify.ts`): a `file://` link opens its path, a relative one is
+  joined to the active folder, an absolute one is used as it is, and a
+  Markdown picture shows inline only from inside the session's folder
+  (`markdown-local-image.ts`). The reply's "New files" card
+  (`extractReplyFileChanges`) lists what Write / Edit / apply_patch calls
+  wrote, read from their `file_path`, `path`, `notebook_path` (and the other
+  `PATH_KEYS`), a `changes` object and a patch's `*** Add File:` headers.
+  An attachment that isn't a picture reaches the transcript as
+  `[name](file://…)`. The file panel previews video through a streaming
+  capability (`video-preview.tsx`) and pictures through `read_file_base64`;
+  nothing previews audio. Every request splits the path as `splitAbsPath`
+  does: the file's directory is the `rootPath`, its name the path.
+- **What the phone finds.** `MediaDetector` takes the same links, Markdown
+  pictures (inside the folder only) and written files, and also what the web
+  can't open from a phone: paths written out in prose or in a code span
+  (`out/clip.mp4`, `` `my clip.mov` ``, `~/Music/a.m4a`, `/tmp/x.png:12`), the
+  paths in a command (an `ffmpeg` output), and a path another tool printed
+  ("Saved to …"). A printout naming more than six media files is a listing
+  (`ls`, `find`) and is skipped, as are Read and search calls, failed calls,
+  fenced code, web URLs and `codeg://` links. A Hebrew prefix letter joined
+  with a hyphen (`ו-clip.mp4`) isn't part of the name. Relative paths join
+  the session's folder, `~/` the server user's home (`get_home_directory`,
+  asked once per server). At most twelve files per message, each once.
+- **Formats.** Pictures: png, jpg, jpeg, gif (animated in the viewer), webp,
+  heic, heif, bmp, tiff, ico; svg in a WebKit viewer with scripts off.
+  Video: mp4, m4v, mov, 3gp; webm, mkv and ogv are tried and say plainly that
+  they don't play; avi, wmv, flv and mpg are marked unsupported without a
+  request, as the web marks them. Audio: mp3, m4a, aac, wav, flac, aif, aiff,
+  caf; ogg, oga and opus are tried. Documents in Quick Look: pdf, doc(x),
+  xls(x), ppt(x), key, pages, numbers, rtf, usdz.
+- **Where they show.** A `.media` timeline node of cards follows each
+  message and sits above each reply's footer; detection runs once per turn
+  (`MediaRefCache`). The live reply shows its media when it is persisted, as
+  the web's card waits for the reply to complete. A link tapped in a message
+  opens the file (`MediaLinks`, through the transcript's `openURL`); other
+  links open as before. Pictures already in the transcript (tool results,
+  `data_ref`) open in the same full-screen viewer. A folder's Files tab opens
+  media files in their card instead of the text preview.
+- **Streaming.** A video's card mints a capability
+  (`workspace_media_capability {rootPath, path}` →
+  `{token, url, filename, size, contentType, expiresInSecs}`) and AVFoundation
+  reads `/api/workspace_media/<token>/<name>` under the server's base URL with
+  Range requests, for the poster frame and length too: a seek is a new
+  request at the new offset, nothing is downloaded first, and AVPlayer keeps
+  only its forward buffer (30 s). The token is the only credential, so the
+  player sends no Bearer header. `MediaStreamResolver` keeps one capability
+  per file and mints another a minute before the server's 15-minute idle
+  limit (counted from the mint) or its 8-hour cap. `MediaPlayerModel` mints
+  again before resuming a stream that sat unused past the idle limit, and
+  when an item fails it reads the first 16 bytes with a Range request
+  (`MediaProbe`): a 404 "Media link is invalid or expired" re-mints and
+  resumes at the same position (twice at most), a missing file or a Matroska
+  header says why.
+- **Audio, pictures, documents.** codeg mints capabilities for video files
+  only ("Only video files can be streamed for preview"), so audio is tried as
+  a stream once and then downloaded (`download_workspace_file`, up to
+  200 MB) and played from the iPhone. Pictures (up to 40 MB) and documents
+  (up to 100 MB) are downloaded too. Downloads are kept in
+  `Caches/Media` (`MediaDiskCache`, 256 MB, least recently used out), per
+  reply, so a file written again under the same name is fetched again for the
+  newer reply; decoded pictures are scaled off the main thread
+  (`TranscriptImages`) and held in memory. Videos are never kept.
+- **The audio session.** A clip plays through `AudioSessionOwner` with a
+  `.media` use (`.playback`, `.moviePlayback`). `MediaPlaybackCenter` lets one
+  clip play at a time: starting one pauses the other and stops read aloud;
+  read aloud starting, or dictation taking the session
+  (`audioSessionUseWillChange`), pauses the clip. A paused clip gives the
+  session back after 30 s. The Camera Control's standby microphone steps
+  aside while a clip holds the session (`mediaPlaybackWillClaimAudio`), as it
+  does for read aloud. The lock-screen controls go through one
+  `RemoteCommandRouter` that read aloud and clips claim in turn, so a press
+  reaches one of them; clips can also be scrubbed from there.
+- **Video player.** `AVPlayerViewController`, presented from the top view
+  controller so Picture in Picture can dismiss it and bring it back; AirPlay
+  is the system's. Its Now Playing is the model's. Closing it (its X, a
+  swipe, or closing Picture in Picture) stops the clip; a clip that fails
+  closes it with an alert saying why.
+- **Older servers.** Without `workspace_media_capability` (501) a video's
+  card says "This needs a newer codeg server"; audio and pictures still come
+  through `download_workspace_file`. Without that too, every card says so.
+- **Checked live** against the codeg server on the box (port 3080, a
+  throwaway folder in `/tmp` with an mp4, an m4a, an mp3 and a png made with
+  ffmpeg): the mp4 capability answered 200 with `video/mp4`, its size and
+  `expiresInSecs` 900; the byte endpoint answered 200 with
+  `Accept-Ranges: bytes`, 206 with the right bytes for `bytes=0-15`,
+  `bytes=1000-1999`, a 64 KiB middle span and `bytes=-100`, and 416 with
+  `bytes */58508` past the end. The m4a, mp3 and png were refused 400
+  ("Only video files…") and downloaded byte for byte. A missing file was 404
+  "File does not exist", a missing folder 404 "Workspace folder does not
+  exist", `..` 400, a revoked or unknown token 404 "Media link is invalid or
+  expired", an unknown endpoint 501. AVFoundation on the box read the
+  capability URL's length (4.00 s) and poster frame over HTTP, played, and
+  seeked to 3 s; a revoked link failed the item (`NSURLErrorDomain -1100`) and
+  a fresh mint played on.
+
+#### What the codeg server should change
+
+- **Stream audio too.** `media_content_type` (`workspace_media.rs`) answers
+  only video extensions, so the phone downloads audio before it plays. Adding
+  `mp3 → audio/mpeg`, `m4a`/`aac → audio/mp4` (`audio/aac` for raw `.aac`),
+  `wav → audio/wav`, `flac → audio/flac`, `aif`/`aiff → audio/aiff`,
+  `caf → audio/x-caf`, `ogg`/`oga`/`opus → audio/ogg` would let the same
+  capability stream them; the phone tries a stream first and needs no change.
+  The refusal message ("Only video files…") should then read "Only audio and
+  video files…" (the phone matches "streamed" as well).
+- Pictures could stream the same way (`image/png`, `image/jpeg`, …, never
+  `image/svg+xml`, which a browser would run), but the download is enough for
+  them.
 
 ## Session lists
 
@@ -1491,8 +1608,10 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   scripted sockets, where a sent message lands in the conversation on each
   route, transcript windows and the transcript cache against a
   mock windowed server, navigation and Back, the session model store, the
-  whole app rotated in a running session, and the mode and options changed
-  during a turn) on an
+  whole app rotated in a running session, the mode and options changed
+  during a turn, and media: detection from fixture transcripts, capability
+  minting and refresh, Range requests against a mock byte server, and the
+  player model with the audio session) on an
   iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
   `build`. It uploads the session list screenshots as the
   `session-list-screenshots` artifact and the compose area as

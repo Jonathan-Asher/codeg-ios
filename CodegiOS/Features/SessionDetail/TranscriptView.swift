@@ -73,6 +73,9 @@ struct TranscriptView<Header: View>: View {
     var hasOlderOnServer: Bool = false
     /// Fetches the page of turns before `turns[0]` and puts it in front.
     var onLoadOlder: () async -> Void = {}
+    /// Where the session's paths point. With it, messages and replies that
+    /// refer to media files show them as cards.
+    var mediaContext: MediaPathContext?
     /// Scrolls with the content as the first element (header above the first
     /// node). Kept generic so the transcript stays agnostic of the header's type.
     @ViewBuilder var header: () -> Header
@@ -153,6 +156,7 @@ struct TranscriptView<Header: View>: View {
         var suppressInFlight: Bool
         var liveCoverage: TranscriptTimeline.LiveCoverage?
         var agent: AgentType
+        var mediaContext: MediaPathContext?
     }
     private final class PersistedMemo {
         var key: PersistedKey?
@@ -215,7 +219,8 @@ struct TranscriptView<Header: View>: View {
             pendingIDs: pendingUserTurns.map(\.id),
             suppressInFlight: suppressInFlight,
             liveCoverage: coverage,
-            agent: agent
+            agent: agent,
+            mediaContext: mediaContext
         )
 
         let persisted: [TimelineNode]
@@ -225,7 +230,8 @@ struct TranscriptView<Header: View>: View {
             let slice = start == 0 ? turns : Array(turns[start...])
             persisted = TranscriptTimeline.buildPersisted(
                 turns: slice, pending: pendingUserTurns, agent: agent,
-                suppressInFlight: suppressInFlight, liveCoverage: coverage
+                suppressInFlight: suppressInFlight, liveCoverage: coverage,
+                media: mediaContext
             )
             persistedMemo.key = key
             persistedMemo.nodes = persisted

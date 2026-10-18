@@ -101,7 +101,6 @@ final class ReadAloudPlayer: NSObject {
     private let speech = AVSpeechSynthesizer()
 
     private var title = ""
-    private var remoteCommandsInstalled = false
 
     private override init() {
         super.init()
@@ -200,6 +199,7 @@ final class ReadAloudPlayer: NSObject {
             NotificationCenter.default.post(name: .readAloudDidReleaseAudio, object: self)
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        RemoteCommandRouter.shared.release(self)
         scheduleUnload()
     }
 
@@ -385,29 +385,9 @@ final class ReadAloudPlayer: NSObject {
         ]
     }
 
+    /// The lock screen's play, pause and stop come here while reading.
     private func installRemoteCommands() {
-        guard !remoteCommandsInstalled else { return }
-        remoteCommandsInstalled = true
-        let center = MPRemoteCommandCenter.shared()
-        center.playCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.resume() }
-            return .success
-        }
-        center.pauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.pause() }
-            return .success
-        }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                if self.state == .paused { self.resume() } else { self.pause() }
-            }
-            return .success
-        }
-        center.stopCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.stop() }
-            return .success
-        }
+        RemoteCommandRouter.shared.claim(self)
     }
 
     @objc nonisolated private func audioSessionInterrupted(_ note: Notification) {
@@ -423,6 +403,17 @@ final class ReadAloudPlayer: NSObject {
             }
         }
     }
+}
+
+extension ReadAloudPlayer: RemoteControllable {
+    func remotePlay() { resume() }
+    func remotePause() { pause() }
+    func remoteTogglePlayPause() {
+        if state == .paused { resume() } else { pause() }
+    }
+    func remoteStop() { stop() }
+    func remoteSeek(to seconds: TimeInterval) -> Bool { false }
+    var supportsRemoteSeeking: Bool { false }
 }
 
 extension ReadAloudPlayer: AVSpeechSynthesizerDelegate {

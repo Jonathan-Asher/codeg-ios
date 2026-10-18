@@ -117,7 +117,15 @@ struct FolderFilesView: View {
         if item.isDir {
             FolderFilesView(client: client, rootPath: rootPath, dirPath: item.path)
         } else {
-            FilePreviewView(client: client, rootPath: rootPath, absPath: item.path)
+            if let format = MediaFormats.format(forPath: item.path) {
+                // Pictures, video, audio and documents open in a player or
+                // viewer instead of as text.
+                MediaFileScreen(ref: MediaRef(path: item.path, format: format, origin: .link,
+                                              scope: "files|\(item.size ?? 0)"),
+                                library: MediaLibrary.shared(for: client))
+            } else {
+                FilePreviewView(client: client, rootPath: rootPath, absPath: item.path)
+            }
         }
     }
 

@@ -12,6 +12,25 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Pictures, videos and audio from a session (1.3.13). A file the agent
+  links or names in a reply, one its tools wrote (Write, Edit, apply_patch)
+  or a command made, and a file attached to your message show as cards under
+  the message. A picture is a thumbnail that opens full screen: pinch or
+  double-tap to zoom, Share, Save to Photos. A video is a poster with its
+  length that plays full screen in the system player, with seeking, AirPlay
+  and Picture in Picture. An audio file plays in the conversation (play,
+  pause, scrub, its time and length) and keeps playing with the screen
+  locked, from the lock screen's controls too. PDFs and office documents open
+  in Quick Look, SVGs in a viewer. Videos stream from the codeg server as
+  they play, so a seek fetches from the new point instead of downloading the
+  file; pictures are fetched once and kept. A tapped link to such a file
+  opens it the same way, and so do pictures already in the transcript and
+  media files in a folder's Files tab. A clip pauses when read aloud or
+  dictation starts, and read aloud stops when a clip plays. A file that is
+  gone, refused or in a format the iPhone can't play says so on its card.
+  codeg streams only video, so audio is downloaded before it plays (up to
+  200 MB); against a server without streaming, a video's card says it needs
+  a newer codeg server.
 - Fork a session (1.3.11), as on the desktop. Every finished reply has Fork
   beside Copy and Read (and in a long press on its footer): the session
   continues from that reply in a session titled "[Fork] …", which opens with

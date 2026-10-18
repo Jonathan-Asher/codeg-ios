@@ -346,7 +346,8 @@ struct SessionDetailView: View {
             onPinnedChange: { model.setPinnedToBottom($0) },
             turnsOffset: model.turnsOffset,
             hasOlderOnServer: model.hasOlderTurns,
-            onLoadOlder: { await model.loadOlderTurns() }
+            onLoadOlder: { await model.loadOlderTurns() },
+            mediaContext: model.mediaPathContext
         ) {
             // No top banner on an existing session — its identity + stats now
             // live in the nav-bar "…" → Session Details, so messages start at
@@ -375,6 +376,12 @@ struct SessionDetailView: View {
             .padding(.bottom, 6)
         }
         .environment(\.codegImageSource, model.imageSource)
+        .environment(\.codegMedia, model.mediaEnvironment)
+        // A link in a message to a picture, video, audio file or document in
+        // the session opens it here; anything else opens as before.
+        .environment(\.openURL, OpenURLAction { url in
+            MediaLinks.open(url, in: model.mediaEnvironment) ? .handled : .systemAction
+        })
         .environment(\.replyFork, replyForkAction)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.snappy(duration: 0.28), value: model.pendingUserTurns)

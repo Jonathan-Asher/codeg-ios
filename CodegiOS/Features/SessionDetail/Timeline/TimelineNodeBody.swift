@@ -50,6 +50,9 @@ struct NodeBody: View {
         case .image(let img, let cap):
             InlineImageView(image: img, caption: cap)
                 .railHead(.top(14))
+        case .media(let refs):
+            MediaCardsView(refs: refs)
+                .railHead(.top(14))
         case .compaction(let before, let after, let running):
             ContextCompactionDivider(before: before, after: after, running: running)
         case .continuation(let variant):

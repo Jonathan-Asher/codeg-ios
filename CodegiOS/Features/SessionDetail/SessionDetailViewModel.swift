@@ -123,6 +123,32 @@ final class SessionDetailViewModel {
     /// reference (`ImageData.dataRef`).
     var imageSource: ImageSource { ImageSource(baseURL: client.baseURL, token: client.token) }
 
+    /// The server user's home, for `~/` paths in messages. Asked once per server.
+    private(set) var homePath: String?
+
+    /// Where the session's paths point: its folder, and the home for `~/`.
+    /// Nil until the folder is known (a new session without one).
+    var mediaPathContext: MediaPathContext? {
+        guard let path = folder?.path, !path.isEmpty else { return nil }
+        return MediaPathContext(folderPath: path, homePath: homePath)
+    }
+
+    /// The media cards' library (this server) and paths.
+    var mediaEnvironment: MediaEnvironment? {
+        mediaPathContext.map { MediaEnvironment(library: MediaLibrary.shared(for: client), context: $0) }
+    }
+
+    private static var homePaths: [String: String] = [:]
+
+    /// Learn the home directory once; a server without it leaves `~/` paths alone.
+    private func loadHomePath() async {
+        let key = client.baseURL.absoluteString
+        if let known = Self.homePaths[key] { homePath = known; return }
+        guard let home = try? await client.homeDirectory(), home.hasPrefix("/") else { return }
+        Self.homePaths[key] = home
+        homePath = home
+    }
+
     /// A pending permission request — or ExitPlanMode — awaiting the user's
     /// choice. Rendered as a card above the compose bar; nil when none is pending.
     private(set) var pendingPermission: PendingPermission? {
@@ -536,6 +562,7 @@ final class SessionDetailViewModel {
             currentBranch = detail.summary.gitBranch ?? folder?.gitBranch
             insertModel.agentType = detail.summary.agentType
             phase = .loaded
+            if homePath == nil { Task { await loadHomePath() } }
             scheduleCacheSave()
             if stickToBottom { requestStickToBottom() }
             // If a turn is still running on this session (started here earlier,
