@@ -24,6 +24,9 @@ struct TimelineNode: Identifiable {
     /// A reply boundary begins here (user / system nodes) — used for slightly
     /// larger breathing room before a new turn.
     var startsGroup: Bool = false
+    /// A user message's own files (an attached video, a picture it links),
+    /// shown inside its card.
+    var attachedMedia: MediaGroup?
 
     enum Content {
         case user(MessageTurn)
@@ -40,9 +43,10 @@ struct TimelineNode: Identifiable {
         case delegationStatusGroup([ToolCallVM])
         case taskGroup([ToolCallVM])
         case image(ImageData, caption: String?)
-        /// The pictures, videos, audio and documents a message or reply
-        /// refers to (links, paths, files its tools wrote), as cards.
-        case media([MediaRef])
+        /// The pictures, videos, audio and documents a reply refers to
+        /// (links, paths, files its tools wrote or said they saved): one
+        /// inline, several folded into one row.
+        case media(MediaGroup)
         /// A context-compaction boundary — rendered as a chrome-less divider, not
         /// a card. Token counts are Grok-only (codex sends none).
         case compaction(before: Int?, after: Int?, running: Bool)
@@ -120,10 +124,15 @@ enum TranscriptTimeline {
     ///   `pending`, not `turns`, so there are no trailing persisted assistant turns).
     ///
     /// - Parameter media: where the session's paths point; with it, each
-    ///   message and reply that refers to media files gets a node of cards.
+    ///   message and reply that refers to media files shows them.
+    /// - Parameter presence: which of those files are on the server. A file
+    ///   not checked yet is asked about and shows once it is found; one that
+    ///   isn't there doesn't show, unless the reply wrote it (then it is
+    ///   listed as deleted). Without it every file shows.
     static func buildPersisted(turns rawTurns: [MessageTurn], pending: [MessageTurn], agent: AgentType,
                                suppressInFlight: Bool, liveCoverage: LiveCoverage? = nil,
-                               media: MediaPathContext? = nil) -> [TimelineNode] {
+                               media: MediaPathContext? = nil,
+                               presence: MediaPresence? = nil) -> [TimelineNode] {
         var nodes: [TimelineNode] = []
 
         // Hide the persisted partial in-flight reply while the reattach live turn
@@ -153,11 +162,11 @@ enum TranscriptTimeline {
             switch turn.role {
             case .user:
                 lastUserID = turn.id
-                let node = userNode(turn, agent: agent)
-                nodes.append(node)
-                if case .user = node.content, let media, let refs = mediaNode(for: turn, context: media, agent: agent) {
-                    nodes.append(refs)
+                var node = userNode(turn, agent: agent)
+                if case .user = node.content, let media {
+                    node.attachedMedia = mediaGroup(for: turn, context: media, presence: presence)
                 }
+                nodes.append(node)
                 i += 1
             case .system:
                 // Skip system turns with no renderable text so the rail doesn't
@@ -171,25 +180,45 @@ enum TranscriptTimeline {
                 while j < turns.count, turns[j].role == .assistant { j += 1 }
                 let merged = merge(Array(turns[i..<j]))
                 nodes.append(contentsOf: assistantNodes(merged: merged, questionID: lastUserID,
-                                                        forkTurnID: turns[j - 1].id, agent: agent, media: media))
+                                                        forkTurnID: turns[j - 1].id, agent: agent,
+                                                        media: media, presence: presence))
                 i = j
             }
         }
 
         // Optimistic user turns (sent, not yet reconciled into `turns`).
         for turn in pending {
-            nodes.append(userNode(turn, agent: agent))
+            var node = userNode(turn, agent: agent)
+            if case .user = node.content, let media {
+                node.attachedMedia = mediaGroup(for: turn, context: media, presence: presence)
+            }
+            nodes.append(node)
         }
 
         return nodes
     }
 
-    /// The cards node for the media `turn` refers to, nil when it names none.
-    private static func mediaNode(for turn: MessageTurn, context: MediaPathContext,
-                                  agent: AgentType) -> TimelineNode? {
+    /// The files `turn` refers to that are on the server, nil when none are.
+    static func mediaGroup(for turn: MessageTurn, context: MediaPathContext,
+                           presence: MediaPresence?) -> MediaGroup? {
         let refs = MediaRefCache.references(in: turn, context: context)
         guard !refs.isEmpty else { return nil }
-        return TimelineNode(id: "\(turn.id)#media", content: .media(refs), agent: agent)
+        guard let presence else { return MediaGroup(refs: refs) }
+        var items: [MediaItem] = []
+        for ref in refs {
+            switch presence.state(of: ref.path) {
+            case .present(let size)?:
+                items.append(MediaItem(ref: ref, size: size))
+            case .unverified?:
+                items.append(MediaItem(ref: ref))
+            case .missing?:
+                // Only a file the reply itself wrote is worth saying is gone.
+                if ref.origin == .written { items.append(MediaItem(ref: ref, isDeleted: true)) }
+            case nil:
+                presence.enqueue(ref.path)
+            }
+        }
+        return items.isEmpty ? nil : MediaGroup(items: items)
     }
 
     /// What a live turn holds, to compare with the persisted turns it would hide.
@@ -243,13 +272,14 @@ enum TranscriptTimeline {
     // MARK: Assistant reply → nodes
 
     private static func assistantNodes(merged: MessageTurn, questionID: String?, forkTurnID: String?,
-                                       agent: AgentType, media: MediaPathContext? = nil) -> [TimelineNode] {
+                                       agent: AgentType, media: MediaPathContext? = nil,
+                                       presence: MediaPresence? = nil) -> [TimelineNode] {
         var out = MessageRender.adaptTurn(merged).enumerated().map { idx, part in
             node(for: part, ownerID: merged.id, index: idx, agent: agent)
         }
         // The reply's media, above its footer.
-        if let media, let cards = mediaNode(for: merged, context: media, agent: agent) {
-            out.append(cards)
+        if let media, let group = mediaGroup(for: merged, context: media, presence: presence) {
+            out.append(TimelineNode(id: "\(merged.id)#media", content: .media(group), agent: agent))
         }
         // The footer (reply time / model / tokens / copy / jump) is always emitted
         // — even when the reply has no renderable parts — so an empty or tool-only

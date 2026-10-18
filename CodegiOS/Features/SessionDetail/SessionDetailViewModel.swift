@@ -218,6 +218,14 @@ final class SessionDetailViewModel {
             && attachments.reduce(0) { $0 + $1.byteCount } < AttachmentPrep.maxTotalBytes
     }
 
+    /// Uploads attached videos: the server, or a fake in tests.
+    @ObservationIgnored var uploaderOverride: (any AttachmentUploading)?
+    private var uploader: any AttachmentUploading { uploaderOverride ?? client }
+    /// Compresses attached videos (AVFoundation; a fake in tests).
+    @ObservationIgnored var videoPreparer: any VideoPreparing = VideoAttachmentPrep()
+    /// The upload bucket of a session not created yet.
+    @ObservationIgnored private let uploadSessionID = UUID()
+
     /// Coarse phase of an in-flight send, for the compose status line.
     enum SendState: Equatable {
         case idle
@@ -1033,7 +1041,52 @@ final class SessionDetailViewModel {
     }
 
     func removeAttachment(_ id: UUID) {
+        attachments.first { $0.id == id }?.upload?.cancel()
         attachments.removeAll { $0.id == id }
+    }
+
+    /// Attach a video: it is fetched (from iCloud if it has to be),
+    /// compressed when it needs to be and uploaded to codeg while the user
+    /// writes; the message can go once it is uploaded.
+    func addVideo(_ source: VideoSource) {
+        guard attachments.count < AttachmentPrep.maxCount else {
+            notice = "You can attach up to \(AttachmentPrep.maxCount) files."
+            if case .file(let url) = source { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+            return
+        }
+        let name: String
+        if case .file(let url) = source { name = url.lastPathComponent } else { name = "Video" }
+        let upload = AttachmentUpload(source: source, displayName: name, uploader: uploader, bucket: uploadBucket,
+                                      preparer: videoPreparer)
+        attachments.append(Attachment(video: upload))
+        upload.start()
+    }
+
+    /// Try a video that didn't upload again.
+    func retryAttachment(_ id: UUID) {
+        attachments.first { $0.id == id }?.upload?.start()
+    }
+
+    /// Every attachment can be sent (a video is uploaded).
+    var attachmentsReady: Bool { attachments.allSatisfy(\.isReady) }
+
+    /// Why the staged attachments can't be sent yet, nil when they can.
+    private var attachmentsNotReadyNotice: String? {
+        guard !attachmentsReady else { return nil }
+        if attachments.contains(where: { $0.upload?.failure != nil }) {
+            return "A video didn't upload. Tap it to try again, or remove it."
+        }
+        return "Wait for the video to finish uploading."
+    }
+
+    /// Where `upload_attachment` keeps this session's files: the bucket codeg
+    /// web uses for the conversation's tab (`conv-<folder>-<agent>-<id>`).
+    var uploadBucket: String {
+        let agent = summary?.agentType ?? selectedAgent
+        if let folderID = summary?.folderId ?? folder?.id, let agent, let conversationID {
+            return "conv-\(folderID)-\(agent.wireValue)-\(conversationID)"
+        }
+        return "ios-\(uploadSessionID.uuidString.lowercased())"
     }
 
     // MARK: - Send
@@ -1056,6 +1109,10 @@ final class SessionDetailViewModel {
     private func startSend(text rawText: String, attachments sending: [Attachment], fromComposer: Bool) {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (!text.isEmpty || !sending.isEmpty), !isInFlight else { return }
+        guard sending.allSatisfy(\.isReady) else {
+            notice = attachmentsNotReadyNotice ?? "Wait for the video to finish uploading."
+            return
+        }
         // Identity comes from the loaded summary (existing conversation) or the
         // new-task request; without either the screen isn't ready to send.
         guard summary != nil || newRequest != nil else { return }
@@ -2648,6 +2705,10 @@ final class SessionDetailViewModel {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let sending = attachments
         guard !text.isEmpty || !sending.isEmpty else { return }
+        if let waiting = attachmentsNotReadyNotice {
+            notice = waiting
+            return
+        }
         guard canInsertIntoTurn, let conn = connectionID else {
             queueDraft()
             return
@@ -2664,6 +2725,10 @@ final class SessionDetailViewModel {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let sending = attachments
         guard !text.isEmpty || !sending.isEmpty else { return }
+        if let waiting = attachmentsNotReadyNotice {
+            notice = waiting
+            return
+        }
         queuedMessages.append(QueuedMessage(id: UUID(), text: text, attachments: sending,
                                             holdUntilTurnEnd: holdUntilTurnEnd))
         draft = ""
@@ -2733,7 +2798,7 @@ final class SessionDetailViewModel {
     private func deliverIntoTurn(text: String, attachments sending: [Attachment], connectionID conn: String,
                                  restoreToComposer: Bool) async {
         var shown: [ContentBlock] = text.isEmpty ? [] : [.text(text)]
-        shown.append(contentsOf: sending.map(\.optimisticBlock))
+        shown.append(contentsOf: sending.map { $0.optimisticBlock })
         let note = InsertedNote(id: UUID(), text: text.isEmpty ? "(image)" : text, blocks: shown,
                                 serverID: nil, serverStatus: nil, resolved: false, delivered: false,
                                 inThread: false, turnSerial: turnSerial)
@@ -2741,7 +2806,7 @@ final class SessionDetailViewModel {
         requestScrollToBottom()
         var blocks: [PromptInputBlock]?
         if !sending.isEmpty {
-            blocks = (text.isEmpty ? [] : [PromptInputBlock.text(text)]) + sending.map(\.promptInputBlock)
+            blocks = (text.isEmpty ? [] : [PromptInputBlock.text(text)]) + sending.map { $0.promptInputBlock }
         }
         var failure: Error?
         var recorded: FeedbackNoteSnapshot?

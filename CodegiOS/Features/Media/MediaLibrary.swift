@@ -30,6 +30,8 @@ struct VideoPreview: Sendable {
 final class MediaLibrary: MediaSourceProviding {
     let client: CodegClient
     let streams: MediaStreamResolver
+    /// Which files the session's messages name are on this server.
+    let presence: MediaPresence
     private let disk: MediaDiskCache
     private var downloads: [String: Task<URL, Error>] = [:]
     private var previews: [String: VideoPreview] = [:]
@@ -45,6 +47,7 @@ final class MediaLibrary: MediaSourceProviding {
         self.client = client
         self.disk = disk
         streams = MediaStreamResolver(minter: client)
+        presence = MediaPresence(lister: client)
     }
 
     private static var libraries: [String: MediaLibrary] = [:]

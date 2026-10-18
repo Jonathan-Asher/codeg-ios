@@ -1,11 +1,13 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// An image the user has attached to the next prompt. Image-only for now: the
-/// server's `PromptInputBlock` (and our `ContentBlock`) model `image` but not
-/// arbitrary `resource` files, so the "+" menu only accepts images. Holds the
-/// already-prepared (downscaled/compressed) bytes so the chip thumbnail and the
-/// wire payload come from the same source.
+/// A picture or a video the user has attached to the next prompt.
+///
+/// A picture travels inline: the already-prepared (downscaled/compressed)
+/// bytes, so the chip thumbnail and the wire payload come from the same
+/// source. A video is uploaded to codeg first (``AttachmentUpload``) and the
+/// prompt links to the uploaded file (a `resource_link`, as codeg web attaches
+/// a file that isn't a picture); it can be sent once the upload is done.
 ///
 /// NOTE: the web client gates image attaching on the connection's
 /// `prompt_capabilities.image`. That capability is delivered as a live
@@ -14,32 +16,59 @@ import UniformTypeIdentifiers
 /// as the agent-options probe seam). Image-unsupported agents are therefore not
 /// pre-gated here; such a turn surfaces the agent's error via the normal live-turn
 /// failure path rather than being blocked up front. Capability gating is a
-/// follow-up that depends on modeling live session/capability events.
+/// follow-up that depends on modeling live session/capability events. A
+/// resource link needs no capability: every ACP agent takes one.
 struct Attachment: Identifiable, Hashable, Sendable {
     let id: UUID
     let name: String
     let mimeType: String
+    /// A picture's bytes. Empty for a video.
     let data: Data
+    /// A video's upload; nil for a picture.
+    let upload: AttachmentUpload?
 
     init(id: UUID = UUID(), name: String, mimeType: String, data: Data) {
         self.id = id
         self.name = name
         self.mimeType = mimeType
         self.data = data
+        self.upload = nil
     }
 
+    /// A video on its way to the server.
+    init(id: UUID = UUID(), video upload: AttachmentUpload) {
+        self.id = id
+        self.name = upload.displayName
+        self.mimeType = "video/mp4"
+        self.data = Data()
+        self.upload = upload
+    }
+
+    var isVideo: Bool { upload != nil }
+    /// Bytes that ride in the prompt itself (a video's are uploaded instead).
     var byteCount: Int { data.count }
     var base64: String { data.base64EncodedString() }
+    /// Ready to send: a picture always, a video once it is uploaded.
+    @MainActor var isReady: Bool { upload?.isDone ?? true }
 
     /// The wire block sent in `acp_prompt`.
-    var promptInputBlock: PromptInputBlock {
-        .image(data: base64, mimeType: mimeType, uri: nil)
+    @MainActor var promptInputBlock: PromptInputBlock {
+        if let uploaded = upload?.uploaded {
+            return .resourceLink(uri: MediaAttachmentText.fileURI(forPath: uploaded.path), name: uploaded.name,
+                                 mimeType: uploaded.mimeType ?? VideoAttachmentPrep.mimeType(
+                                    forExtension: (uploaded.name as NSString).pathExtension))
+        }
+        return .image(data: base64, mimeType: mimeType, uri: nil)
     }
 
-    /// The block used to render this image immediately in the optimistic user
-    /// turn (decoded by `InlineImageView`).
-    var optimisticBlock: ContentBlock {
-        .image(ImageData(data: base64, mimeType: mimeType, uri: nil))
+    /// The block used to render this attachment immediately in the optimistic
+    /// user turn: a picture decoded by `InlineImageView`; a video as the link
+    /// codeg shows for it (`[name](file://…)`), which the message's card plays.
+    @MainActor var optimisticBlock: ContentBlock {
+        if let uploaded = upload?.uploaded {
+            return .text(MediaAttachmentText.marker(name: uploaded.name, path: uploaded.path))
+        }
+        return .image(ImageData(data: base64, mimeType: mimeType, uri: nil))
     }
 }
 

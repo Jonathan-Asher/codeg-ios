@@ -111,6 +111,9 @@ enum MediaError: LocalizedError, Equatable, Sendable {
 
 // MARK: - Endpoints
 
+/// The existence check lists directories through the folder browser's endpoint.
+extension CodegClient: MediaDirectoryListing {}
+
 extension CodegClient {
     /// Long transfers of whole files (pictures, audio on a server that can't
     /// stream it, documents): the overall cap allows a slow link.
@@ -195,5 +198,175 @@ extension CodegClient {
             throw MediaError.server("Couldn't keep the downloaded file: \(error.localizedDescription)")
         }
         return kept
+    }
+}
+
+// MARK: - Attachment upload
+
+/// A file uploaded with `upload_attachment` (codeg's `UploadAttachmentResult`):
+/// where it now is on the server, under codeg's uploads directory.
+struct UploadedAttachment: Decodable, Equatable, Sendable {
+    let path: String
+    let name: String
+    let size: Int64
+    let mimeType: String?
+}
+
+/// Why an attachment didn't upload, in words for its chip.
+enum AttachmentUploadError: LocalizedError, Equatable, Sendable {
+    /// Over codeg's per-file limit (`UPLOAD_MAX_BYTES`).
+    case tooLarge(limit: Int64)
+    /// The server's total upload space is used up (`CODEG_UPLOAD_MAX_TOTAL_BYTES`).
+    case quotaFull
+    case unsupportedServer
+    case unauthorized
+    case server(String)
+    case network(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .tooLarge(let limit):
+            return "The codeg server takes attachments up to \(ByteCountFormatter.string(fromByteCount: limit, countStyle: .file))."
+        case .quotaFull: return "The codeg server's upload space is full."
+        case .unsupportedServer: return "This needs a newer codeg server."
+        case .unauthorized: return "Authentication failed. Check the server token."
+        case .server(let message): return message
+        case .network(let detail): return "Network error: \(detail)"
+        }
+    }
+
+    var isRetryable: Bool {
+        switch self {
+        case .network, .server: return true
+        default: return false
+        }
+    }
+
+    /// codeg tags its upload refusals with an i18n key (`errors.upload.*`)
+    /// and an English message; both are read.
+    static func from(status: Int, data: Data) -> AttachmentUploadError {
+        if status == 401 { return .unauthorized }
+        if status == 501 || status == 404 { return .unsupportedServer }
+        if status == 413 { return .tooLarge(limit: AttachmentUploadLimits.maxBytes) }
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let message = object?["message"] as? String ?? HTTPURLResponse.localizedString(forStatusCode: status)
+        let key = (object?["i18n_key"] as? String ?? object?["i18nKey"] as? String ?? "").lowercased()
+        let text = message.lowercased()
+        if key.hasSuffix("toolarge") || text.contains("maximum allowed size") {
+            return .tooLarge(limit: AttachmentUploadLimits.maxBytes)
+        }
+        if key.hasSuffix("quotaexceeded") || text.contains("quota") { return .quotaFull }
+        return .server(message)
+    }
+}
+
+/// What codeg accepts through `upload_attachment`.
+enum AttachmentUploadLimits {
+    /// `UPLOAD_MAX_BYTES` (`web/handlers/files.rs`): 20 MiB per file.
+    static let maxBytes: Int64 = 20 * 1024 * 1024
+}
+
+/// Uploads a file the way codeg web attaches one.
+protocol AttachmentUploading: Sendable {
+    func uploadAttachment(fileURL: URL, fileName: String, mimeType: String, bucket: String?,
+                          progress: @escaping @Sendable (Double) -> Void) async throws -> UploadedAttachment
+}
+
+extension CodegClient: AttachmentUploading {
+    /// Uploads take as long as the link needs; a stalled one gives up after a minute.
+    static let uploadSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 60
+        cfg.timeoutIntervalForResource = 900
+        cfg.waitsForConnectivity = true
+        cfg.urlCache = nil
+        return URLSession(configuration: cfg)
+    }()
+
+    /// Upload a file to codeg's uploads directory (`upload_attachment`, a
+    /// multipart `file` and the `session_id` bucket), as codeg web does for an
+    /// attachment that isn't a picture. The answer's `path` is what the prompt
+    /// links to. Refuses over ``AttachmentUploadLimits/maxBytes`` before sending.
+    func uploadAttachment(fileURL: URL, fileName: String, mimeType: String, bucket: String?,
+                          progress: @escaping @Sendable (Double) -> Void) async throws -> UploadedAttachment {
+        let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+        guard size > 0 else { throw AttachmentUploadError.server("The file is empty.") }
+        guard size <= AttachmentUploadLimits.maxBytes else {
+            throw AttachmentUploadError.tooLarge(limit: AttachmentUploadLimits.maxBytes)
+        }
+        let file: Data
+        do { file = try Data(contentsOf: fileURL, options: .mappedIfSafe) } catch {
+            throw AttachmentUploadError.server("Couldn't read the file: \(error.localizedDescription)")
+        }
+        let boundary = "codeg-ios-\(UUID().uuidString)"
+        let body = Self.multipartBody(boundary: boundary, bucket: bucket, fileName: fileName,
+                                      mimeType: mimeType, file: file)
+
+        let url = baseURL.appendingPathComponent("api").appendingPathComponent("upload_attachment")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        // The mock server of the tests sends everything through its own session.
+        let session = self.session === Self.defaultSession ? Self.uploadSession : self.session
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request, delegate: UploadProgressDelegate(onProgress: progress))
+        } catch {
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { throw CancellationError() }
+            throw AttachmentUploadError.network((error as? URLError)?.localizedDescription ?? error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else { throw AttachmentUploadError.network("Malformed response") }
+        guard (200..<300).contains(http.statusCode) else {
+            throw AttachmentUploadError.from(status: http.statusCode, data: data)
+        }
+        progress(1)
+        do {
+            return try CodegJSON.decoder.decode(UploadedAttachment.self, from: data)
+        } catch {
+            throw AttachmentUploadError.server("The server's answer to the upload couldn't be read.")
+        }
+    }
+
+    /// `multipart/form-data` with the bucket first, then the file.
+    static func multipartBody(boundary: String, bucket: String?, fileName: String, mimeType: String, file: Data) -> Data {
+        var body = Data()
+        func line(_ text: String) { body.append(Data((text + "\r\n").utf8)) }
+        if let bucket, !bucket.isEmpty {
+            line("--\(boundary)")
+            line(#"Content-Disposition: form-data; name="session_id""#)
+            line("")
+            line(bucket)
+        }
+        let safeName = fileName.unicodeScalars
+            .filter { $0 != "\r" && $0 != "\n" }
+            .map { $0 == "\"" || $0 == "\\" ? "_" : String($0) }
+            .joined()
+        line("--\(boundary)")
+        line("Content-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"")
+        line("Content-Type: \(mimeType)")
+        line("")
+        body.append(file)
+        line("")
+        line("--\(boundary)--")
+        return body
+    }
+}
+
+/// Reports how much of a request body has gone out.
+private final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    let onProgress: @Sendable (Double) -> Void
+
+    init(onProgress: @escaping @Sendable (Double) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                    totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        onProgress(min(1, Double(totalBytesSent) / Double(totalBytesExpectedToSend)))
     }
 }

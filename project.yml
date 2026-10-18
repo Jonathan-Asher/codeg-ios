@@ -78,7 +78,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CODEG_BUNDLE_ID)
         PRODUCT_NAME: Codeg
-        MARKETING_VERSION: "1.3.13"
+        MARKETING_VERSION: "1.3.14"
         CURRENT_PROJECT_VERSION: "2"
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: "NO"
         # App icon lives in Assets.xcassets/AppIcon.appiconset (single-size 1024 universal).
@@ -124,13 +124,13 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         NSLocalNetworkUsageDescription: "$(CODEG_DISPLAY_NAME) connects to your codeg server, which may run on your local network."
-        NSPhotoLibraryUsageDescription: "$(CODEG_DISPLAY_NAME) attaches photos you pick to your message to the agent."
+        NSPhotoLibraryUsageDescription: "$(CODEG_DISPLAY_NAME) attaches the photos and videos you pick to your message to the agent."
         # Save to Photos in the full-screen picture viewer.
         NSPhotoLibraryAddUsageDescription: "$(CODEG_DISPLAY_NAME) saves a picture from a session to your library when you tap Save to Photos."
-        NSCameraUsageDescription: "$(CODEG_DISPLAY_NAME) uses the camera to take photos for your messages and to scan a server's QR code. With Camera Control to talk on, it also keeps the camera running at its lowest quality while a session is open, because iOS only gives the Camera Control to an app whose camera is on. Nothing from it is recorded or saved."
+        NSCameraUsageDescription: "$(CODEG_DISPLAY_NAME) uses the camera to take photos and videos for your messages and to scan a server's QR code. With Camera Control to talk on, it also keeps the camera running at its lowest quality while a session is open, because iOS only gives the Camera Control to an app whose camera is on; nothing from that is recorded or saved."
         # Voice typing records on device and transcribes with whisper on this
         # iPhone; no speech-recognition permission (no Apple server speech).
-        NSMicrophoneUsageDescription: "$(CODEG_DISPLAY_NAME) records your voice while you hold or tap the mic, and transcribes it on this iPhone into your message."
+        NSMicrophoneUsageDescription: "$(CODEG_DISPLAY_NAME) records your voice while you hold or tap the mic, and transcribes it on this iPhone into your message. It also records the sound of a video you take with the camera for a message."
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

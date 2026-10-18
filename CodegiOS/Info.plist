@@ -46,15 +46,15 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>$(CODEG_DISPLAY_NAME) uses the camera to take photos for your messages and to scan a server's QR code. With Camera Control to talk on, it also keeps the camera running at its lowest quality while a session is open, because iOS only gives the Camera Control to an app whose camera is on. Nothing from it is recorded or saved.</string>
+	<string>$(CODEG_DISPLAY_NAME) uses the camera to take photos and videos for your messages and to scan a server's QR code. With Camera Control to talk on, it also keeps the camera running at its lowest quality while a session is open, because iOS only gives the Camera Control to an app whose camera is on; nothing from that is recorded or saved.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>$(CODEG_DISPLAY_NAME) connects to your codeg server, which may run on your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>$(CODEG_DISPLAY_NAME) records your voice while you hold or tap the mic, and transcribes it on this iPhone into your message.</string>
+	<string>$(CODEG_DISPLAY_NAME) records your voice while you hold or tap the mic, and transcribes it on this iPhone into your message. It also records the sound of a video you take with the camera for a message.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>$(CODEG_DISPLAY_NAME) saves a picture from a session to your library when you tap Save to Photos.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>$(CODEG_DISPLAY_NAME) attaches photos you pick to your message to the agent.</string>
+	<string>$(CODEG_DISPLAY_NAME) attaches the photos and videos you pick to your message to the agent.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

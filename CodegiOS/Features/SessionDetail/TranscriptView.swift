@@ -76,6 +76,8 @@ struct TranscriptView<Header: View>: View {
     /// Where the session's paths point. With it, messages and replies that
     /// refer to media files show them as cards.
     var mediaContext: MediaPathContext?
+    /// Which of those files are on the server; a card shows once its file is found.
+    var mediaPresence: MediaPresence?
     /// Scrolls with the content as the first element (header above the first
     /// node). Kept generic so the transcript stays agnostic of the header's type.
     @ViewBuilder var header: () -> Header
@@ -157,6 +159,8 @@ struct TranscriptView<Header: View>: View {
         var liveCoverage: TranscriptTimeline.LiveCoverage?
         var agent: AgentType
         var mediaContext: MediaPathContext?
+        /// Bumped when an existence check answers.
+        var mediaVersion: Int
     }
     private final class PersistedMemo {
         var key: PersistedKey?
@@ -220,7 +224,8 @@ struct TranscriptView<Header: View>: View {
             suppressInFlight: suppressInFlight,
             liveCoverage: coverage,
             agent: agent,
-            mediaContext: mediaContext
+            mediaContext: mediaContext,
+            mediaVersion: mediaPresence?.version ?? 0
         )
 
         let persisted: [TimelineNode]
@@ -231,7 +236,7 @@ struct TranscriptView<Header: View>: View {
             persisted = TranscriptTimeline.buildPersisted(
                 turns: slice, pending: pendingUserTurns, agent: agent,
                 suppressInFlight: suppressInFlight, liveCoverage: coverage,
-                media: mediaContext
+                media: mediaContext, presence: mediaContext == nil ? nil : mediaPresence
             )
             persistedMemo.key = key
             persistedMemo.nodes = persisted

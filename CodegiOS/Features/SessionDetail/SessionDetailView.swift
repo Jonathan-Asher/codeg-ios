@@ -347,7 +347,8 @@ struct SessionDetailView: View {
             turnsOffset: model.turnsOffset,
             hasOlderOnServer: model.hasOlderTurns,
             onLoadOlder: { await model.loadOlderTurns() },
-            mediaContext: model.mediaPathContext
+            mediaContext: model.mediaPathContext,
+            mediaPresence: model.mediaEnvironment?.library.presence
         ) {
             // No top banner on an existing session — its identity + stats now
             // live in the nav-bar "…" → Session Details, so messages start at
@@ -463,6 +464,9 @@ struct SessionDetailView: View {
                     canAttachMore: model.canAttachMore,
                     onAddAttachments: { model.addAttachments($0) },
                     onRemoveAttachment: { model.removeAttachment($0) },
+                    onAddVideo: { model.addVideo($0) },
+                    onRetryAttachment: { model.retryAttachment($0) },
+                    attachmentsReady: model.attachmentsReady,
                     onNotice: { model.notice = $0 },
                     onSend: { model.sendFromComposer() },
                     onStop: { model.cancel() },

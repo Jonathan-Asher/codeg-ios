@@ -6,11 +6,14 @@ import Foundation
 enum PromptInputBlock: Encodable, Sendable {
     case text(String)
     case image(data: String, mimeType: String, uri: String?)
+    /// A file on the server the agent is pointed at (an uploaded video), as
+    /// codeg web attaches a file that isn't a picture.
+    case resourceLink(uri: String, name: String, mimeType: String?)
 
     private enum CodingKeys: String, CodingKey {
         case type, text, data
         case mimeType = "mime_type"
-        case uri
+        case uri, name
     }
 
     func encode(to encoder: Encoder) throws {
@@ -24,6 +27,11 @@ enum PromptInputBlock: Encodable, Sendable {
             try c.encode(data, forKey: .data)
             try c.encode(mimeType, forKey: .mimeType)
             try c.encodeIfPresent(uri, forKey: .uri)
+        case .resourceLink(let uri, let name, let mimeType):
+            try c.encode("resource_link", forKey: .type)
+            try c.encode(uri, forKey: .uri)
+            try c.encode(name, forKey: .name)
+            try c.encodeIfPresent(mimeType, forKey: .mimeType)
         }
     }
 }

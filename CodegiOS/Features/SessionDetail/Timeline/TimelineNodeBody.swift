@@ -14,7 +14,7 @@ struct NodeBody: View {
     var body: some View {
         switch node.content {
         case .user(let turn):
-            UserNodeBody(turn: turn)
+            UserNodeBody(turn: turn, media: node.attachedMedia)
         case .insertedUser(let turn):
             UserNodeBody(turn: turn, sentDuringTurn: true)
         case .system(let turn):
@@ -50,8 +50,8 @@ struct NodeBody: View {
         case .image(let img, let cap):
             InlineImageView(image: img, caption: cap)
                 .railHead(.top(14))
-        case .media(let refs):
-            MediaCardsView(refs: refs)
+        case .media(let group):
+            MediaGroupView(group: group)
                 .railHead(.top(14))
         case .compaction(let before, let after, let running):
             ContextCompactionDivider(before: before, after: after, running: running)
@@ -80,21 +80,31 @@ struct NodeBody: View {
 /// message cards, so a user turn and the reply it prompts read as one column.
 private struct UserNodeBody: View {
     let turn: MessageTurn
+    /// The message's own files (an attached video): shown in the card, in
+    /// place of the attachment links in its text.
+    var media: MediaGroup?
     /// Sent into the running turn: the agent took it while it worked.
     var sentDuringTurn = false
+    @Environment(\.codegMedia) private var mediaEnvironment
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(turn.blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
-                case .text(let text):
-                    MarkdownText(raw: text)
-                        .multilineTextAlignment(.leading)
+                case .text(let raw):
+                    let text = shownText(raw)
+                    if !text.isEmpty {
+                        MarkdownText(raw: text)
+                            .multilineTextAlignment(.leading)
+                    }
                 case .image(let image):
                     InlineImageView(image: image, caption: nil)
                 default:
                     ContentBlockView(block: block)
                 }
+            }
+            if let media {
+                MediaGroupView(group: media)
             }
             if sentDuringTurn {
                 Label("Sent during the turn", systemImage: "arrow.turn.down.right")
@@ -111,6 +121,12 @@ private struct UserNodeBody: View {
             in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
         )
         .hairlineBorder(Theme.Radius.md, color: Theme.accent.opacity(0.30))
+    }
+
+    /// The text without the attachment links whose files show below it.
+    private func shownText(_ raw: String) -> String {
+        guard let media, let context = mediaEnvironment?.context else { return raw }
+        return MediaAttachmentText.removingLinks(to: Set(media.items.map(\.ref.path)), from: raw, context: context)
     }
 }
 

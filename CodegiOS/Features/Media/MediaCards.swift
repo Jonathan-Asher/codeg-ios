@@ -1,21 +1,249 @@
 import SwiftUI
 import UIKit
 
-/// The media files a message or reply refers to, as cards under it: pictures
-/// as thumbnails, videos as a poster with their length, audio as an inline
-/// player, documents as a row that opens Quick Look.
-struct MediaCardsView: View {
-    let refs: [MediaRef]
+/// The files a message or reply refers to. One picture or video shows
+/// inline at a capped height (an audio file as its player, a document as its
+/// row); several fold into one row ("3 images · 1 PDF · 1 video" with tiny
+/// thumbnails) that opens into a list, the way codeg web's "New files" card
+/// keeps a reply short.
+struct MediaGroupView: View {
+    let group: MediaGroup
     @Environment(\.codegMedia) private var media
 
     var body: some View {
         if let media {
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(refs) { ref in
-                    MediaCard(ref: ref, library: media.library)
+            Group {
+                if group.showsInline {
+                    MediaCard(ref: group.items[0].ref, library: media.library, compact: true)
+                } else {
+                    MediaGroupDisclosure(group: group, library: media.library)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// Several files as one row that opens into a list of them.
+struct MediaGroupDisclosure: View {
+    let group: MediaGroup
+    let library: MediaLibrary
+    @State private var expanded: Bool
+    @Environment(\.layoutDirection) private var layoutDirection
+
+    init(group: MediaGroup, library: MediaLibrary, expanded: Bool = false) {
+        self.group = group
+        self.library = library
+        _expanded = State(initialValue: expanded)
+    }
+
+    private static let thumbnailCount = 4
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(Theme.Motion.expand) { expanded.toggle() }
+            } label: {
+                header
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(verbatim: MediaGroupSummary.spoken(group.items)))
+            .accessibilityValue(expanded ? Text("Shown") : Text("Hidden"))
+            .accessibilityHint(expanded ? Text("Hides the files") : Text("Shows the files"))
+            if expanded {
+                Divider().overlay(Theme.hairline)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
+                        if index > 0 {
+                            Divider().overlay(Theme.hairline).padding(.leading, 58)
+                        }
+                        MediaListRow(item: item, library: library)
+                    }
+                }
+                .padding(.vertical, 4)
+                .transition(.opacity)
+            }
+        }
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+        .hairlineBorder(Theme.Radius.md)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 4) {
+                ForEach(group.items.prefix(Self.thumbnailCount)) { item in
+                    MediaThumbnail(item: item, library: library, side: 26)
+                }
+            }
+            Text(verbatim: MediaGroupSummary.text(group.items))
+                .font(Theme.Typography.cardTitle)
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 4)
+            Image(systemName: "chevron.forward")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(Theme.textTertiary)
+                .rotationEffect(.degrees(expanded ? (layoutDirection == .rightToLeft ? -90 : 90) : 0))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+}
+
+/// "3 images · 1 PDF · 1 video", for the folded row.
+enum MediaGroupSummary {
+    static func text(_ items: [MediaItem]) -> String {
+        parts(items).joined(separator: " · ")
+    }
+
+    /// The same, read out: "3 images, 1 PDF, 1 video".
+    static func spoken(_ items: [MediaItem]) -> String {
+        parts(items).joined(separator: ", ")
+    }
+
+    private static func parts(_ items: [MediaItem]) -> [String] {
+        var images = 0, videos = 0, audio = 0, pdfs = 0, documents = 0, deleted = 0
+        for item in items {
+            if item.isDeleted { deleted += 1; continue }
+            switch item.ref.kind {
+            case .image: images += 1
+            case .video: videos += 1
+            case .audio: audio += 1
+            case .document: if item.ref.ext == "pdf" { pdfs += 1 } else { documents += 1 }
+            }
+        }
+        var out: [String] = []
+        if images > 0 { out.append(count(images, "image", "images")) }
+        if videos > 0 { out.append(count(videos, "video", "videos")) }
+        if audio > 0 { out.append(count(audio, "audio file", "audio files")) }
+        if pdfs > 0 { out.append(count(pdfs, "PDF", "PDFs")) }
+        if documents > 0 { out.append(count(documents, "document", "documents")) }
+        if deleted > 0 { out.append(out.isEmpty ? count(deleted, "deleted file", "deleted files") : "\(deleted) deleted") }
+        return out
+    }
+
+    private static func count(_ n: Int, _ one: String, _ many: String) -> String {
+        "\(n) \(n == 1 ? one : many)"
+    }
+}
+
+/// One file in the opened list: its thumbnail, name and what it is. A
+/// picture opens full screen, a video plays, a document opens in Quick Look;
+/// an audio file is its own small player.
+private struct MediaListRow: View {
+    let item: MediaItem
+    let library: MediaLibrary
+
+    var body: some View {
+        if item.ref.kind == .audio, !item.isDeleted, !item.ref.format.unsupported {
+            AudioMediaCard(model: library.player(for: item.ref), embedded: true)
+                .padding(.horizontal, 2)
+        } else {
+            Button(action: open) {
+                HStack(spacing: 12) {
+                    MediaThumbnail(item: item, library: library, side: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: item.ref.name)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(item.isDeleted ? Theme.textTertiary : Theme.textPrimary)
+                            .strikethrough(item.isDeleted, color: Theme.textTertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(verbatim: detail)
+                            .font(.caption)
+                            .foregroundStyle(Theme.textTertiary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    if let trailing {
+                        Image(systemName: trailing)
+                            .font(.system(size: trailing == "play.fill" ? 12 : 11, weight: .semibold))
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canOpen)
+            .accessibilityLabel(Text(verbatim: "\(item.ref.name), \(detail)"))
+        }
+    }
+
+    private var canOpen: Bool { !item.isDeleted && !item.ref.format.unsupported }
+
+    private var trailing: String? {
+        guard canOpen else { return nil }
+        return item.ref.kind == .video ? "play.fill" : "chevron.forward"
+    }
+
+    private var detail: String {
+        if item.isDeleted { return "Deleted" }
+        if item.ref.format.unsupported { return "\(item.ref.ext.uppercased()) files don't play on the iPhone" }
+        var parts = [item.ref.format.vector ? "SVG" : item.ref.ext.uppercased()]
+        if let size = item.size, size > 0 {
+            parts.append(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func open() {
+        MediaLinks.open(item.ref, library: library)
+    }
+}
+
+/// A file's small square: a picture's thumbnail, a video's poster, or the
+/// symbol of its kind.
+struct MediaThumbnail: View {
+    let item: MediaItem
+    let library: MediaLibrary
+    let side: CGFloat
+
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: side > 30 ? 8 : 6, style: .continuous)
+                .fill(Theme.surfaceNested)
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: side, height: side)
+                    .clipped()
+                if item.ref.kind == .video {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: side * 0.28, weight: .bold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.5), radius: 2)
+                }
+            } else {
+                Image(systemName: MediaSymbols.symbol(for: item.ref))
+                    .font(.system(size: side * 0.42, weight: .medium))
+                    .foregroundStyle(item.isDeleted ? Theme.textTertiary : Theme.accent)
+            }
+        }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: side > 30 ? 8 : 6, style: .continuous))
+        .opacity(item.isDeleted ? 0.6 : 1)
+        .accessibilityHidden(true)
+        .task(id: item.id) { await load() }
+    }
+
+    private func load() async {
+        guard !item.isDeleted, image == nil else { return }
+        switch item.ref.kind {
+        case .image where !item.ref.format.vector:
+            image = try? await library.image(for: item.ref, maxPixelSize: Int(side * 3))
+        case .video where item.ref.format.native:
+            image = (try? await library.videoPreview(for: item.ref))?.poster
+        default:
+            break
         }
     }
 }
@@ -24,6 +252,11 @@ struct MediaCardsView: View {
 struct MediaCard: View {
     let ref: MediaRef
     let library: MediaLibrary
+    /// Under a message: a picture or a video poster at most this tall.
+    var compact = false
+
+    /// The tallest an inline picture or poster gets under a message.
+    static let compactHeight: CGFloat = 180
 
     var body: some View {
         switch ref.kind {
@@ -31,13 +264,13 @@ struct MediaCard: View {
             if ref.format.vector {
                 DocumentMediaCard(ref: ref, library: library)
             } else {
-                ImageMediaCard(ref: ref, library: library)
+                ImageMediaCard(ref: ref, library: library, maxHeight: compact ? Self.compactHeight : 260)
             }
         case .video:
             if ref.format.unsupported {
                 MediaNoteRow(ref: ref, message: "\(ref.ext.uppercased()) files don't play on the iPhone.")
             } else {
-                VideoMediaCard(ref: ref, library: library)
+                VideoMediaCard(ref: ref, library: library, maxHeight: compact ? Self.compactHeight : 240)
             }
         case .audio:
             AudioMediaCard(model: library.player(for: ref))
@@ -136,6 +369,7 @@ private extension MediaError {
 private struct ImageMediaCard: View {
     let ref: MediaRef
     let library: MediaLibrary
+    var maxHeight: CGFloat = 260
 
     @State private var image: UIImage?
     @State private var error: MediaError?
@@ -152,7 +386,7 @@ private struct ImageMediaCard: View {
                             .resizable()
                             .scaledToFit()
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .frame(maxHeight: 260)
+                            .frame(maxHeight: maxHeight)
                             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
                             .hairlineBorder(Theme.Radius.md)
                     }
@@ -169,7 +403,7 @@ private struct ImageMediaCard: View {
                     ProgressView().controlSize(.small)
                     MediaCaption(ref: ref)
                 }
-                .frame(maxWidth: .infinity, minHeight: 120)
+                .frame(maxWidth: .infinity, minHeight: min(120, maxHeight))
                 .background(Theme.surfaceNested, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
                 .hairlineBorder(Theme.Radius.md, color: Theme.hairline)
             }
@@ -190,6 +424,7 @@ private struct ImageMediaCard: View {
 private struct VideoMediaCard: View {
     let ref: MediaRef
     let library: MediaLibrary
+    var maxHeight: CGFloat = 240
 
     @State private var preview: VideoPreview?
     @State private var error: MediaError?
@@ -263,7 +498,7 @@ private struct VideoMediaCard: View {
         }
         .aspectRatio(posterAspect, contentMode: .fit)
         .frame(maxWidth: .infinity)
-        .frame(maxHeight: 240)
+        .frame(maxHeight: maxHeight)
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
         .hairlineBorder(Theme.Radius.md)
     }
@@ -284,6 +519,8 @@ private struct VideoMediaCard: View {
 /// An audio file's player inline: play and pause, a scrubber, the time.
 struct AudioMediaCard: View {
     @Bindable var model: MediaPlayerModel
+    /// Inside the opened list of a message's files: no card of its own.
+    var embedded = false
     @State private var scrubPosition: TimeInterval = 0
 
     var body: some View {
@@ -350,8 +587,9 @@ struct AudioMediaCard: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(Theme.surfaceNested, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-        .hairlineBorder(Theme.Radius.md, color: Theme.hairline)
+        .background(embedded ? Color.clear : Theme.surfaceNested,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+        .hairlineBorder(Theme.Radius.md, color: embedded ? .clear : Theme.hairline)
     }
 }
 

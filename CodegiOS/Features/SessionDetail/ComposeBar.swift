@@ -18,6 +18,12 @@ struct ComposeBar: View {
     let canAttachMore: Bool
     let onAddAttachments: ([Attachment]) -> Void
     let onRemoveAttachment: (UUID) -> Void
+    /// A video picked, recorded or chosen in Files: it uploads while the user writes.
+    var onAddVideo: (VideoSource) -> Void = { _ in }
+    /// Try a video that didn't upload again.
+    var onRetryAttachment: (UUID) -> Void = { _ in }
+    /// Every attachment can go (each video is uploaded).
+    var attachmentsReady = true
     let onNotice: (String) -> Void
     let onSend: () -> Void
     let onStop: () -> Void
@@ -107,7 +113,7 @@ struct ComposeBar: View {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     private var canSend: Bool {
-        (hasText || !attachments.isEmpty) && !isInFlight
+        (hasText || !attachments.isEmpty) && !isInFlight && attachmentsReady
     }
     /// Something typed while a turn runs: it can be queued or inserted.
     private var hasDraftWhileBusy: Bool {
@@ -128,7 +134,8 @@ struct ComposeBar: View {
             }
 
             if !attachments.isEmpty {
-                AttachmentChipsView(attachments: attachments, onRemove: onRemoveAttachment)
+                AttachmentChipsView(attachments: attachments, onRemove: onRemoveAttachment,
+                                    onRetry: onRetryAttachment)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
@@ -224,17 +231,21 @@ struct ComposeBar: View {
             isPresented: $showPhotoPicker,
             selection: $photoItems,
             maxSelectionCount: max(1, remainingSlots),
-            matching: .images,
+            // Videos too: they are uploaded to codeg and linked from the message.
+            matching: .any(of: [.images, .videos]),
+            // Videos are compressed here when they need to be; no system transcode first.
+            preferredItemEncoding: .current,
             photoLibrary: .shared()
         )
         .onChange(of: photoItems) { _, items in handlePhotoItems(items) }
         .fullScreenCover(isPresented: $showCamera) {
-            CameraPicker { image in addCaptured(image) }
+            CameraPicker(onCapture: { image in addCaptured(image) },
+                         onRecord: { url in onAddVideo(.file(url)) })
                 .ignoresSafeArea()
         }
         .fileImporter(
             isPresented: $showFileImporter,
-            allowedContentTypes: [.image],
+            allowedContentTypes: [.image, .movie],
             allowsMultipleSelection: true
         ) { result in handleFiles(result) }
         .sheet(item: $presentedInsert) { source in
@@ -630,10 +641,16 @@ struct ComposeBar: View {
     private func handlePhotoItems(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
         let slots = remainingSlots
-        let attempted = items.count
+        // A video goes up on its own, with its progress on its chip.
+        let videos = items.prefix(slots).filter { item in
+            item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+        }
+        for item in videos { onAddVideo(.library(item)) }
+        let pictures = items.prefix(slots).filter { item in !videos.contains(item) }
+        let attempted = pictures.count
         Task { @MainActor in
             var prepared: [Attachment] = []
-            for item in items.prefix(slots) {
+            for item in pictures {
                 guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
                 if let attachment = await Task.detached(priority: .userInitiated, operation: {
                     AttachmentPrep.make(fromImageData: data, name: "image")
@@ -652,10 +669,24 @@ struct ComposeBar: View {
     private func handleFiles(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, !urls.isEmpty else { return }
         let slots = remainingSlots
-        let attempted = urls.count
+        let isMovie: (URL) -> Bool = { url in
+            UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true
+        }
+        let videos = urls.prefix(slots).filter(isMovie)
+        let pictures = urls.prefix(slots).filter { !isMovie($0) }
+        let attempted = pictures.count
         Task { @MainActor in
+            // A file from Files is copied into the app's own folder first.
+            for url in videos {
+                let copied = await Task.detached(priority: .userInitiated) { () -> URL? in
+                    let scoped = url.startAccessingSecurityScopedResource()
+                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                    return try? VideoAttachmentPrep.keep(url)
+                }.value
+                if let copied { onAddVideo(.file(copied)) } else { onNotice("\(url.lastPathComponent) couldn't be read.") }
+            }
             var prepared: [Attachment] = []
-            for url in urls.prefix(slots) {
+            for url in pictures {
                 if let attachment = await Task.detached(priority: .userInitiated, operation: {
                     AttachmentPrep.make(fromFile: url)
                 }).value {
