@@ -768,6 +768,291 @@ uploading), `Networking/CodegClient+Media.swift` (`upload_attachment`).
   directories (`list_directory_with_files` also opens every subdirectory to
   fill `hasChildren`, and leaves out dotfiles).
 
+### Keeping the reader's place (1.3.16)
+
+`Features/SessionDetail/TranscriptAnchoring.swift` (`ScrollAnchorMath`,
+`TranscriptScrollBridge`, `TranscriptCollectionFinder`),
+`ReadingPosition.swift` (`ReadingPosition`, `ReadingRestore`,
+`ReadingPositionStore`), `TranscriptView.swift` and the reading-position part
+of `SessionDetailViewModel`.
+
+- **Why it jumped.** Three causes.
+  - *Older messages went in above the reader and the list didn't move with
+    them.* The transcript is a SwiftUI `List` (a `UICollectionView`), which
+    keeps its content offset when rows are inserted above the visible ones,
+    so each page of older turns pushed the view down by its own height:
+    the message being read left the screen, and the reader, now near the
+    top of the new page, set off the next page. `.defaultScrollAnchor(.bottom)`
+    only placed the first paint. The swap of the "Show earlier messages" row
+    for a spinner (a different height) moved it again.
+  - *Every return scrolled to the bottom.* The view's scroll state
+    (`stuckToBottom`, the window start) lived in the view, which a new screen
+    rebuilds, and it scrolled to the bottom whenever it appeared: a new screen
+    (Back and open again), but also the same screen coming back from another
+    tab or from a screen pushed over it. The cached open forced a re-pin too.
+    The 1.3.6 model store kept the transcript, but not where the reader was
+    in it.
+  - *Background work forced a re-pin.* A reattach to a running turn (the
+    cold attach on open, a reconnect after a drop, the app returning) and the
+    refresh after a missed live turn bumped `stickTick`, the forced re-pin
+    meant for the user's own send, so a reader scrolled up was pulled down.
+  Measured on the CI simulator with the whole app and a 700-turn session
+  (rows of many heights) scrolled up two screens at a time, each
+  scroll then watched on every display frame for half a second: without the
+  anchoring the row at the top of the screen moved by 15,717 to 25,951 pt each
+  time older turns went in; with it, by 0.0 pt on every one of 700 frames
+  over 30 scrolls and 6 reveals (`TranscriptScrollTests`, written to
+  `transcript-scroll.txt` in the `session-list-screenshots` artifact).
+- **Holding the row still.** `List` has no API for keeping a row where it is,
+  or for scrolling to a row plus a few points. `TranscriptCollectionFinder`
+  reaches the list's `UICollectionView` (from a zero-size probe in its first
+  and last rows, or beside it), and `TranscriptScrollBridge` maps the list's
+  items to the transcript's rows by order (the top row, the nodes, the bottom
+  anchor). While the reader is scrolled up it holds the row at the top of the
+  screen: it records the row's distance below the content offset whenever the
+  reader's scroll moves or settles, and puts the row back at that distance on
+  every content size change and every offset change that isn't the reader's
+  (KVO, inside UIKit's layout pass, before the frame is drawn). Older turns
+  put in front, a picture above that decoded taller than its placeholder, a
+  row above that re-rendered, the keyboard: none of them moves what is on
+  screen. While following the latest message nothing is held and the bottom
+  is followed as before. Only the reader's own scroll moves the hold; an
+  animated programmatic scroll (the jump to a reply's question, the status
+  bar's scroll to the top) releases it until it settles.
+- **What the measurements showed on the way.** A trace of the bridge on the
+  CI simulator found two things a first version got wrong. SwiftUI computes
+  the rows in `body` a frame or two before it hands them to the collection
+  view, so mapping items by the newest rows failed (62 items against 134
+  rows) and the row was put back only once the counts matched, 2 to 3 frames
+  (about 40 ms) late; the bridge now keeps the last four row lists and reads
+  the one as long as the collection view's items. And SwiftUI moves the
+  offset as it hands an update over (777.7 to 562.0 pt), before the layout
+  has the new rows; while the item count differs from the last laid-out one,
+  such an offset change goes back to where the row was held, until the
+  layout catches up and the row is put back exactly. A version that let go
+  of the hold whenever the offset had moved since it was taken let three of
+  five reveals through (14,805, 8,362 and 8,552 pt).
+- **Covering the hand-over.** Holding the row puts it back as soon as the
+  layout has the new rows, but SwiftUI gives the collection view the new
+  items a frame or two before it lays them out, so even with the hold those
+  frames showed the content shifted by the inserted height (3,744 pt per
+  reveal of 60 turns in the measurements) before it snapped back. Older turns
+  therefore go in only while the list is at rest (a reader still scrolling
+  gets them when the scroll ends; with 1.5 screens of margin that is before
+  the top), under a picture of the screen (`snapshotView`) laid over the
+  list, which is taken off once the items are laid out and the held row has
+  been in place for two frames (0.6 s at most; a touch takes it off at once).
+  What the reader sees is the same screen throughout, then the same screen
+  with older turns above it. Measured: 6 reveals
+  covered 80 frames in all, about 220 ms each on the simulator (626 ms at most,
+  the cap); the row at the top of the screen moved 0.0 pt on every frame
+  shown.
+- **Bringing older turns in.** Within 1.5 screens of the top
+  (`ScrollAnchorMath.isNearTop`, read by the bridge from the collection
+  view's own offset: SwiftUI's scroll geometry doesn't see an offset set on
+  the collection view, so a reveal driven by it never came after one of the
+  bridge's corrections), the next 60 held turns join the window, in
+  a transaction without animation. Once fewer than 100 held turns are left
+  above the window, the server's next page of 150 is fetched in the
+  background; it joins `turns` without changing the window (the window's
+  start is a global index), so the reader keeps scrolling through what is
+  held while it comes. The proximity is re-read whenever the content grows,
+  so a reveal that leaves the reader near the top brings in the next one.
+  The top row is one row of a fixed 40 pt, a button or a spinner while a page
+  the reader waits for is on its way, so neither pushes the content.
+- **Pictures and media keep their height.** An inline picture decoded before
+  is drawn at once (the memory cache is read when the view is made); one not
+  decoded yet takes its final height from its proportions when they are
+  known: decoded before (`TranscriptImages.aspect`, kept after the picture
+  is evicted) or read from the file's first bytes without decoding it
+  (`ImageDimensions`: PNG `IHDR`, GIF, JPEG `SOFn`, not a JPEG with an Exif
+  block that might rotate it). A media card under a message reserves its
+  full 180 pt (what a screenshot takes there) or the picture's known
+  proportions, and a video card starts from the poster it read before. What
+  still changes height after loading is held still by the bridge when it is
+  above the reader.
+- **Saving the position.** When scrolling settles, when the screen goes (Back,
+  another tab) and when the app leaves the foreground, the transcript reports
+  the row at the top of the screen (a persisted row, which keeps its id across
+  reloads, rather than one of the live reply) and how far into it the top of
+  the screen is, or that the reader is at the latest message. The model keeps
+  it and saves it in `ReadingPositionStore` (UserDefaults
+  `codeg.readingPositions.v1`, 1.5 s after the last change, at once when the
+  session isn't looked at), keyed by the server's endpoint and token (the
+  transcript cache's key) and the conversation id, at most 400 sessions,
+  least recently saved first out, pruned with the transcript cache when a
+  server goes. A position also keeps the row's turn, its exact server time
+  (turn ids are positions, `turn-41`, so after a rewrite the same id can be
+  another message), the window's start and how far the transcript went when
+  the reader last saw its end. The window's start now lives in the model too.
+- **The restore rule** (`ReadingRestore.decide`). At the latest message when
+  the reader was there when they left (it keeps following new replies), when
+  nothing was saved, and when the session is opened from a notification or a
+  link (`AppModel.openSessionFromOutside`: they are about something new; a
+  screen showing that session jumps there). Otherwise where they left it:
+  from a list, Back, another tab, the app coming back, a relaunch. A saved
+  row that is gone falls back to the first row of its turn, and a turn whose
+  server time changed (a rewritten history) or that isn't held opens at the
+  latest message. The decision is made once per screen.
+- **Restoring.** The window opens wide enough to show the saved row; the list
+  starts from its top, hidden, the bridge scrolls to the row and offset in the
+  first layout pass that has it, checks it again for a few frames (SwiftUI may
+  still place its own first offset), and then shows the list. If the bridge
+  can't reach the list, SwiftUI scrolls to the row's top after 0.7 s.
+- **New messages.** Turns that arrived after the end the reader last saw, or a
+  live reply that grew while they were scrolled up, turn the latest-message
+  button into "New messages ↓"; nothing scrolls. A tap goes to the latest
+  message, as before. Only the reader's own scroll, their send, that tap and
+  an open from a notification move the view to the bottom; reattaches,
+  reconnects, refreshes and a missed live turn's reload follow the bottom only
+  for a reader already there.
+
+`CodegiOSTests/ReadingPositionTests.swift` covers the store (persistence
+across launches, the keying, the cap, pruning), the restore rule and its
+fallbacks, the window start, the anchoring math (the top row, restoring at an
+offset, holding a row through an insert, the near-top zone), picture headers,
+and the model: a saved position opening there, a notification opening at the
+latest message (for a model made later and for one on screen), the viewport
+saved at once when the session isn't looked at, and a reattach, a reconnect
+and a foreground refresh leaving a scrolled-up reader where they are, with
+"New messages". `CodegiOSTests/TranscriptScrollTests.swift` hosts the whole
+`RootView` against a mock server with long windowed sessions: scrolling up
+through older turns and pages measured per frame (with and without the
+anchoring), leaving and coming back with a reply arriving meanwhile, a
+notification opening at the latest message, and a relaunch over the same
+defaults and transcript cache.
+
+### Editing a message (1.3.16)
+
+`Models/MessageEdit.swift` (`ForkMode`, `MessageEditRules`, the targets,
+blocks and wording), `Features/SessionDetail/MessageEditor.swift` (the sheet
+and its right-to-left text field), the edit part of `SessionDetailViewModel`,
+`Networking/CodegClient+Fork.swift` (`mode`, the capability check) and the
+user message's long press in `Timeline/TimelineNodeBody.swift`.
+
+- **What codeg web does** (`src/lib/edit-message.ts`,
+  `user-message-editor.tsx`, `computeUserEditTargets` and the host's
+  `handleEditUserMessage`). A settled user message has Edit message when what
+  comes right before it is a reply (not another message, a system note or a
+  compaction divider; not the first loaded message while older ones are on
+  the server), and the agent's fork lands exactly on a named reply or refuses
+  (Claude Code, Codex, DeepSeek; Pi forks at the tail when it misses).
+  Saving forks at that reply's last turn with `acp_fork {…, mode}`: strict,
+  so a reply the agent can't name refuses (400) instead of forking at the
+  tail, which still holds the message being replaced. `edit_in_place`, the
+  default, re-points the conversation's own row at the fork and hides the row
+  holding the original (born soft-deleted); `edit` (Settings › "Keep the
+  original as a separate conversation when editing") leaves it in the
+  sidebar as "… (before edit)". The host reads the forked history until the
+  row is on the forked session (four tries, 400 ms apart times the try), then
+  sends the edited text, with the message's images, as an ordinary prompt.
+  The first message has no reply before it: saving opens a new conversation
+  on the same agent and folder with the edited text, and this one stays.
+  Greyed out with `editBusy` while a turn runs (or a message just sent isn't a
+  turn yet), `editQueued` while messages wait in the queue, `editNotReady`
+  while the reply before it is still being written; another edit being saved
+  counts as busy. A reply the post-turn reparse never named is found by the
+  message's place among the user turns in a fresh read, its text matching.
+- **On the phone.** A long press on your message: Copy and Edit Message (the
+  reason under it while it is greyed out; the message's text no longer takes
+  the long press for its own Copy). The editor is a sheet: the text as sent
+  in a field that follows its direction like the web's `dir` (a Hebrew or
+  Arabic message right-aligned and right to left whatever the app's
+  language), the pictures as fixed chips with "Attached images are sent again
+  with the edited message", the web's hint for the outcome, the blocked
+  reason, Cancel and Save & send (with the web's saving label and a spinner).
+  A failed save keeps the sheet and the text, with the web's message. The
+  keep-original setting is Settings › General › Editing Messages (off, as on
+  the web; kept on the iPhone as the web keeps it per browser). After an edit
+  in place or as a branch, the same screen shows the forked history with the
+  edited message going out (the cached transcript of the original is dropped
+  and the saved reading position forgotten); a first message's new
+  conversation opens on top, so Back returns to the original.
+- **The phone's own steps.** No connection is kept for an idle session, so
+  saving finds the session's connection or resumes it (`acp_connect` with its
+  `external_id`), waits for it to be `connected` (a turn found running is
+  busy), forks, reads the forked history and sends. A fork whose history
+  didn't load is remembered: Save & send again goes on from it instead of
+  forking twice, as the web does.
+- **Older servers.** The phone asks each server once, with `acp_fork
+  {connectionId: "", mode: "codeg-ios-probe"}`: a server that knows the modes
+  refuses the unknown one while reading the body (422 "unknown variant")
+  and touches nothing; an older one ignores the field and answers "connection
+  not found"; one without forking answers `not_implemented`. Without edit
+  modes there is no Edit Message at all (an older server would take an edit
+  as a plain branch and continue the original).
+- **Checked live** against the codeg server on the box (fork.193, port 3080,
+  `/tmp/ios-edit-test` with hooks off, a throwaway Claude Code conversation,
+  through the endpoints the app calls): the probe answered 422. Two prompts
+  (APPLE, BANANA), then `acp_fork … mode: edit_in_place` at the first reply's
+  last turn took 1.1 s; the row moved to the forked session with its history
+  ending at the first reply, its title kept, the sibling holding the original
+  not listed; the edited message (CHERRY) went out on the same connection and
+  the transcript read APPLE, CHERRY with no BANANA. `mode: edit` at the same
+  reply left the original listed as "… (before edit)" holding APPLE, CHERRY,
+  and the row went on with DATE. A first-message edit (`create_conversation`,
+  `acp_connect`, `acp_prompt`) made a new conversation with ELDERBERRY and
+  left the original unchanged. The rows were deleted (codeg's delete is a
+  soft delete; the hidden sibling was born that way), the folder removed from
+  the workspace and history, and the folder and its Claude project directory
+  deleted.
+
+### Critical sessions from the phone (1.3.16)
+
+`Models/CriticalSession.swift` (`CriticalSessionRules`, the request),
+`SessionActions.toggleCritical`, the row's long press and `CriticalFlag` in
+`Sessions/SessionRow.swift`, and the session's ⋯ menu, title and Session
+Details in `SessionDetailView.swift`.
+
+- **What the desktop does.** "Mark as critical" / "Unmark critical" in a
+  session's sidebar card menu and tab menu (a delegation sub-session only
+  offers Unmark, when it was marked anyway), a red flag on the row and the
+  tab, and in Session Details a "Critical session" section: Mark as
+  critical, and while it is, "Alert when a turn may be stuck" (stall
+  detection). Both go through `update_conversation_critical
+  {conversationId, critical, stall?}`; `stall` is left out to keep the
+  session's stall detection as it is. The backend's watchdog
+  (`acp/critical_watch.rs`) then alerts when the session sits idle; the phone
+  already gets those alerts as critical pushes (Acknowledge, Snooze).
+- **On the phone.** Mark as Critical / Unmark Critical in the long press on
+  every session row and in the session's ⋯ menu; the flag on rows (before the
+  time, and "critical session" for VoiceOver) and beside the session's title;
+  the two switches in Session Details. The mark shows at once (on the row,
+  or on the screen's summary) and is put back with "Could not update the
+  critical mark: …" if the server refuses; the lists then refresh, and every
+  list read brings the server's mark, so a change on the desktop shows at
+  the next refresh.
+- **Older servers.** A server with critical sessions sends `critical` and
+  `critical_stall` on every summary (never left out), so a summary without
+  them means an older server, and the item isn't offered (as archiving reads
+  `archived`).
+- **Checked live** against the codeg server on the box (fork.193): all 115
+  listed sessions carried `critical` and `critical_stall`; on a throwaway
+  conversation in `/tmp/ios-critical-test`, `critical: true` showed in the
+  list at once, `stall: false` turned `critical_stall` off (in the list and
+  the detail summary), `critical: false` unmarked it, and an unknown
+  conversation was refused. The conversation was deleted and the folder
+  removed.
+
+`CodegiOSTests/CriticalSessionTests.swift` covers the payload (and the
+transcript cache's round trip), what the menus offer (older server,
+sub-session), the request bodies, and the session screen's mark shown at once
+and put back on a refusal. The list screenshots show a flagged row.
+
+#### What the codeg server should change
+
+- **Turn ids that survive a rewrite.** Transcript turn ids are positions
+  (`turn-41`); a compaction or an in-place fork gives the same id to another
+  message, so a saved reading position checks the turn's server time too. An
+  id taken from the agent's own message id (Claude's entry uuid, where there
+  is one) would let a position, a fork point and an edit target survive a
+  reload without that check.
+- **A capability list.** The phone learns what a server can do by asking
+  endpoints about a connection that can't exist (the fork endpoints, the edit
+  modes, the media capability). A `server_capabilities` answer
+  (`{"forkModes": ["branch", "edit", "edit_in_place"], …}`) would replace the
+  probes.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one
@@ -1746,13 +2031,17 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   route, transcript windows and the transcript cache against a
   mock windowed server, navigation and Back, the session model store, the
   whole app rotated in a running session, the mode and options changed
-  during a turn, and media: detection from fixture transcripts, capability
+  during a turn, media: detection from fixture transcripts, capability
   minting and refresh, Range requests against a mock byte server, and the
-  player model with the audio session) on an
+  player model with the audio session, the reading position and the
+  transcript held still while older turns go in, measured on every frame in
+  the whole app, and editing a message against a mock server) on an
   iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
   `build`. It uploads the session list screenshots as the
-  `session-list-screenshots` artifact, and the compose area and a reply's
-  media cards (`media-cards-*.png`) as `compose-screenshots`.
+  `session-list-screenshots` artifact (with `transcript-scroll.txt`, the
+  scroll measurements, and `transcript-returned-new-messages.png`), and the
+  compose area and a reply's media cards (`media-cards-*.png`) as
+  `compose-screenshots`.
 - **`build`** runs on every push and pull request on GitHub-hosted `macos-26`
   with its default Xcode. It runs `brew install xcodegen`, `xcodegen generate`,
   then an unsigned `xcodebuild build` for `generic/platform=iOS Simulator`.

@@ -212,6 +212,15 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
     var turnStateReported: Bool = false
     /// The user marked this conversation critical (alerts when it sits idle).
     var critical: Bool = false
+    /// Whether the server sent `critical` at all: it always does once it has
+    /// critical sessions, so an older server leaves this false and the phone
+    /// offers no Mark as Critical.
+    var criticalReported: Bool = false
+    /// A critical session also alerts when a working turn goes silent
+    /// (`critical_stall`, on unless turned off).
+    var criticalStall: Bool = true
+    /// The delegating session of a sub-session (`parent_id`), nil otherwise.
+    var parentId: Int? = nil
     /// The usage-limit pause, when the last turn stopped on the account's limit.
     var limitPause: LimitPause? = nil
     /// Whether the session continues by itself once the limit resets.
@@ -229,7 +238,7 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, folderId, title, agentType, status, model, gitBranch, externalId
         case messageCount, createdAt, updatedAt, pinnedAt
-        case turnState, critical, limitPause, limitAutoContinue
+        case turnState, critical, criticalStall, parentId, limitPause, limitAutoContinue
         case background
     }
 
@@ -251,7 +260,10 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         // fail the whole conversation list.
         turnStateReported = c.contains(.turnState)
         turnState = (try? c.decodeIfPresent(ConversationTurnState.self, forKey: .turnState)) ?? nil
+        criticalReported = c.contains(.critical)
         critical = (try? c.decodeIfPresent(Bool.self, forKey: .critical)) ?? false
+        criticalStall = (try? c.decodeIfPresent(Bool.self, forKey: .criticalStall)) ?? true
+        parentId = (try? c.decodeIfPresent(Int.self, forKey: .parentId)) ?? nil
         limitPause = (try? c.decodeIfPresent(LimitPause.self, forKey: .limitPause)) ?? nil
         limitAutoContinue = (try? c.decodeIfPresent(Bool.self, forKey: .limitAutoContinue)) ?? true
         background = (try? c.decodeIfPresent(ConversationBackground.self, forKey: .background)) ?? nil
@@ -277,7 +289,11 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
             // Keep "the server sent turn_state: null" apart from "no field".
             try c.encodeNil(forKey: .turnState)
         }
-        try c.encode(critical, forKey: .critical)
+        if criticalReported {
+            try c.encode(critical, forKey: .critical)
+            try c.encode(criticalStall, forKey: .criticalStall)
+        }
+        try c.encodeIfPresent(parentId, forKey: .parentId)
         try c.encodeIfPresent(limitPause, forKey: .limitPause)
         try c.encode(limitAutoContinue, forKey: .limitAutoContinue)
         try c.encodeIfPresent(background, forKey: .background)

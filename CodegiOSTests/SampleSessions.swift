@@ -19,6 +19,8 @@ enum SampleSessions {
         /// Minutes until the usage limit resets, for a paused session.
         var limitResetsIn: Double? = nil
         var messages = 12
+        /// Wire `critical` (the server sends it for every session).
+        var critical = false
     }
 
     static let folders: [Int: String] = [
@@ -44,7 +46,7 @@ enum SampleSessions {
         Spec(id: 102, folder: 1, title: "Fix the push token refresh after a server edit",
              agent: "codex", status: "in_progress", minutesAgo: 4, turnState: "running"),
         Spec(id: 103, folder: 3, title: "Draft the reply to the tax assessment",
-             status: "in_progress", minutesAgo: 9, turnState: "interrupted"),
+             status: "in_progress", minutesAgo: 9, turnState: "interrupted", critical: true),
         Spec(id: 104, folder: 4, title: "Board: weekly status digest",
              agent: "gemini", status: "in_progress", minutesAgo: 22, limitResetsIn: 95),
         Spec(id: 105, folder: 2, title: "Camera Control shortcut for dictation",
@@ -81,6 +83,8 @@ enum SampleSessions {
             "created_at": iso(updated.addingTimeInterval(-3_600)),
             "updated_at": iso(updated),
             "turn_state": spec.turnState ?? NSNull(),
+            "critical": spec.critical,
+            "critical_stall": true,
         ]
         if let title = spec.title { object["title"] = title }
         if let pinned = spec.pinnedMinutesAgo {

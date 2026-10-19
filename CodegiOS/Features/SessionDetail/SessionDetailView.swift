@@ -45,6 +45,10 @@ struct SessionDetailView: View {
     @State private var isVisible = false
     /// The one-time explanation before Camera Control to talk asks for the camera.
     @State private var showCameraTalkIntro = false
+    /// The message open in the editor ("Edit Message").
+    @State private var editing: MessageEditSession?
+    /// "Keep the original as a separate conversation when editing".
+    @AppStorage(MessageEditPreferences.keepOriginalKey) private var keepOriginalOnEdit = false
 
     private var cameraTalk: CameraTalkController { CameraTalkController.shared }
 
@@ -83,7 +87,8 @@ struct SessionDetailView: View {
             SessionTitleView(
                 title: navTitle,
                 activity: model.summary == nil ? nil : model.activity,
-                agentName: model.agentTypeForUI.displayName
+                agentName: model.agentTypeForUI.displayName,
+                critical: model.summary?.critical == true
             )
         }
         // The agent avatar (formerly in the compose bar) sits to the right of
@@ -174,10 +179,27 @@ struct SessionDetailView: View {
         .sheet(isPresented: $showDetails) {
             if let summary = model.summary {
                 SessionDetailsSheet(summary: summary, stats: model.sessionStats, folder: model.folder,
-                                    activity: model.activity, agentName: model.agentTypeForUI.displayName)
+                                    activity: model.activity, agentName: model.agentTypeForUI.displayName,
+                                    critical: model.criticalAction == nil ? nil : CriticalControls(
+                                        isOn: model.summary?.critical == true,
+                                        stall: model.summary?.criticalStall != false,
+                                        set: { on, stall in Task { await model.setCritical(on, stall: stall) } }
+                                    ))
             }
         }
-        .task { model.loadIfNeeded() }
+        .task {
+            model.loadIfNeeded()
+            // Whether this server's fork takes an edit mode ("Edit Message").
+            await ForkCapabilities.shared.probeEditModesIfNeeded(client: client)
+        }
+        .sheet(item: $editing) { session in
+            MessageEditorSheet(
+                session: session,
+                availability: { model.editAvailability(turnID: session.id) },
+                keepOriginal: keepOriginalOnEdit,
+                onSave: { text in await saveEdit(session, text: text) }
+            )
+        }
         .onAppear {
             isVisible = true
             lease?.acquire(holderID)
@@ -187,6 +209,7 @@ struct SessionDetailView: View {
             isVisible = false
             PresenceTracker.shared.hide(serverProfileID: server.id, conversationID: model.conversationID)
             model.setOnScreen(false)
+            model.persistReadingPosition()
             if let lease {
                 // The store closes the sockets once no screen holds the model.
                 lease.release(holderID)
@@ -210,6 +233,7 @@ struct SessionDetailView: View {
             switch new {
             case .background:
                 wasBackgrounded = true
+                model.persistReadingPosition()
             case .active where wasBackgrounded:
                 wasBackgrounded = false
                 Task { await model.refreshOnForeground() }
@@ -237,6 +261,45 @@ struct SessionDetailView: View {
             new != nil ? .warning : nil
         }
         .sensoryFeedback(.selection, trigger: model.userToggleTick)
+    }
+
+    // MARK: - Edit message
+
+    /// "Edit Message" on this session's messages (web `onEditUserMessage`).
+    private var messageEditAction: MessageEditAction? {
+        guard model.canEditMessages else { return nil }
+        let model = self.model
+        return MessageEditAction(
+            availability: { model.editAvailability(turnID: $0) },
+            start: { turnID in
+                guard let draft = model.editDraft(turnID: turnID) else { return }
+                editing = MessageEditSession(id: turnID, initialText: draft.text, images: draft.images)
+            },
+            explain: { model.notice = $0 }
+        )
+    }
+
+    /// Save an edit: the conversation continues from it here, or, for the
+    /// first message, a new conversation opens with it (Back returns here).
+    /// Nil once it went out, else why not.
+    private func saveEdit(_ session: MessageEditSession, text: String) async -> String? {
+        do {
+            switch try await model.saveEdit(turnID: session.id, text: text, keepOriginal: keepOriginalOnEdit) {
+            case .sent:
+                return nil
+            case .newConversation(let request):
+                guard let onOpenSession else { return MessageEditError.newConversationFailed.errorDescription }
+                // Once the editor is down, on top of this session.
+                editing = nil
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    onOpenSession(request)
+                }
+                return nil
+            }
+        } catch {
+            return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
     }
 
     // MARK: - Fork
@@ -347,6 +410,13 @@ struct SessionDetailView: View {
             turnsOffset: model.turnsOffset,
             hasOlderOnServer: model.hasOlderTurns,
             onLoadOlder: { await model.loadOlderTurns() },
+            isLoadingOlder: model.isLoadingOlder,
+            windowStart: model.transcriptWindowStart,
+            onWindowStartChange: { model.transcriptWindowStart = $0 },
+            // Decided once for this screen: the latest message, or where the
+            // reader left the session.
+            restore: model.restoreDecision(screen: holderID),
+            onViewportChange: { model.noteViewport($0) },
             mediaContext: model.mediaPathContext,
             mediaPresence: model.mediaEnvironment?.library.presence
         ) {
@@ -384,6 +454,7 @@ struct SessionDetailView: View {
             MediaLinks.open(url, in: model.mediaEnvironment) ? .handled : .systemAction
         })
         .environment(\.replyFork, replyForkAction)
+        .environment(\.messageEdit, messageEditAction)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.snappy(duration: 0.28), value: model.pendingUserTurns)
         .animation(.snappy(duration: 0.28), value: model.liveTurn?.id)
@@ -446,7 +517,9 @@ struct SessionDetailView: View {
                         .transition(.opacity)
                 }
                 if !model.isPinnedToBottom {
-                    JumpToLatestButton { model.userTappedScrollToBottom() }
+                    // Something arrived below while the reader was scrolled up
+                    // or away: said, never scrolled to.
+                    JumpToLatestButton(newMessages: model.hasNewMessagesBelow) { model.userTappedScrollToBottom() }
                         .padding(.bottom, 10)
                         // Fade only — a `.scale` transition is scaleEffect-backed
                         // and can leave a residual transform that offsets the
@@ -485,6 +558,7 @@ struct SessionDetailView: View {
             }
             .animation(.snappy(duration: 0.26), value: composeFocused)
             .animation(.snappy(duration: 0.24), value: model.isPinnedToBottom)
+            .animation(.snappy(duration: 0.24), value: model.hasNewMessagesBelow)
             .animation(.snappy(duration: 0.24), value: model.queuedMessages)
             .animation(.snappy(duration: 0.24), value: model.insertedNotes)
             .animation(.snappy(duration: 0.24), value: model.canOfferContinue)
@@ -496,24 +570,47 @@ struct SessionDetailView: View {
 }
 
 /// A floating glass affordance that re-pins the transcript to the newest message,
-/// shown only while the user has scrolled up. Mirrors ChatGPT/Claude.
-private struct JumpToLatestButton: View {
+/// shown only while the user has scrolled up. Mirrors ChatGPT/Claude. When
+/// something arrived below meanwhile, it says "New messages".
+struct JumpToLatestButton: View {
+    var newMessages = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "arrow.down")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(Theme.accent)
-                .frame(width: 40, height: 40)
-                .glassEffect(.regular, in: Circle())
-                .hairlineBorder(20)
-                // An explicit hit shape so the whole disc is tappable (and the
-                // tap can't slip past its edge into the transcript underneath).
-                .contentShape(Circle())
+            // One face at a time, swapped at once: no cross-fade of the two
+            // over each other.
+            Group {
+                if newMessages {
+                    HStack(spacing: 6) {
+                        Text("New messages")
+                            .font(.subheadline.weight(.semibold))
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 13, weight: .bold))
+                    }
+                    .foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 16)
+                    .frame(height: 40)
+                    .glassEffect(.regular, in: Capsule())
+                    .hairlineBorder(20)
+                    .contentShape(Capsule())
+                } else {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Theme.accent)
+                        .frame(width: 40, height: 40)
+                        .glassEffect(.regular, in: Circle())
+                        .hairlineBorder(20)
+                        // An explicit hit shape so the whole disc is tappable (and the
+                        // tap can't slip past its edge into the transcript underneath).
+                        .contentShape(Circle())
+                }
+            }
+            .transaction { $0.animation = nil }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Jump to latest")
+        .accessibilityLabel(newMessages ? Text("New messages") : Text("Jump to latest"))
+        .accessibilityHint(newMessages ? Text("Scrolls to the latest message") : Text(verbatim: ""))
     }
 }
 
@@ -586,6 +683,11 @@ private struct SessionActionsMenu: View {
             if fork != .hidden {
                 ForkSessionMenuItem(availability: fork, action: onFork)
             }
+            if let critical = model.criticalAction {
+                Button { Task { await model.setCritical(critical.marks) } } label: {
+                    Label(critical.title, systemImage: critical.symbol)
+                }
+            }
             Button(action: onShowDetails) {
                 Label("Session Details", systemImage: "info.circle")
             }
@@ -626,6 +728,8 @@ private struct SessionDetailsSheet: View {
     let folder: FolderDetail?
     let activity: SessionActivity
     let agentName: String
+    /// The "Critical session" switches, nil where not offered.
+    var critical: CriticalControls?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -634,6 +738,9 @@ private struct SessionDetailsSheet: View {
                 VStack(alignment: .leading, spacing: 14) {
                     SessionHeaderView(summary: summary, stats: stats)
                     metadata
+                    if let critical {
+                        CriticalSessionSection(controls: critical)
+                    }
                     if let selector = summary.selectorState, !selector.displayItems.isEmpty {
                         selectorCard(selector)
                     }
@@ -710,6 +817,67 @@ private struct DetailRow: View {
                 .lineLimit(2)
                 .truncationMode(.middle)
         }
+        .padding(.vertical, 10)
+    }
+}
+
+// MARK: - Critical session
+
+/// What Session Details' "Critical session" switches show and do.
+struct CriticalControls {
+    let isOn: Bool
+    /// Stall detection, on unless turned off.
+    let stall: Bool
+    /// Mark or unmark, and the stall detection (nil leaves it as it is).
+    let set: (Bool, Bool?) -> Void
+}
+
+/// The desktop's Session Details "Critical session" section: mark the session
+/// critical (the backend alerts when it sits idle, and again until you act),
+/// and while it is, switch its stall detection.
+struct CriticalSessionSection: View {
+    let controls: CriticalControls
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Label {
+                Text("Critical session")
+            } icon: {
+                Image(systemName: controls.isOn ? "flag.fill" : "flag")
+                    .foregroundStyle(controls.isOn ? Theme.danger : Theme.textSecondary)
+            }
+            .font(.caption.weight(.semibold))
+            .textCase(.uppercase)
+            .foregroundStyle(Theme.textSecondary)
+            .padding(.vertical, 10)
+            row(title: "Mark as critical", hint: "Alert me when this session sits idle, and again until I act.",
+                isOn: Binding(get: { controls.isOn }, set: { controls.set($0, nil) }))
+            if controls.isOn {
+                Divider().overlay(Theme.hairline)
+                row(title: "Alert when a turn may be stuck",
+                    hint: "Also alert when a running turn streams nothing for the stall threshold.",
+                    isOn: Binding(get: { controls.stall }, set: { controls.set(true, $0) }))
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 4)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        .hairlineBorder(Theme.Radius.lg)
+    }
+
+    private func row(title: LocalizedStringKey, hint: LocalizedStringKey, isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.textPrimary)
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .tint(Theme.accent)
         .padding(.vertical, 10)
     }
 }

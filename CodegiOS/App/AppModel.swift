@@ -25,6 +25,9 @@ final class AppModel {
     /// environment.
     let actions: SessionActions
 
+    /// Where the reader was in each session (pruned with the transcript cache).
+    @ObservationIgnored private let readingPositions: ReadingPositionStore?
+
     /// The Chats list's model, shared by the list and a group pushed from it.
     @ObservationIgnored private var chatsList: (server: UUID, model: SessionListViewModel)?
 
@@ -97,10 +100,12 @@ final class AppModel {
     var settingsSheetPresented = false
 
     init(serverStore: ServerStore? = nil, defaults: UserDefaults = .standard,
-         sessions: SessionModelStore? = nil, transcriptCache: TranscriptCache? = .shared) {
+         sessions: SessionModelStore? = nil, transcriptCache: TranscriptCache? = .shared,
+         readingPositions: ReadingPositionStore? = .shared) {
         let store = serverStore ?? ServerStore()
         self.serverStore = store
         self.defaults = defaults
+        self.readingPositions = readingPositions
         let sessionStore = sessions ?? SessionModelStore()
         sessionStore.transcriptCache = transcriptCache
         self.sessions = sessionStore
@@ -283,6 +288,8 @@ final class AppModel {
     func openSessionFromOutside(conversationID: Int) {
         let route = Route.conversation(conversationID)
         lastOpenedConversationID = conversationID
+        // About something new: open at the latest message.
+        sessions.requestOpenAtLatest(conversationID: conversationID)
         if isCompact {
             let tab: AppTab = selectedTab == .settings ? .activity : selectedTab
             var stack = paths[tab] ?? []
@@ -336,12 +343,14 @@ final class AppModel {
     /// Drop cached transcripts of servers that are gone or whose URL or token
     /// changed: each server's folder is named after its endpoint and token.
     func pruneTranscriptCache() {
-        guard let cache = sessions.transcriptCache else { return }
         let clients = serverStore.servers.map { serverStore.client(for: $0) }
         // A token the Keychain can't give right now (a launch before the
         // first unlock) is not a changed token: keep everything until it can.
         guard !clients.contains(where: { $0 == nil }) else { return }
         let keep = Set(clients.compactMap { $0 }.map(TranscriptCache.serverKey(for:)))
+        // Reading positions are keyed the same way.
+        readingPositions?.removeServers(except: keep)
+        guard let cache = sessions.transcriptCache else { return }
         Task { await cache.removeServers(except: keep) }
     }
 

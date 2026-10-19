@@ -157,6 +157,13 @@ struct InlineImageView: View {
     @State private var decoded: UIImage?
     @State private var failed = false
 
+    init(image: ImageData, caption: String?) {
+        self.image = image
+        self.caption = caption
+        // A picture decoded before shows at once, with no placeholder first.
+        _decoded = State(initialValue: TranscriptImages.cached(TranscriptImages.key(for: image)))
+    }
+
     /// Cheap to compare on every render, unlike the base64 text itself.
     private var cacheKey: String { TranscriptImages.key(for: image) }
 
@@ -200,8 +207,26 @@ struct InlineImageView: View {
         }
     }
 
-    /// A calm decoding box (or a decode-failure note) shown until the image lands.
+    /// A calm decoding box (or a decode-failure note) shown until the image
+    /// lands. With the picture's proportions known (decoded before, or read
+    /// from its header), the box is exactly as tall as the picture will be,
+    /// so nothing under it moves when it decodes.
+    @ViewBuilder
     private var placeholder: some View {
+        if !failed, let aspect = TranscriptImages.aspect(of: image) {
+            Theme.surfaceNested
+                .aspectRatio(aspect, contentMode: .fit)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxHeight: 320)
+                .overlay { ProgressView().controlSize(.small) }
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                .hairlineBorder(Theme.Radius.md, color: Theme.hairline)
+        } else {
+            estimatePlaceholder
+        }
+    }
+
+    private var estimatePlaceholder: some View {
         HStack(spacing: 8) {
             if failed {
                 Image(systemName: "photo")

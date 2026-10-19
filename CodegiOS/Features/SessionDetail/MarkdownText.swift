@@ -19,6 +19,9 @@ struct MarkdownText: View {
     /// accumulated reply (O(n²) main-actor work on long replies); the turn
     /// re-renders once with full Markdown when it finalizes.
     var plain: Bool = false
+    /// The text offers its own Copy on a long press. Off inside a card whose
+    /// long press has a menu of its own (your message: Copy, Edit Message).
+    var selectable: Bool = true
 
     var body: some View {
         // Live-streaming text (`plain`) renders verbatim in one direction and is
@@ -53,7 +56,7 @@ struct MarkdownText: View {
             .font(font)
             .lineSpacing(Theme.Typography.messageLineSpacing)
             .foregroundStyle(color)
-            .textSelection(.enabled)
+            .modifier(SelectableText(enabled: selectable))
             .tint(Theme.accent)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
@@ -103,5 +106,19 @@ struct MarkdownText: View {
             cache.removeValue(forKey: evicted)
         }
         return parsed
+    }
+}
+
+/// `.textSelection(.enabled)` when `enabled` (the two settings are different
+/// types, so they can't be picked with a ternary).
+private struct SelectableText: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.textSelection(.enabled)
+        } else {
+            content
+        }
     }
 }

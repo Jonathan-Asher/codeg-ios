@@ -57,7 +57,11 @@ final class SessionDetailViewModel {
     /// so the transcript can detect a real persisted change cheaply. `@Observable`
     /// preserves the observer (same pattern as `AppModel.selectedServerID`).
     private(set) var turns: [MessageTurn] = [] {
-        didSet { turnsVersion &+= 1 }
+        didSet {
+            turnsVersion &+= 1
+            // Following the latest message, the reader sees what arrives.
+            if isPinnedToBottom { seenTurnEnd = heldEnd }
+        }
     }
     /// Global index of `turns[0]` in the whole transcript. Above 0 while
     /// older turns are still on the server (see `TranscriptSync`); they are
@@ -239,6 +243,34 @@ final class SessionDetailViewModel {
     /// A transient, non-fatal notice (e.g. "a turn is already running").
     var notice: String?
 
+    // MARK: - Reading position
+
+    /// The saved reading positions (UserDefaults; a scratch store in tests).
+    @ObservationIgnored let readingPositions: ReadingPositionStore
+    /// The first turn the transcript shows (global index); nil while it
+    /// follows the end. Kept here, not in the view, so leaving the session and
+    /// coming back finds the same history on screen.
+    var transcriptWindowStart: Int?
+    /// Where the reader was when scrolling last settled (or as saved).
+    @ObservationIgnored private(set) var readingPosition: ReadingPosition?
+    /// The screen the restore decision was made for, and the decision.
+    @ObservationIgnored private var restoreScreen: UUID?
+    @ObservationIgnored private var restoreForScreen: ReadingRestore = .bottom
+    /// The next screen opens at the latest message (a notification, a link).
+    @ObservationIgnored private var openAtLatestNext = false
+    @ObservationIgnored private var positionSaveTask: Task<Void, Never>?
+    /// How far the persisted transcript went (global end) when the reader
+    /// last saw its end.
+    @ObservationIgnored private(set) var seenTurnEnd = 0
+    /// The live reply grew while the reader was scrolled up.
+    private(set) var hasUnseenLive = false
+
+    /// Something arrived below while the reader was scrolled up (or away):
+    /// "New messages" instead of a plain jump button. The view doesn't move.
+    var hasNewMessagesBelow: Bool {
+        !isPinnedToBottom && (heldEnd > seenTurnEnd || hasUnseenLive)
+    }
+
     /// Monotonic token used to scroll-to-bottom; bump it to request a scroll.
     /// The transcript follows this *only while pinned to the bottom* (so streamed
     /// tokens don't yank a user who has scrolled up to read).
@@ -377,10 +409,12 @@ final class SessionDetailViewModel {
 
     private init(client: CodegClient, mode: Mode,
                  makeEventStream: (@MainActor (CodegClient) -> any SessionEventStream)? = nil,
-                 transcriptCache: TranscriptCache? = nil) {
+                 transcriptCache: TranscriptCache? = nil,
+                 readingPositions: ReadingPositionStore? = nil) {
         self.client = client
         self.mode = mode
         self.transcriptCache = transcriptCache
+        self.readingPositions = readingPositions ?? .shared
         self.cacheServerKey = TranscriptCache.serverKey(for: client)
         if let makeEventStream {
             self.makeEventStream = { makeEventStream(client) }
@@ -445,18 +479,21 @@ final class SessionDetailViewModel {
     }
 
     convenience init(client: CodegClient, conversationID: Int,
-                     transcriptCache: TranscriptCache? = .shared) {
+                     transcriptCache: TranscriptCache? = .shared,
+                     readingPositions: ReadingPositionStore? = nil) {
         self.init(client: client, mode: .existing(conversationID: conversationID),
-                  transcriptCache: transcriptCache)
+                  transcriptCache: transcriptCache, readingPositions: readingPositions)
     }
 
     /// An existing conversation whose event sockets come from `makeEventStream`
     /// (the unit tests' scripted sockets).
     convenience init(client: CodegClient, conversationID: Int,
                      makeEventStream: @escaping @MainActor (CodegClient) -> any SessionEventStream,
-                     transcriptCache: TranscriptCache? = nil) {
+                     transcriptCache: TranscriptCache? = nil,
+                     readingPositions: ReadingPositionStore? = nil) {
         self.init(client: client, mode: .existing(conversationID: conversationID),
-                  makeEventStream: makeEventStream, transcriptCache: transcriptCache)
+                  makeEventStream: makeEventStream, transcriptCache: transcriptCache,
+                  readingPositions: readingPositions)
     }
 
     /// A brand-new task: `load()` immediately fires the first prompt composed
@@ -528,7 +565,8 @@ final class SessionDetailViewModel {
                 applyCached(entry)
                 phase = .loaded
                 openedFromCache = true
-                requestStickToBottom()
+                // Where it opens (the latest message, or where the reader
+                // left it) is the screen's call: `restoreDecision(screen:)`.
                 await syncExisting(id: id, stickToBottom: false, overlap: TranscriptSync.reopenOverlap)
                 return
             }
@@ -542,7 +580,14 @@ final class SessionDetailViewModel {
             phase = .loaded
             guard !didLoadDraftOptions else { return }
             didLoadDraftOptions = true
+            if selectedAgent == nil, let agent = request.agent { selectedAgent = agent }
             await loadDraftOptions(preselectedFolderID: request.preselectedFolderID)
+            // An edited first message: the new conversation starts with it.
+            if let prompt = request.initialPrompt, !hasStartedFirstSend {
+                startSend(text: prompt.text, attachments: prompt.images.enumerated().compactMap {
+                    Attachment(image: $1, index: $0)
+                }, fromComposer: false)
+            }
         }
     }
 
@@ -1756,7 +1801,9 @@ final class SessionDetailViewModel {
         summary = outcome.detail.summary
         adoptWindow(outcome, allowShrink: true)
         sessionStats = outcome.detail.sessionStats ?? sessionStats
-        requestStickToBottom()
+        // A background refresh: it follows the latest message only for a
+        // reader already there, never pulls one who scrolled up.
+        requestScrollToBottom()
     }
 
     /// A frame the server shrank to fit this socket just arrived (only an older
@@ -1818,7 +1865,9 @@ final class SessionDetailViewModel {
                     isTurnActive = true
                     restorePending(from: snap)
                     sendState = .thinking
-                    requestStickToBottom()
+                    // A reattach or a reconnect: followed at the latest
+                    // message, never a pull down for a reader scrolled up.
+                    requestScrollToBottom()
                 } else if resuming, let current = liveTurn {
                     // The turn on screen ended while the socket was down, so its
                     // `turn_complete` never arrived. Settle it rather than leave it
@@ -3077,6 +3126,7 @@ final class SessionDetailViewModel {
 
     private func requestScrollToBottom() {
         scrollTick &+= 1
+        if !isPinnedToBottom, !hasUnseenLive { hasUnseenLive = true }
     }
 
     /// Force the transcript to re-pin to the bottom even if the user had scrolled
@@ -3089,12 +3139,102 @@ final class SessionDetailViewModel {
     /// floating "jump to latest" button can appear/disappear.
     func setPinnedToBottom(_ pinned: Bool) {
         if isPinnedToBottom != pinned { isPinnedToBottom = pinned }
+        if pinned { markSeen() }
     }
 
     /// The user tapped the floating "jump to latest" button.
     func userTappedScrollToBottom() {
         isPinnedToBottom = true
+        markSeen()
         requestStickToBottom()
+    }
+
+    /// The reader is at the latest message: everything so far is seen.
+    private func markSeen() {
+        seenTurnEnd = heldEnd
+        if hasUnseenLive { hasUnseenLive = false }
+    }
+
+    // MARK: - Reading position
+
+    /// How this screen's transcript opens, decided once per screen (`screen`
+    /// is the screen's own id): at the latest message, or where the reader
+    /// left it (``ReadingRestore/decide(saved:openAtLatest:)``). Called while
+    /// the screen is drawn, so it only touches state nothing observes.
+    func restoreDecision(screen: UUID) -> ReadingRestore {
+        if restoreScreen == screen { return restoreForScreen }
+        restoreScreen = screen
+        let atLatest = openAtLatestNext
+        openAtLatestNext = false
+        if readingPosition == nil, let id = conversationID {
+            readingPosition = readingPositions.position(serverKey: cacheServerKey, conversationID: id)
+        }
+        var decision = ReadingRestore.decide(saved: readingPosition, openAtLatest: atLatest)
+        // The history was rewritten since: the saved row's id is another message now.
+        if case .anchored(let saved) = decision, !ReadingRestore.isStillThere(saved, in: turns) { decision = .bottom }
+        if case .anchored(let saved) = decision { seenTurnEnd = saved.seenTurnEnd }
+        restoreForScreen = decision
+        return decision
+    }
+
+    /// Open at the latest message: a notification or a link pointed at this
+    /// session. A screen showing it now jumps there; otherwise the next one
+    /// opens there.
+    func requestOpenAtLatest(onScreen: Bool) {
+        if onScreen {
+            userTappedScrollToBottom()
+        } else {
+            openAtLatestNext = true
+        }
+    }
+
+    /// The transcript says where the reader is (scrolling settled, the screen
+    /// or the app going). Kept here and saved shortly after, at once when the
+    /// session is no longer looked at.
+    func noteViewport(_ viewport: TranscriptViewport) {
+        let position: ReadingPosition
+        if viewport.atBottom || viewport.anchor == nil {
+            position = .bottom(seenTurnEnd: heldEnd)
+        } else if let anchor = viewport.anchor {
+            let millis = anchor.turnID.flatMap { id in turns.first(where: { $0.id == id })?.serverMillis }
+            position = ReadingPosition(
+                anchorID: anchor.id, anchorTurnID: anchor.turnID, anchorTurnMillis: millis,
+                offset: Double(anchor.offset), atBottom: false, windowStart: transcriptWindowStart,
+                seenTurnEnd: seenTurnEnd, savedAt: Date()
+            )
+        } else {
+            return
+        }
+        readingPosition = position
+        if isOnScreen {
+            positionSaveTask?.cancel()
+            positionSaveTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(1500))
+                guard !Task.isCancelled else { return }
+                self.persistReadingPosition()
+            }
+        } else {
+            persistReadingPosition()
+        }
+    }
+
+    /// Save where the reader is now (the screen went, the app went to the
+    /// background).
+    func persistReadingPosition() {
+        positionSaveTask?.cancel()
+        positionSaveTask = nil
+        guard let id = conversationID, let position = readingPosition else { return }
+        readingPositions.save(position, serverKey: cacheServerKey, conversationID: id)
+    }
+
+    /// The history was replaced (an in-place fork, an edit): the old
+    /// position means nothing in it.
+    private func forgetReadingPosition() {
+        positionSaveTask?.cancel()
+        positionSaveTask = nil
+        readingPosition = nil
+        transcriptWindowStart = nil
+        if let id = conversationID { readingPositions.remove(serverKey: cacheServerKey, conversationID: id) }
     }
 
     // MARK: - Conversation actions (nav-bar "…" menu)
@@ -3138,6 +3278,29 @@ final class SessionDetailViewModel {
         } catch {
             summary?.pinnedAt = previous
             notice = Self.describe(error)
+        }
+    }
+
+    /// Mark or unmark the session critical from its ⋯ menu or Session
+    /// Details (nil: not offered, see ``CriticalSessionRules``).
+    var criticalAction: CriticalSessionRules.Action? {
+        summary.flatMap(CriticalSessionRules.action(for:))
+    }
+
+    /// Mark or unmark critical, and with `stall`, its stall detection. Shown at
+    /// once, put back with the desktop's message if the server refuses.
+    func setCritical(_ critical: Bool, stall: Bool? = nil) async {
+        guard let id = conversationID, let current = summary else { return }
+        userToggleTick &+= 1
+        summary?.critical = critical
+        if let stall { summary?.criticalStall = stall }
+        do {
+            try await client.setCritical(conversationId: id, critical: critical, stall: stall)
+            notifyConversationsChanged()
+        } catch {
+            summary?.critical = current.critical
+            summary?.criticalStall = current.criticalStall
+            notice = CriticalSessionRules.failure(Self.describe(error))
         }
     }
 
@@ -3213,6 +3376,206 @@ final class SessionDetailViewModel {
         )
     }
 
+    // MARK: - Edit message
+
+    /// An edit is being saved (one at a time): every other Edit greys out.
+    private(set) var editInFlight = false
+    /// A fork an edit made whose message didn't go out (its history didn't
+    /// load): Save again goes on from it instead of forking twice.
+    @ObservationIgnored private var pendingEditFork: (forkPointID: String, forkedSessionID: String, keptOriginal: Bool)?
+    /// How long a resumed connection may take to come up for an edit.
+    @ObservationIgnored var editReadyTimeout: Duration = .seconds(90)
+
+    /// Messages here can be edited: a conversation on the server, an agent
+    /// whose fork lands exactly on a chosen reply, and a server whose
+    /// `acp_fork` takes an edit mode.
+    var canEditMessages: Bool {
+        canManageConversation && MessageEditRules.supports(agentTypeForUI)
+            && ForkCapabilities.shared.editModes(for: client) == true
+    }
+
+    /// A turn runs on this session (the screen's own knowledge; the server
+    /// refuses a fork under a turn it started elsewhere).
+    private var editTurnRunning: Bool { isInFlight || awaitingBackground || isTurnActive }
+    /// A message is on its way to becoming a turn: an edit forking under it
+    /// would carry it into the branch.
+    private var editAwaitingPersist: Bool { !pendingUserTurns.isEmpty || sendsInProgress > 0 }
+
+    /// "Edit Message" on the user message `turnID` (codeg web's rules,
+    /// ``MessageEditRules``): hidden where it can't apply, greyed out with the
+    /// reason while it can't run now.
+    func editAvailability(turnID: String) -> MessageEditAvailability {
+        guard canEditMessages,
+              let target = MessageEditRules.target(for: turnID, in: turns, hasOlderTurns: hasOlderTurns)
+        else { return .hidden }
+        if let block = MessageEditRules.block(target, turnRunning: editTurnRunning,
+                                              awaitingPersist: editAwaitingPersist,
+                                              queued: !queuedMessages.isEmpty, saving: editInFlight) {
+            return .blocked(target, block)
+        }
+        return .available(target)
+    }
+
+    /// What an edit opens with: the message as sent and its pictures.
+    func editDraft(turnID: String) -> (text: String, images: [ImageData])? {
+        guard let turn = turns.first(where: { $0.id == turnID }) else { return nil }
+        return (MessageEditRules.editableText(turn), MessageEditRules.images(turn))
+    }
+
+    /// Where a saved edit went.
+    enum EditOutcome: Equatable {
+        /// The conversation continues from the edited message (in place, or
+        /// with the original kept as a separate conversation).
+        case sent
+        /// The first message: a new conversation to open, which sends it.
+        case newConversation(NewSessionRequest)
+    }
+
+    /// Save an edit, as codeg web's `handleEditUserMessage` does: fork the
+    /// session at the reply right before the message (strictly: a reply the
+    /// agent can't name refuses), so the forked session ends exactly where
+    /// the message was; load the forked history, which this row now holds;
+    /// then send the edited text there with the message's pictures, as any
+    /// other message. The first message has no reply before it, so it opens a
+    /// new conversation on the same agent and folder instead. Throws
+    /// ``MessageEditError`` in the web's words; the editor stays open then.
+    func saveEdit(turnID: String, text: String, keepOriginal: Bool) async throws -> EditOutcome {
+        guard let id = conversationID, let summary, let message = turns.first(where: { $0.id == turnID }),
+              let target = MessageEditRules.target(for: turnID, in: turns, hasOlderTurns: hasOlderTurns)
+        else { throw MessageEditError.replyNotFound }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let images = MessageEditRules.images(message)
+        guard !trimmed.isEmpty || !images.isEmpty else {
+            throw MessageEditError.failed(String(localized: "there is nothing to send"))
+        }
+        // Checked again here, not left to the greyed-out item: both can change
+        // while the editor is open.
+        guard !editInFlight, !editTurnRunning, !editAwaitingPersist else { throw MessageEditError.busy }
+        guard queuedMessages.isEmpty else { throw MessageEditError.queued }
+
+        guard case .fork(let forkPoint, _) = target else {
+            return .newConversation(NewSessionRequest(
+                preselectedFolderID: summary.folderId, agent: summary.agentType,
+                initialPrompt: InitialPrompt(text: trimmed, images: images)
+            ))
+        }
+
+        editInFlight = true
+        defer { editInFlight = false }
+        do {
+            let conn = try await resolveConnectionForOptions()
+            let status = try await waitUntilConnectedForEdit(conn)
+            if status == .prompting { throw MessageEditError.busy }
+            var fork = pendingEditFork
+            if fork?.forkPointID != forkPoint {
+                pendingEditFork = nil
+                // A reply this phone has no server name for: find it in a
+                // fresh read of the transcript.
+                let point: String
+                if let reply = turns.first(where: { $0.id == forkPoint }), MessageEditRules.isServerTurn(reply) {
+                    point = forkPoint
+                } else if let named = try await resolveEditForkPoint(for: message) {
+                    point = named
+                } else {
+                    throw MessageEditError.replyNotFound
+                }
+                let result = try await client.fork(
+                    connectionId: conn, conversationId: id, folderId: summary.folderId,
+                    forkFromTurnId: point, mode: MessageEditRules.forkMode(keepOriginal: keepOriginal)
+                )
+                adoptForkConnection(conn)
+                // This row now holds the forked session; the original is on a
+                // sibling row (hidden, or "… (before edit)" for the lists).
+                notifyConversationsChanged()
+                fork = (forkPoint, result.forkedSessionId, keepOriginal)
+                pendingEditFork = fork
+            }
+            guard let fork else { throw MessageEditError.replyNotFound }
+            guard await adoptForkedHistory(forkedSessionID: fork.forkedSessionID) else {
+                throw MessageEditError.historyFailed(keptOriginal: fork.keptOriginal)
+            }
+            pendingEditFork = nil
+            startSend(text: trimmed, attachments: images.enumerated().compactMap { Attachment(image: $1, index: $0) },
+                      fromComposer: false)
+            return .sent
+        } catch let error as MessageEditError {
+            throw error
+        } catch APIError.turnInProgress {
+            throw MessageEditError.busy
+        } catch let error as APIError {
+            throw MessageEditError.failed(error.serverMessage)
+        } catch let error as ForkError {
+            throw MessageEditError.failed(error.errorDescription ?? "\(error)")
+        } catch {
+            throw MessageEditError.failed(error.localizedDescription)
+        }
+    }
+
+    /// Wait until the connection has started (`connected`, or `prompting`
+    /// for a turn already running).
+    private func waitUntilConnectedForEdit(_ conn: String) async throws -> ConnectionStatus? {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: editReadyTimeout)
+        while true {
+            guard let snapshot = try await client.liveSessionSnapshot(connectionId: conn) else {
+                throw APIError.streamGone
+            }
+            switch snapshot.status {
+            case .connected?, .prompting?:
+                return snapshot.status
+            case .error?, .disconnected?:
+                throw MessageEditError.failed(String(localized: "the agent didn’t start"))
+            case .connecting?, nil:
+                break
+            }
+            guard clock.now < deadline else {
+                throw MessageEditError.failed(String(localized: "the agent took too long to start"))
+            }
+            try await Task.sleep(for: .milliseconds(400))
+        }
+    }
+
+    /// The server's name for the reply right before `message`, from a fresh
+    /// read starting at the turn the held window starts at (codeg web's
+    /// `resolveEditForkTurnId`).
+    private func resolveEditForkPoint(for message: MessageTurn) async throws -> String? {
+        guard let id = conversationID,
+              let ordinal = turns.filter({ $0.role == .user }).firstIndex(where: { $0.id == message.id })
+        else { return nil }
+        let fresh = try await client.conversationDetail(id: id, window: .from(index: turnsOffset, expected: ""))
+        // Started anywhere else, the turns wouldn't line up.
+        if let offset = fresh.turnsOffset, offset != turnsOffset { return nil }
+        return MessageEditRules.resolveForkPoint(in: fresh.turns, userOrdinal: ordinal,
+                                                 messageText: MessageEditRules.editableText(message))
+    }
+
+    /// Load the forked history this row now holds (codeg web's
+    /// `awaitForkedHistory`): read from the end until the row is on the
+    /// forked session, four tries. A history that is in place but still reads
+    /// back empty counts: the edit goes to the fork rather than being lost.
+    private func adoptForkedHistory(forkedSessionID: String) async -> Bool {
+        guard case .existing(let id) = mode else { return false }
+        cacheSaveTask?.cancel()
+        if let cache = transcriptCache { await cache.remove(serverKey: cacheServerKey, conversationID: id) }
+        forgetReadingPosition()
+        // A reply streamed here before the fork belongs to the old history.
+        if let live = liveTurn, !live.isStreaming { liveTurn = nil }
+        openedFromCache = false
+        var onFork = false
+        for attempt in 0..<4 {
+            if attempt > 0 { try? await Task.sleep(for: .milliseconds(400 * attempt)) }
+            guard let outcome = try? await TranscriptSync.fetch(client: client, id: id, held: nil, overlap: 0)
+            else { continue }
+            onFork = outcome.detail.summary.externalId == forkedSessionID
+            guard onFork else { continue }
+            summary = outcome.detail.summary
+            sessionStats = outcome.detail.sessionStats ?? sessionStats
+            adoptWindow(outcome, allowShrink: true)
+            if !outcome.window.turns.isEmpty { return true }
+        }
+        return onFork
+    }
+
     /// The connection a fork ran on is this conversation's: the next send
     /// reuses it, unless a send is already being handed over on another.
     func adoptForkConnection(_ conn: String) {
@@ -3230,6 +3593,7 @@ final class SessionDetailViewModel {
         if let cache = transcriptCache { await cache.remove(serverKey: cacheServerKey, conversationID: id) }
         if let conn { adoptForkConnection(conn) }
         openedFromCache = false
+        forgetReadingPosition()
         do {
             let outcome = try await TranscriptSync.fetch(client: client, id: id, held: nil, overlap: 0)
             summary = outcome.detail.summary

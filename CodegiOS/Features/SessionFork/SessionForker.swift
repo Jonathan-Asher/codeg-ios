@@ -13,9 +13,33 @@ final class ForkCapabilities {
     private var endpointsByServer: [String: ForkEndpoints] = [:]
     private var agentForks: [String: [String: Bool]] = [:]
     @ObservationIgnored private var probes: [String: Task<ForkEndpoints, Never>] = [:]
+    /// Whether each server's `acp_fork` takes an edit mode.
+    private var editModesByServer: [String: Bool] = [:]
+    @ObservationIgnored private var editProbes: [String: Task<Bool?, Never>] = [:]
 
     func endpoints(for client: CodegClient) -> ForkEndpoints {
         endpointsByServer[TranscriptCache.serverKey(for: client)] ?? .unknown
+    }
+
+    /// Whether this server can edit messages (an edit `mode` on `acp_fork`);
+    /// nil until checked.
+    func editModes(for client: CodegClient) -> Bool? {
+        editModesByServer[TranscriptCache.serverKey(for: client)]
+    }
+
+    /// Check once whether the server can edit messages. A check that couldn't
+    /// reach the server leaves it unknown, to be tried again.
+    @discardableResult
+    func probeEditModesIfNeeded(client: CodegClient) async -> Bool? {
+        let key = TranscriptCache.serverKey(for: client)
+        if let known = editModesByServer[key] { return known }
+        if let running = editProbes[key] { return await running.value }
+        let task = Task { try? await client.forkEditModesSupported() }
+        editProbes[key] = task
+        let result = await task.value
+        editProbes[key] = nil
+        if let result { editModesByServer[key] = result }
+        return result
     }
 
     /// Whether `agent` reported it can fork on this server; nil until a
@@ -55,6 +79,8 @@ final class ForkCapabilities {
         endpointsByServer = [:]
         agentForks = [:]
         probes = [:]
+        editModesByServer = [:]
+        editProbes = [:]
     }
 }
 

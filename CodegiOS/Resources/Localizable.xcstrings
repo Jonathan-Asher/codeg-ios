@@ -1,6 +1,386 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Mark as Critical" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "标记为关键"
+          }
+        }
+      }
+    },
+    "Unmark Critical" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消关键标记"
+          }
+        }
+      }
+    },
+    "Critical session" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关键会话"
+          }
+        }
+      }
+    },
+    "critical session" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关键会话"
+          }
+        }
+      }
+    },
+    "Could not update the critical mark: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法更新关键标记：%@"
+          }
+        }
+      }
+    },
+    "Couldn’t Change the Critical Mark" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法更改关键标记"
+          }
+        }
+      }
+    },
+    "Mark as critical" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "标记为关键"
+          }
+        }
+      }
+    },
+    "Alert me when this session sits idle, and again until I act." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当此会话空闲时提醒我，并持续提醒直到我处理。"
+          }
+        }
+      }
+    },
+    "Alert when a turn may be stuck" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本轮可能卡住时提醒"
+          }
+        }
+      }
+    },
+    "Also alert when a running turn streams nothing for the stall threshold." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行中的一轮在卡住阈值内没有任何输出时也提醒。"
+          }
+        }
+      }
+    },
+    "Can’t edit while a turn is running" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前有回合正在进行，暂不可编辑"
+          }
+        }
+      }
+    },
+    "Can’t edit while messages are waiting in the queue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "队列中还有待发送的消息，暂不可编辑"
+          }
+        }
+      }
+    },
+    "Can’t edit this message just yet — try again in a moment" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这条消息暂时还不能编辑，请稍后再试"
+          }
+        }
+      }
+    },
+    "Saving continues this conversation from here with the edited message, in place of the original. File changes are not undone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存后将以编辑后的消息从此处继续当前会话，替换原消息。文件改动不会被撤销。"
+          }
+        }
+      }
+    },
+    "Saving starts a new branch from here. The original conversation stays in the sidebar, and file changes are not undone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存后将从此处开一条新分支。原会话保留在侧边栏中，文件改动不会被撤销。"
+          }
+        }
+      }
+    },
+    "This is the first message, so saving starts a new conversation with it. This one stays as it is, and file changes are not undone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这是第一条消息，保存后将用它新建一个会话。当前会话保持不变，文件改动不会被撤销。"
+          }
+        }
+      }
+    },
+    "Continuing from here…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在从此处继续…"
+          }
+        }
+      }
+    },
+    "Starting a new branch…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在创建新分支…"
+          }
+        }
+      }
+    },
+    "Opening a new conversation…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在新建会话…"
+          }
+        }
+      }
+    },
+    "Can’t edit the message while a turn is running" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前有回合正在进行，暂不可编辑消息"
+          }
+        }
+      }
+    },
+    "Can’t edit the message while messages are waiting in the queue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "队列中还有待发送的消息，暂不可编辑消息"
+          }
+        }
+      }
+    },
+    "the reply before this message couldn’t be found in the saved conversation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在已保存的会话中找不到这条消息之前的回复"
+          }
+        }
+      }
+    },
+    "The new branch was created, but its history didn’t load, so the edited message wasn’t sent. Try Save & send again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新分支已创建，但其历史未能加载，编辑后的消息没有发送。请再次点击「保存并发送」"
+          }
+        }
+      }
+    },
+    "The conversation was rewound to this point, but its history didn’t load, so the edited message wasn’t sent. Try Save & send again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话已回退到此处，但其历史未能加载，编辑后的消息没有发送。请再次点击「保存并发送」"
+          }
+        }
+      }
+    },
+    "Couldn’t open a new conversation for the edited message" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法为编辑后的消息新建会话"
+          }
+        }
+      }
+    },
+    "Couldn’t edit the message: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "编辑消息失败：%@"
+          }
+        }
+      }
+    },
+    "there is nothing to send" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有可发送的内容"
+          }
+        }
+      }
+    },
+    "Edit Message" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "编辑消息"
+          }
+        }
+      }
+    },
+    "Edit message" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "编辑消息"
+          }
+        }
+      }
+    },
+    "Save & send" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存并发送"
+          }
+        }
+      }
+    },
+    "Attached images are sent again with the edited message" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "附带的图片会随编辑后的消息一起重新发送"
+          }
+        }
+      }
+    },
+    "Image %lld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图片 %lld"
+          }
+        }
+      }
+    },
+    "Editing Messages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "编辑消息"
+          }
+        }
+      }
+    },
+    "Keep the original as a separate conversation when editing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "编辑消息时将原版本保留为单独的会话"
+          }
+        }
+      }
+    },
+    "Editing a past message continues the same conversation from that point. Turn this on to also keep the version before the edit in the sidebar, named “… (before edit)”." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "编辑之前的消息时，会从该处继续同一个会话。开启后，编辑前的版本也会保留在侧边栏中，名为“… (before edit)”。"
+          }
+        }
+      }
+    },
+    "New messages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新消息"
+          }
+        }
+      }
+    },
+    "Scrolls to the latest message" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "滚动到最新消息"
+          }
+        }
+      }
+    },
+    "Show earlier messages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示更早的消息"
+          }
+        }
+      }
+    },
     "Fork" : {
       "localizations" : {
         "zh-Hans" : {

@@ -83,10 +83,30 @@ final class MediaLibrary: MediaSourceProviding {
         return try await task.value
     }
 
+    private func imageKey(_ ref: MediaRef, maxPixelSize: Int) -> String {
+        "media|\(serverKey)|\(ref.path)|\(ref.scope)|\(maxPixelSize)"
+    }
+
+    /// The picture if it is decoded in memory already, so its card shows it
+    /// at once.
+    func cachedImage(for ref: MediaRef, maxPixelSize: Int = TranscriptImages.maxPixelSize) -> UIImage? {
+        TranscriptImages.cached(imageKey(ref, maxPixelSize: maxPixelSize))
+    }
+
+    /// Width over height of a picture decoded before (it may be evicted since).
+    func knownAspect(for ref: MediaRef, maxPixelSize: Int = TranscriptImages.maxPixelSize) -> CGFloat? {
+        TranscriptImages.aspect(imageKey(ref, maxPixelSize: maxPixelSize))
+    }
+
+    /// A video's poster and length if they were read already.
+    func cachedPreview(for ref: MediaRef) -> VideoPreview? {
+        previews["\(ref.path)|\(ref.scope)"]
+    }
+
     /// The picture, decoded off the main thread at most `maxPixelSize` on its
     /// long side, and kept in memory.
     func image(for ref: MediaRef, maxPixelSize: Int = TranscriptImages.maxPixelSize) async throws -> UIImage {
-        let key = "media|\(serverKey)|\(ref.path)|\(ref.scope)|\(maxPixelSize)"
+        let key = imageKey(ref, maxPixelSize: maxPixelSize)
         if let hit = TranscriptImages.cached(key) { return hit }
         let file = try await localFile(for: ref, maxBytes: Self.maxImageBytes)
         let image = await Task.detached(priority: .userInitiated) { () -> UIImage? in

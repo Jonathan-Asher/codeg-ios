@@ -12,6 +12,41 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Edit your own messages (1.3.16), as on the desktop. Long-press a message
+  you sent: Copy, and Edit Message. The editor opens with the message as you
+  sent it, its pictures beside it (they are sent again with the edit), and
+  says what saving does: "Saving continues this conversation from here with
+  the edited message, in place of the original", or, with Settings › General
+  › "Keep the original as a separate conversation when editing" on, "Saving
+  starts a new branch from here" (the original stays in the lists as "…
+  (before edit)"). Save & send forks the session at the reply right before
+  the message, loads the forked history in its place and sends the edited
+  text there; the conversation continues from it. Editing the first message
+  starts a new conversation with it on the same agent and folder, and Back
+  returns to the original. A Hebrew or Arabic message edits right to left.
+  Edit Message is greyed out with the reason while a turn runs ("Can't edit
+  while a turn is running"), while messages wait in the queue, or while the
+  reply before it is still being written; it is offered for Claude Code,
+  Codex and DeepSeek sessions (the agents whose fork lands exactly on a
+  chosen reply), and not at all against a codeg server without edit forks.
+- Mark a session critical from the phone (1.3.16), as on the desktop: Mark
+  as Critical and Unmark Critical in the long press on a session (Activity,
+  Chats, a folder's list, Search) and in the session's ⋯ menu. A critical
+  session has a red flag on its row and beside its title, and Session
+  Details has the desktop's "Critical session" switches: Mark as critical,
+  and, while it is, "Alert when a turn may be stuck". codeg then alerts
+  when the session sits idle, as it already did for sessions marked on the
+  desktop. The mark shows at once and is put back, with the reason, if the
+  server refuses it. Against a codeg server without critical sessions there
+  is no such item.
+- Sessions open where you left them (1.3.16). Leaving a session scrolled up
+  (Back, another tab, the app going to the background, even a relaunch) and
+  coming back shows the same message at the same place, instead of the
+  latest one. A session you left at its latest message opens there and keeps
+  following new replies, and one opened from a notification or a link opens
+  at its latest message. A reply that arrived meanwhile doesn't move the
+  view: the button above the message bar says "New messages".
+
 - Attach videos (1.3.14). The "+" menu's Photo Library offers videos as well
   as photos, the Camera records video, and Files takes movies. A video from
   iCloud downloads first, with its progress on the chip; one in HEVC, in
@@ -169,6 +204,14 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Changed
 
+- Older messages come in without moving the view (1.3.16). They are brought
+  in a screen and a half before the top, as soon as the scroll comes to
+  rest, and the server's older pages are fetched ahead while there are still
+  messages to read; the message you are reading stays exactly where it is on
+  screen while they go in above it. Pictures and
+  videos keep the height they will have while they load, so one landing
+  doesn't push the text either.
+
 - A message's media takes less room (1.3.14). One picture or video shows
   inline, at most 180 points tall; several files fold into one row with tiny
   thumbnails ("3 images · 1 PDF · 1 video") that opens into a list of them:
@@ -234,6 +277,13 @@ the text as the git tag message and the GitHub Release notes.
   `scripts/release.sh --archive` and CI.
 
 ### Fixed
+
+- The transcript jumped (1.3.16). Each page of older messages pushed the
+  view down by its own height, so the message being read went off screen and
+  more pages followed, and opening a session, coming back to it (also from
+  another tab or from a fork opened over it), the app returning to the
+  foreground and a reconnect to a running turn all scrolled to the latest
+  message, even for someone reading higher up.
 
 - Media cards for files that were never there (1.3.14). A reply whose
   commands worked in another folder showed a column of cards that said "The

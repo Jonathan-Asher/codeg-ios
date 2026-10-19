@@ -27,6 +27,10 @@ struct TimelineNode: Identifiable {
     /// A user message's own files (an attached video, a picture it links),
     /// shown inside its card.
     var attachedMedia: MediaGroup?
+    /// The persisted turn this node shows (a reply's first turn for its
+    /// parts and footer). Nil for optimistic and live nodes. A saved reading
+    /// position keeps it, to open the window over that turn again.
+    var turnID: String?
 
     enum Content {
         case user(MessageTurn)
@@ -166,22 +170,26 @@ enum TranscriptTimeline {
                 if case .user = node.content, let media {
                     node.attachedMedia = mediaGroup(for: turn, context: media, presence: presence)
                 }
+                node.turnID = turn.id
                 nodes.append(node)
                 i += 1
             case .system:
                 // Skip system turns with no renderable text so the rail doesn't
                 // show a lone marker against an empty row.
                 if !SystemText.of(turn).isEmpty {
-                    nodes.append(TimelineNode(id: turn.id, content: .system(turn), agent: agent, startsGroup: true))
+                    nodes.append(TimelineNode(id: turn.id, content: .system(turn), agent: agent, startsGroup: true,
+                                              turnID: turn.id))
                 }
                 i += 1
             case .assistant:
                 var j = i + 1
                 while j < turns.count, turns[j].role == .assistant { j += 1 }
                 let merged = merge(Array(turns[i..<j]))
-                nodes.append(contentsOf: assistantNodes(merged: merged, questionID: lastUserID,
-                                                        forkTurnID: turns[j - 1].id, agent: agent,
-                                                        media: media, presence: presence))
+                var reply = assistantNodes(merged: merged, questionID: lastUserID,
+                                           forkTurnID: turns[j - 1].id, agent: agent,
+                                           media: media, presence: presence)
+                for k in reply.indices { reply[k].turnID = merged.id }
+                nodes.append(contentsOf: reply)
                 i = j
             }
         }

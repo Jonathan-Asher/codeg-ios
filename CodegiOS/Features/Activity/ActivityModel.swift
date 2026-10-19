@@ -187,6 +187,13 @@ final class ActivityModel {
 
     /// One fetch against the given client. Endpoint changes clear stale data
     /// first so a slow old server's rows never show under a new server's name.
+    /// Show a critical mark at once, before the server confirms it (the next
+    /// refresh brings the server's own).
+    func setCriticalLocally(_ conversationID: Int, _ critical: Bool) {
+        guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+        conversations[index].critical = critical
+    }
+
     func refresh(client: CodegClient?) async {
         guard let client else {
             reset()

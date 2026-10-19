@@ -7,14 +7,19 @@ struct SessionTitleView: View {
     let title: Text
     let activity: SessionActivity?
     let agentName: String
+    /// Marked critical: a red flag beside the title.
+    var critical = false
 
     var body: some View {
         VStack(spacing: 1) {
-            title
-                .font(.headline)
-                .foregroundStyle(Theme.textPrimary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            HStack(spacing: 4) {
+                if critical { CriticalFlag(size: 10) }
+                title
+                    .font(.headline)
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
             if let activity {
                 TimelineView(.everyMinute) { context in
                     SessionActivityLabel(activity: activity, agentName: agentName, now: context.date)

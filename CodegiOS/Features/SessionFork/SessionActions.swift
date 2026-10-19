@@ -128,6 +128,25 @@ final class SessionActions {
         }
     }
 
+    /// Mark or unmark a session critical from its row. Shown at once on the
+    /// row, put back with an alert if the server refuses it.
+    func toggleCritical(_ summary: ConversationSummary) {
+        guard let app, let client = app.selectedClient(),
+              let action = CriticalSessionRules.action(for: summary) else { return }
+        app.activity.setCriticalLocally(summary.id, action.marks)
+        Task {
+            do {
+                try await client.setCritical(conversationId: summary.id, critical: action.marks)
+                NotificationCenter.default.post(name: .conversationsDidChange, object: nil)
+                await app.activity.refresh(client: client)
+            } catch {
+                app.activity.setCriticalLocally(summary.id, summary.critical)
+                alert = SessionActionAlert(title: String(localized: "Couldn’t Change the Critical Mark"),
+                                           message: CriticalSessionRules.failure(Self.describe(error)))
+            }
+        }
+    }
+
     /// The folder a session row's Archive items act on: the folder the Folders
     /// tab shows it under (a worktree's repo).
     func archiveFolder(for summary: ConversationSummary) -> FolderDetail? {

@@ -23,6 +23,14 @@ extension EnvironmentValues {
 
 // MARK: - Transcript
 
+/// Where the reader is, as the transcript reports it to its screen.
+struct TranscriptViewport: Equatable {
+    /// The row at the top of the screen and how far into it; nil at the
+    /// latest message.
+    var anchor: TranscriptScrollBridge.Anchor?
+    var atBottom: Bool
+}
+
 /// The scrollable transcript, rendered as a **vertical timeline**: a continuous
 /// rail runs top-to-bottom and every event — each user message, reasoning block,
 /// tool call, tool group, assistant text segment, and system note — is a node on
@@ -33,13 +41,21 @@ extension EnvironmentValues {
 /// Backed by `List` (UICollectionView-backed) so it recycles cells and only
 /// realizes on-screen rows — the iOS-native counterpart to the web client's
 /// `virtua` windowing — which suits the timeline well (many small per-part rows).
-/// `.defaultScrollAnchor(.bottom)` puts the first paint at the newest node.
 ///
 /// To keep opening a very long session fast, only a **window** of the most recent
 /// turns is built and rendered initially; older turns are revealed as the user
 /// scrolls up (see the windowing section below). This bounds the on-open work —
 /// decode aside, both node construction and the initial `List` layout become
 /// O(window) rather than O(history).
+///
+/// **Keeping the reader's place.** `List` can't hold a row still while rows go
+/// in above it, so a ``TranscriptScrollBridge`` reaches its collection view
+/// and does it in UIKit's layout pass: older turns brought in, or a picture
+/// above that loaded taller than its placeholder, move nothing on screen. The
+/// same bridge saves where the reader is (``TranscriptViewport``) and opens
+/// the transcript there again (`restore`), instead of at the latest message.
+/// Only the reader's own scroll, their send or a tap on the latest-message
+/// button moves the view to the bottom; a refresh or a reconnect never does.
 struct TranscriptView<Header: View>: View {
     let turns: [MessageTurn]
     let pendingUserTurns: [MessageTurn]
@@ -47,7 +63,7 @@ struct TranscriptView<Header: View>: View {
     /// When the live turn was rebuilt from a reattach snapshot, it is the
     /// authoritative complete in-flight reply; the persisted partial copy the
     /// agent is concurrently writing into `turns` is hidden so it isn't doubled.
-    var liveOwnsInFlightReply: Bool = false
+    var liveOwnsInFlightReply: Bool
     /// The session's agent, for the agent-branded marker on assistant nodes.
     let agent: AgentType
     /// A cheap, monotonic version of the view model's `turns`, bumped on every
@@ -59,8 +75,8 @@ struct TranscriptView<Header: View>: View {
     /// Bumped on streamed content growth; the transcript follows it ONLY while
     /// pinned to the bottom.
     let scrollTick: Int
-    /// Bumped on the user's own send / initial load; forces a re-pin regardless
-    /// of the current scroll position.
+    /// Bumped on the user's own send, the latest-message button and an open
+    /// from a notification; forces a re-pin regardless of the scroll position.
     let stickTick: Int
     /// Reports whether the viewport is parked at the bottom. The owning view uses
     /// it to show/hide the floating "jump to latest" button (which lives above the
@@ -68,11 +84,22 @@ struct TranscriptView<Header: View>: View {
     let onPinnedChange: (Bool) -> Void
     /// Global index of `turns[0]`: above 0 while older turns are still on
     /// the server (the session opened with a window of its latest turns).
-    var turnsOffset: Int = 0
+    var turnsOffset: Int
     /// Older turns can be fetched from the server.
-    var hasOlderOnServer: Bool = false
+    var hasOlderOnServer: Bool
     /// Fetches the page of turns before `turns[0]` and puts it in front.
-    var onLoadOlder: () async -> Void = {}
+    var onLoadOlder: () async -> Void
+    /// An older page is on its way.
+    var isLoadingOlder: Bool
+    /// The first turn shown (global index). Kept by the session's model, so
+    /// the window survives this screen; nil follows the end.
+    var windowStart: Int?
+    var onWindowStartChange: (Int?) -> Void
+    /// Where the transcript opens. Read once, when the screen appears.
+    var restore: ReadingRestore
+    /// Where the reader is: whenever scrolling settles, and when the screen
+    /// or the app goes.
+    var onViewportChange: (TranscriptViewport) -> Void
     /// Where the session's paths point. With it, messages and replies that
     /// refer to media files show them as cards.
     var mediaContext: MediaPathContext?
@@ -82,13 +109,62 @@ struct TranscriptView<Header: View>: View {
     /// node). Kept generic so the transcript stays agnostic of the header's type.
     @ViewBuilder var header: () -> Header
 
+    init(turns: [MessageTurn], pendingUserTurns: [MessageTurn], liveTurn: LiveTurn?,
+         liveOwnsInFlightReply: Bool = false, agent: AgentType, turnsVersion: Int,
+         scrollTick: Int, stickTick: Int, onPinnedChange: @escaping (Bool) -> Void,
+         turnsOffset: Int = 0, hasOlderOnServer: Bool = false,
+         onLoadOlder: @escaping () async -> Void = {}, isLoadingOlder: Bool = false,
+         windowStart: Int? = nil, onWindowStartChange: @escaping (Int?) -> Void = { _ in },
+         restore: ReadingRestore = .bottom,
+         onViewportChange: @escaping (TranscriptViewport) -> Void = { _ in },
+         mediaContext: MediaPathContext? = nil, mediaPresence: MediaPresence? = nil,
+         @ViewBuilder header: @escaping () -> Header) {
+        self.turns = turns
+        self.pendingUserTurns = pendingUserTurns
+        self.liveTurn = liveTurn
+        self.liveOwnsInFlightReply = liveOwnsInFlightReply
+        self.agent = agent
+        self.turnsVersion = turnsVersion
+        self.scrollTick = scrollTick
+        self.stickTick = stickTick
+        self.onPinnedChange = onPinnedChange
+        self.turnsOffset = turnsOffset
+        self.hasOlderOnServer = hasOlderOnServer
+        self.onLoadOlder = onLoadOlder
+        self.isLoadingOlder = isLoadingOlder
+        self.windowStart = windowStart
+        self.onWindowStartChange = onWindowStartChange
+        self.restore = restore
+        self.onViewportChange = onViewportChange
+        self.mediaContext = mediaContext
+        self.mediaPresence = mediaPresence
+        self.header = header
+        let anchored = restore != .bottom
+        _stuckToBottom = State(initialValue: !anchored)
+        _isRestoring = State(initialValue: anchored)
+    }
+
     private let bottomAnchor = "transcript-bottom-anchor"
+    private let topRowID = "transcript-top-row"
 
     /// Whether the viewport is parked at (or near) the bottom. Drives the
-    /// auto-follow (only follow streamed tokens when true). Starts true so a fresh
-    /// open follows.
-    @State private var stuckToBottom = true
+    /// auto-follow (only follow streamed tokens when true). True on a fresh
+    /// open at the latest message, false when opening at a saved position.
+    @State private var stuckToBottom: Bool
     @State private var isUserScrolling = false
+    /// Opening at a saved position: the list stays hidden until it is there.
+    @State private var isRestoring: Bool
+    /// Within reach of the top: older turns come in.
+    @State private var nearTop = false
+    /// Bumped when a restore lands, to look again at the top from a fresh view.
+    @State private var revealCheck = 0
+    /// The first appearance decided where the transcript opens. Later ones
+    /// (back from another tab, or from a screen pushed on top) keep the list
+    /// where it is: it scrolled to the bottom there too.
+    @State private var hasAppeared = false
+    /// The list's collection view, for holding rows still and for positions.
+    @State private var bridge = TranscriptScrollBridge()
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Layout changes must not be mistaken for the user scrolling into history.
     private struct ScrollMetrics: Equatable {
@@ -106,6 +182,13 @@ struct TranscriptView<Header: View>: View {
         }
     }
 
+    /// Near the top, re-read whenever the content grows, so a reveal that
+    /// still leaves the reader near the top brings in the next one.
+    private struct TopProximity: Equatable {
+        var near: Bool
+        var contentHeight: CGFloat
+    }
+
     // MARK: Windowing
     //
     // A very long transcript (thousands of turns) is expensive to open: the whole
@@ -113,27 +196,31 @@ struct TranscriptView<Header: View>: View {
     // the full set before the first frame — on a 6k-turn session that's hundreds of
     // ms of on-main work, exactly the cost the web client avoids by virtualizing.
     // So we only build + render a *window* of the most recent turns initially, and
-    // load older ones when the user scrolls up. `build` + the `List` layout become
+    // bring older ones in as the user scrolls up. `build` + the `List` layout become
     // O(window) instead of O(history), so open time stops growing with length.
     //
-    // `windowStartTurn` is the global index (in the whole transcript) where the
-    // window begins; `nil` means "not yet expanded" → the window is anchored to
-    // the tail and follows new turns. Persisted turns only grow at the end, and
-    // older ones fetched from the server go in front of `turns` (lowering
-    // `turnsOffset`), so a global index stays valid either way.
+    // The window's start is a global index (in the whole transcript), kept by the
+    // session's model (`windowStart`); `nil` means "not yet expanded" → the window
+    // is anchored to the tail and follows new turns. Persisted turns only grow at
+    // the end, and older ones fetched from the server go in front of `turns`
+    // (lowering `turnsOffset`), so a global index stays valid either way.
+    //
+    // Older turns come in before the reader reaches them: within 1.5 screens of
+    // the top, the next held turns join the window, and once fewer than
+    // `prefetchMarginTurns` held turns are left above it, the server's next page
+    // is fetched in the background, joining `turns` without changing the window.
+    // Each step is held still by the bridge, so the reader sees no movement.
 
     /// How many trailing turns to show on first open. Enough to fill the viewport
     /// with room to spare; small enough that layout is instant.
     private let initialTurnWindow = 50
-    /// How many older turns to reveal each time the user scrolls near the top.
-    private let pageTurns = 150
-    /// Distance from the top (pt) at which to begin loading older turns — generous
-    /// so history is ready before the user reaches the very top.
-    private let loadEarlierThreshold: CGFloat = 600
-
-    @State private var windowStartTurn: Int?
-    /// Re-entrancy guard so a burst of near-top scroll events loads one page, not many.
-    @State private var isLoadingEarlier = false
+    /// How many held turns join the window at a time.
+    private let revealTurns = 60
+    /// Fetch the server's next older page once fewer held turns than this are
+    /// left above the window.
+    private let prefetchMarginTurns = 100
+    /// How close to the top, in screen heights, older turns start coming in.
+    private let nearTopScreens: CGFloat = 1.5
 
     // MARK: Node memoization
     //
@@ -168,12 +255,29 @@ struct TranscriptView<Header: View>: View {
     }
     @State private var persistedMemo = PersistedMemo()
 
+    /// The window's start (global): the model's, widened to show the saved
+    /// position's row.
+    private var windowStartGlobal: Int? {
+        switch (windowStart, restoreWindowStart) {
+        case let (kept?, saved?): return min(kept, saved)
+        case let (kept?, nil): return kept
+        case let (nil, saved?): return saved
+        case (nil, nil): return nil
+        }
+    }
+
+    /// The start that shows the saved position's row, while opening there.
+    private var restoreWindowStart: Int? {
+        guard case .anchored(let position) = restore else { return nil }
+        return ReadingRestore.windowStart(for: position, turnIDs: turns.map(\.id), turnsOffset: turnsOffset)
+    }
+
     /// The first turn index currently shown. When not explicitly expanded, anchors
     /// to the tail (most recent `initialTurnWindow` turns), snapped back to a
     /// user/system boundary so an assistant reply is never split and keeps its
     /// originating question in-window (jump-to-question stays correct).
     private var effectiveStart: Int {
-        if let s = windowStartTurn { return snappedStart(min(max(0, s - turnsOffset), turns.count)) }
+        if let s = windowStartGlobal { return snappedStart(min(max(0, s - turnsOffset), turns.count)) }
         // While a reattached live turn stands in for the persisted copy of the
         // running reply, that copy is hidden: count the window back from the
         // reply's prompt. Counting from the end let a long running reply push
@@ -257,62 +361,89 @@ struct TranscriptView<Header: View>: View {
         return all
     }
 
-    /// Reveal an older page of turns. Cheap (build + layout are O(window)); the
-    /// bottom scroll anchor keeps the user's current position from jumping as rows
-    /// are inserted above.
-    private func loadEarlier() {
-        let cur = effectiveStart
-        guard !isLoadingEarlier else { return }
-        if cur > 0 {
-            isLoadingEarlier = true
-            windowStartTurn = turnsOffset + snappedStart(cur - pageTurns)
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(300))
-                isLoadingEarlier = false
-            }
-        } else if hasOlderOnServer {
-            // Everything held is shown: fetch the page before it. The window
-            // then opens onto the new page (`effectiveStart` snaps it).
-            isLoadingEarlier = true
-            let shownFrom = turnsOffset
-            Task { @MainActor in
-                await onLoadOlder()
-                windowStartTurn = max(0, shownFrom - pageTurns)
-                isLoadingEarlier = false
-            }
+    /// The list's rows as the bridge maps them: the top row, the nodes, the
+    /// bottom anchor.
+    private func rowInfos(_ nodes: [TimelineNode]) -> [TranscriptScrollBridge.RowInfo] {
+        var rows: [TranscriptScrollBridge.RowInfo] = [.init(id: topRowID, anchorable: false)]
+        rows.reserveCapacity(nodes.count + 2)
+        for node in nodes { rows.append(.init(id: node.id, turnID: node.turnID)) }
+        rows.append(.init(id: bottomAnchor, anchorable: false))
+        return rows
+    }
+
+    /// Bring older turns into view: the next held ones, or, with all held
+    /// turns shown, the server's next page (which joins `turns` and is then
+    /// revealed by `onChange(of: turnsOffset)`). Each step is held still by
+    /// the bridge, and goes in without animation.
+    private func revealEarlier() {
+        let current = effectiveStart
+        if current > 0 {
+            let local = snappedStart(max(0, current - revealTurns))
+            let next = turnsOffset + local
+            // The rows after the change: the top row, the new window's nodes
+            // (counted as built), the bottom anchor.
+            let rowsAfter = nodeCount(from: local) + 2
+            bridge.coverUpdate(expectedRows: rowsAfter)
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { onWindowStartChange(next) }
+            prefetchOlder(localStart: next - turnsOffset)
+        } else if hasOlderOnServer, !isLoadingOlder {
+            Task { await onLoadOlder() }
         }
     }
 
+    /// Fetch the server's next older page in the background while the reader
+    /// still has held turns to scroll through.
+    private func prefetchOlder(localStart: Int) {
+        guard hasOlderOnServer, !isLoadingOlder, localStart < prefetchMarginTurns else { return }
+        Task { await onLoadOlder() }
+    }
+
+    /// Older turns go in only while the list is at rest (under a picture of
+    /// the screen, see ``TranscriptScrollBridge/coverUpdate(expectedRows:)``):
+    /// a reader still scrolling gets them when the scroll ends.
+    private func revealIfNeeded() {
+        guard nearTop, !stuckToBottom, !headLoaded, !isRestoring, !isUserScrolling else { return }
+        revealEarlier()
+    }
+
+    /// How many nodes the transcript shows with the window starting at `local`.
+    private func nodeCount(from local: Int) -> Int {
+        let suppressInFlight = liveTurn != nil && liveOwnsInFlightReply
+        let coverage = suppressInFlight
+            ? liveTurn.map { TranscriptTimeline.LiveCoverage(toolIDs: $0.toolCallIDs, imageCount: $0.imageCount) }
+            : nil
+        var count = TranscriptTimeline.buildPersisted(
+            turns: Array(turns[local...]), pending: pendingUserTurns, agent: agent,
+            suppressInFlight: suppressInFlight, liveCoverage: coverage,
+            media: mediaContext, presence: mediaContext == nil ? nil : mediaPresence
+        ).count
+        if let liveTurn { count += TranscriptTimeline.buildLive(liveTurn, agent: agent).count }
+        return count
+    }
+
     var body: some View {
+        let nodes = self.nodes
+        let headLoaded = self.headLoaded
+        let _ = bridge.setRows(rowInfos(nodes))
         ScrollViewReader { proxy in
             List {
                 // Top of the list. When the whole history is loaded, the `header`
                 // scrolls above the first node (no gutter marker, standard margin).
-                // While older turns are still windowed out, show a compact spinner
-                // there during a load instead — the rail keeps `connectTop` so the
-                // spine reads as continuing up into the not-yet-loaded history.
+                // While older turns are still windowed out, one row of a fixed
+                // height says so: a button, or a spinner while the server's page
+                // is on its way, so neither pushes the content when they swap.
                 if headLoaded {
                     header()
+                        .background(TranscriptCollectionFinder { bridge.attach($0) })
                         .modifier(TimelineRowChrome(top: 12, leading: TimelineMetrics.rowTrailingInset))
-                } else if isLoadingEarlier {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(maxWidth: .infinity)
-                        .modifier(TimelineRowChrome(top: 14, leading: TimelineMetrics.rowTrailingInset))
                 } else {
-                    // Older turns normally load as the reader nears the top. A
-                    // window too short to scroll never gets near it, so the way
-                    // up is also a plain button.
-                    Button {
-                        loadEarlier()
-                    } label: {
-                        Label("Show earlier messages", systemImage: "arrow.up")
-                            .font(.caption)
+                    EarlierMessagesRow(loading: isLoadingOlder && effectiveStart == 0) {
+                        revealEarlier()
                     }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(Theme.textTertiary)
-                    .frame(maxWidth: .infinity)
-                    .modifier(TimelineRowChrome(top: 14, leading: TimelineMetrics.rowTrailingInset))
+                    .background(TranscriptCollectionFinder { bridge.attach($0) })
+                    .modifier(TimelineRowChrome(top: 0, leading: TimelineMetrics.rowTrailingInset))
                 }
 
                 ForEach(nodes) { node in
@@ -338,6 +469,7 @@ struct TranscriptView<Header: View>: View {
                 // last node off the compose bar). Outside the rail (no gutter).
                 Color.clear
                     .frame(height: 1)
+                    .background(TranscriptCollectionFinder { bridge.attach($0) })
                     .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 0, trailing: 0))
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
@@ -345,27 +477,46 @@ struct TranscriptView<Header: View>: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .background(TranscriptCollectionFinder { bridge.attach($0) })
             // Let the 1pt anchor row actually be 1pt (List's default min row
             // height would otherwise pad it to ~44).
             .environment(\.defaultMinListRowHeight, 1)
-            .defaultScrollAnchor(.bottom)
+            // The first paint lands at the newest node, or (opening at a saved
+            // position) the bridge scrolls there before the list shows. Size
+            // changes keep the bottom only while following it; scrolled up, the
+            // bridge holds the reader's row instead.
+            .defaultScrollAnchor(restore == .bottom ? .bottom : .top, for: .initialOffset)
+            .defaultScrollAnchor(stuckToBottom ? .bottom : TranscriptScrollBridge.scrolledUpSizeAnchor, for: .sizeChanges)
             .scrollDismissesKeyboard(.interactively)
+            .opacity(isRestoring ? 0 : 1)
             // Publish a scroll capability so a reply's "scroll to question" button
             // (deep inside a row) can move the viewport to the user message.
             .environment(\.transcriptScroll, TranscriptScrollAction { id, anchor in
-                stuckToBottom = false
+                setStuck(false)
                 onPinnedChange(false)
+                bridge.releaseLock()
                 withAnimation(Theme.Motion.scroll) {
                     proxy.scrollTo(id, anchor: anchor)
                 }
             })
-            .onScrollPhaseChange { _, phase, context in
+            .onScrollPhaseChange { old, phase, context in
                 let wasUserScrolling = isUserScrolling
                 isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
                 if isUserScrolling || wasUserScrolling {
                     let atBottom = ScrollMetrics(context.geometry).atBottom
-                    stuckToBottom = atBottom
+                    setStuck(atBottom)
                     onPinnedChange(atBottom)
+                }
+                // An animated programmatic scroll (the status bar's scroll to
+                // the top) goes where it goes; the hold is taken again where it
+                // ends.
+                if phase == .animating { bridge.releaseLock() }
+                // Settled (the reader's scroll, or a programmatic one): hold the
+                // row now at the top, and save where the reader is.
+                if phase == .idle, old != .idle {
+                    bridge.captureLock()
+                    reportViewport()
+                    revealIfNeeded()
                 }
             }
             // Keep following through keyboard/compose inset changes and late
@@ -373,7 +524,7 @@ struct TranscriptView<Header: View>: View {
             // shrinking its visible area or inserting rows cannot revoke intent.
             .onScrollGeometryChange(for: ScrollMetrics.self) { ScrollMetrics($0) } action: { old, new in
                 if isUserScrolling {
-                    stuckToBottom = new.atBottom
+                    setStuck(new.atBottom)
                     onPinnedChange(new.atBottom)
                 } else if stuckToBottom {
                     if old.contentHeight != new.contentHeight
@@ -381,23 +532,37 @@ struct TranscriptView<Header: View>: View {
                         || old.bottomInset != new.bottomInset {
                         proxy.scrollTo(bottomAnchor, anchor: .bottom)
                     }
-                } else if new.atBottom {
-                    stuckToBottom = true
+                } else if new.atBottom, !isRestoring {
+                    setStuck(true)
                     onPinnedChange(true)
+                    reportViewport()
                 }
             }
-            // Reveal older turns as the user scrolls toward the top. Mapped to a
-            // Bool so `action` fires only when crossing into the near-top zone (not
-            // every pixel); inserting rows above shifts the user out of the zone, so
-            // it re-arms naturally for the next page on the next upward scroll.
-            .onScrollGeometryChange(for: Bool.self) { geo in
-                (geo.contentOffset.y + geo.contentInsets.top) < loadEarlierThreshold
-            } action: { _, nearTop in
+            // Bring older turns in before the reader reaches the top: within
+            // 1.5 screens of it. Re-read as the content grows, so a reveal that
+            // leaves the reader near the top brings in the next.
+            .onScrollGeometryChange(for: TopProximity.self) { geo in
+                TopProximity(
+                    near: ScrollAnchorMath.isNearTop(contentOffsetY: geo.contentOffset.y,
+                                                     topInset: geo.contentInsets.top,
+                                                     viewportHeight: geo.containerSize.height,
+                                                     screens: nearTopScreens),
+                    contentHeight: geo.contentSize.height
+                )
+            } action: { _, proximity in
+                // The bridge reads this from the list itself (it sees offsets
+                // SwiftUI doesn't); this is for a list it couldn't reach.
+                guard bridge.collectionView == nil else { return }
+                nearTop = proximity.near
                 // `!stuckToBottom` rejects the transient near-top geometry reported
                 // while the list is still settling onto the bottom anchor at open —
                 // otherwise a fresh open would immediately page in older history.
-                if nearTop, !stuckToBottom, !headLoaded, !isLoadingEarlier { loadEarlier() }
+                revealIfNeeded()
             }
+            // A page from the server joined `turns`: show it if the reader is
+            // waiting near the top for it.
+            .onChange(of: turnsOffset) { _, _ in revealIfNeeded() }
+            .onChange(of: revealCheck) { _, _ in revealIfNeeded() }
             // Streamed growth: follow instantly, but ONLY while pinned. A single
             // plain `scrollTo` per tick (no re-assert) — the content is already
             // moving, so anything heavier stacks and stutters.
@@ -405,17 +570,97 @@ struct TranscriptView<Header: View>: View {
                 guard stuckToBottom else { return }
                 proxy.scrollTo(bottomAnchor, anchor: .bottom)
             }
-            // Force re-pin (user send / initial load / jump-to-latest tap),
-            // regardless of scroll state. Routed through `scrollToBottom`, which
-            // re-asserts on the next runloop: the first pass can stop short when
-            // rich content (code blocks / markdown) is still measuring taller, so
-            // a far jump would otherwise land above the true bottom.
+            // Force re-pin (user send / jump-to-latest tap / an open from a
+            // notification), regardless of scroll state. Routed through
+            // `scrollToBottom`, which re-asserts on the next runloop: the first
+            // pass can stop short when rich content (code blocks / markdown) is
+            // still measuring taller, so a far jump would otherwise land above
+            // the true bottom.
             .onChange(of: stickTick) { _, _ in
-                stuckToBottom = true
+                cancelRestore()
+                setStuck(true)
                 onPinnedChange(true)
                 scrollToBottom(proxy)
             }
-            .onAppear { scrollToBottom(proxy) }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { reportViewport() }
+            }
+            .onAppear { appear(proxy) }
+            .onDisappear { reportViewport() }
+        }
+    }
+
+    // MARK: Position
+
+    private func setStuck(_ stuck: Bool) {
+        if stuckToBottom != stuck { stuckToBottom = stuck }
+        bridge.pinned = stuck
+    }
+
+    /// Open at the latest message, or at the saved position: hidden until the
+    /// bridge has scrolled there (or, if it can't reach the list, until
+    /// SwiftUI has scrolled to the row's top).
+    private func appear(_ proxy: ScrollViewProxy) {
+        bridge.pinned = stuckToBottom
+        bridge.onUserScroll = {
+            setStuck(false)
+            onPinnedChange(false)
+        }
+        bridge.onScrollSettled = { reportViewport() }
+        // Near the top: look at the window from a fresh view (`revealCheck`).
+        bridge.onNearTop = { near in
+            nearTop = near
+            if near { revealCheck &+= 1 }
+        }
+        guard !hasAppeared else { return }
+        hasAppeared = true
+        guard isRestoring, case .anchored(let position) = restore else {
+            setStuck(true)
+            onPinnedChange(true)
+            scrollToBottom(proxy)
+            return
+        }
+        // The model keeps the window that shows the saved row.
+        if let start = restoreWindowStart, windowStart.map({ start < $0 }) ?? true {
+            onWindowStartChange(start)
+        }
+        guard let target = ReadingRestore.resolve(position, rows: nodes.map { (id: $0.id, turnID: $0.turnID) }) else {
+            isRestoring = false
+            setStuck(true)
+            onPinnedChange(true)
+            scrollToBottom(proxy)
+            return
+        }
+        setStuck(false)
+        onPinnedChange(false)
+        bridge.onRestored = {
+            isRestoring = false
+            revealCheck &+= 1
+            reportViewport()
+        }
+        bridge.restore(id: target.id, offset: CGFloat(target.offset))
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard isRestoring else { return }
+            bridge.cancelRestore()
+            proxy.scrollTo(target.id, anchor: .top)
+            isRestoring = false
+        }
+    }
+
+    private func cancelRestore() {
+        guard isRestoring else { return }
+        bridge.cancelRestore()
+        isRestoring = false
+    }
+
+    /// Tell the screen where the reader is.
+    private func reportViewport() {
+        guard !isRestoring else { return }
+        if stuckToBottom {
+            onViewportChange(TranscriptViewport(anchor: nil, atBottom: true))
+        } else if let anchor = bridge.topAnchor(preferPersisted: true) {
+            onViewportChange(TranscriptViewport(anchor: anchor, atBottom: false))
         }
     }
 
@@ -428,6 +673,35 @@ struct TranscriptView<Header: View>: View {
             guard stuckToBottom, !isUserScrolling else { return }
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
         }
+    }
+}
+
+/// The top row while older turns are windowed out: "Show earlier messages",
+/// or a spinner while the server's page is on its way. One fixed height for
+/// both, so the swap never moves the content under it.
+private struct EarlierMessagesRow: View {
+    let loading: Bool
+    let action: () -> Void
+
+    var body: some View {
+        ZStack {
+            if loading {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                // Older turns normally come in as the reader nears the top. A
+                // window too short to scroll never gets near it, so the way up
+                // is also a plain button.
+                Button(action: action) {
+                    Label("Show earlier messages", systemImage: "arrow.up")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.textTertiary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 40)
     }
 }
 

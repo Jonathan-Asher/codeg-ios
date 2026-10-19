@@ -380,6 +380,39 @@ private struct ImageMediaCard: View {
     @State private var error: MediaError?
     @State private var attempt = 0
 
+    init(ref: MediaRef, library: MediaLibrary, maxHeight: CGFloat = 260) {
+        self.ref = ref
+        self.library = library
+        self.maxHeight = maxHeight
+        // Decoded before: shown at once, with no placeholder first.
+        _image = State(initialValue: library.cachedImage(for: ref, maxPixelSize: 1200))
+    }
+
+    /// The loading box takes the picture's height when its proportions are
+    /// known, or the card's full height (what a screenshot under a message
+    /// takes), so the picture landing moves as little as possible.
+    @ViewBuilder
+    private var loadingBox: some View {
+        let box = HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            MediaCaption(ref: ref)
+        }
+        if let aspect = library.knownAspect(for: ref, maxPixelSize: 1200) {
+            Theme.surfaceNested
+                .aspectRatio(aspect, contentMode: .fit)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxHeight: maxHeight)
+                .overlay { box }
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                .hairlineBorder(Theme.Radius.md, color: Theme.hairline)
+        } else {
+            box
+                .frame(maxWidth: .infinity, minHeight: maxHeight <= MediaCard.compactHeight ? maxHeight : min(120, maxHeight))
+                .background(Theme.surfaceNested, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                .hairlineBorder(Theme.Radius.md, color: Theme.hairline)
+        }
+    }
+
     var body: some View {
         Group {
             if let image {
@@ -404,16 +437,11 @@ private struct ImageMediaCard: View {
                 MediaNoteRow(ref: ref, message: error.errorDescription ?? "Couldn't load this picture.",
                              retry: error.isRetryable ? { self.error = nil; attempt += 1 } : nil)
             } else {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    MediaCaption(ref: ref)
-                }
-                .frame(maxWidth: .infinity, minHeight: min(120, maxHeight))
-                .background(Theme.surfaceNested, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-                .hairlineBorder(Theme.Radius.md, color: Theme.hairline)
+                loadingBox
             }
         }
         .task(id: "\(ref.id)|\(attempt)") {
+            if image != nil, attempt == 0 { return }
             do {
                 image = try await library.image(for: ref, maxPixelSize: 1200)
             } catch {
@@ -434,6 +462,14 @@ private struct VideoMediaCard: View {
     @State private var preview: VideoPreview?
     @State private var error: MediaError?
     @State private var attempt = 0
+
+    init(ref: MediaRef, library: MediaLibrary, maxHeight: CGFloat = 240) {
+        self.ref = ref
+        self.library = library
+        self.maxHeight = maxHeight
+        // Read before: the poster and its proportions from the start.
+        _preview = State(initialValue: library.cachedPreview(for: ref))
+    }
 
     var body: some View {
         Group {

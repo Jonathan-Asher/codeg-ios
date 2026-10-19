@@ -86,6 +86,7 @@ private struct UserNodeBody: View {
     /// Sent into the running turn: the agent took it while it worked.
     var sentDuringTurn = false
     @Environment(\.codegMedia) private var mediaEnvironment
+    @Environment(\.messageEdit) private var messageEdit
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -94,7 +95,9 @@ private struct UserNodeBody: View {
                 case .text(let raw):
                     let text = shownText(raw)
                     if !text.isEmpty {
-                        MarkdownText(raw: text)
+                        // The card's long press (Copy, Edit Message) stands in
+                        // for the text's own.
+                        MarkdownText(raw: text, selectable: false)
                             .multilineTextAlignment(.leading)
                     }
                 case .image(let image):
@@ -121,6 +124,48 @@ private struct UserNodeBody: View {
             in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
         )
         .hairlineBorder(Theme.Radius.md, color: Theme.accent.opacity(0.30))
+        // A long press: Copy, and Edit Message on the open session, greyed
+        // out with the reason while it can't run now.
+        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+        .contextMenu { menu }
+        .accessibilityActions {
+            if let edit = editOffer, edit.availability.isEnabled {
+                Button("Edit Message") { edit.action.start(turn.id) }
+            }
+        }
+    }
+
+    /// "Edit Message" for this message, unless it isn't offered here.
+    private var editOffer: (action: MessageEditAction, availability: MessageEditAvailability)? {
+        guard !sentDuringTurn, let messageEdit else { return nil }
+        let availability = messageEdit.availability(turn.id)
+        guard availability != .hidden else { return nil }
+        return (messageEdit, availability)
+    }
+
+    @ViewBuilder
+    private var menu: some View {
+        let copy = MessageEditRules.editableText(turn)
+        if !copy.isEmpty {
+            Button {
+                UIPasteboard.general.string = copy
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+        }
+        if let edit = editOffer {
+            Button {
+                edit.action.start(turn.id)
+            } label: {
+                Label {
+                    Text("Edit Message")
+                    if let reason = edit.availability.reason { Text(verbatim: reason) }
+                } icon: {
+                    Image(systemName: "pencil")
+                }
+            }
+            .disabled(!edit.availability.isEnabled)
+        }
     }
 
     /// The text without the attachment links whose files show below it.

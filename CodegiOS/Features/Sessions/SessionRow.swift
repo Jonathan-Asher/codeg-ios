@@ -56,6 +56,9 @@ struct SessionRow: View {
                     if let pin = pinAction {
                         Button(action: pin) { pinLabel }
                     }
+                    if let actions, let critical = CriticalSessionRules.action(for: conversation) {
+                        Button(critical.title) { actions.toggleCritical(conversation) }
+                    }
                 }
         } else {
             rowContent
@@ -82,6 +85,11 @@ struct SessionRow: View {
         }
         if let pin = pinAction {
             Button(action: pin) { pinLabel }
+        }
+        if let actions, let critical = CriticalSessionRules.action(for: conversation) {
+            Button { actions.toggleCritical(conversation) } label: {
+                Label(critical.title, systemImage: critical.symbol)
+            }
         }
         if let title = conversation.trimmedTitle {
             Button {
@@ -151,6 +159,9 @@ struct SessionRow: View {
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
 
+            if conversation.critical {
+                CriticalFlag()
+            }
             Text(verbatim: RelativeTime.compact(from: conversation.updatedAt))
                 .font(.subheadline)
                 .monospacedDigit()
@@ -283,6 +294,7 @@ struct SessionRow: View {
         if let folderName { parts.append(String(localized: "folder \(folderName)")) }
         parts.append(RelativeTime.spoken(from: conversation.updatedAt))
         if conversation.isPinned { parts.append(String(localized: "pinned")) }
+        if conversation.critical { parts.append(String(localized: "critical session")) }
         return parts.joined(separator: ", ")
     }
 }
@@ -460,5 +472,18 @@ enum RelativeTime {
         if interval < 60 { return String(localized: "just now") }
         if interval >= 7 * 24 * 3600 { return date.formatted(.dateTime.month(.wide).day()) }
         return spokenFormatter.localizedString(for: date, relativeTo: reference)
+    }
+}
+
+/// The red flag on a critical session (its row, its title): the backend
+/// alerts when it sits idle. The desktop's `CriticalFlag`.
+struct CriticalFlag: View {
+    var size: CGFloat = 11
+
+    var body: some View {
+        Image(systemName: "flag.fill")
+            .font(.system(size: size, weight: .semibold))
+            .foregroundStyle(Theme.danger)
+            .accessibilityLabel(Text("Critical session"))
     }
 }

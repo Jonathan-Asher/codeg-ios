@@ -2,13 +2,15 @@ import Foundation
 
 /// Body for `acp_fork`. `conversationId` / `folderId` link a connection that
 /// resumed the conversation but hasn't prompted yet (the server ignores them
-/// once it is linked); no `forkFromTurnId` forks at the tail. No `mode`: the
-/// server's default is a plain branch ("Fork from here").
+/// once it is linked); no `forkFromTurnId` forks at the tail. No `mode` (left
+/// out of the body) is the server's default, a plain branch ("Fork from
+/// here"); an edit sends `edit_in_place` or `edit`.
 struct AcpForkBody: Encodable, Sendable {
     let connectionId: String
     let conversationId: Int?
     let folderId: Int?
     let forkFromTurnId: String?
+    var mode: ForkMode? = nil
 }
 
 /// Body for `acp_fork_to_new_conversation`: fork at a FINISHED reply into a
@@ -36,13 +38,42 @@ extension CodegClient {
     /// moves to the fork (`[Fork] …`) and `siblingConversationId` keeps the
     /// original. Throws `APIError.turnInProgress` while a turn runs.
     func fork(connectionId: String, conversationId: Int?, folderId: Int?,
-              forkFromTurnId: String?) async throws -> ForkResult {
+              forkFromTurnId: String?, mode: ForkMode? = nil) async throws -> ForkResult {
         try await postJSON("acp_fork", AcpForkBody(
             connectionId: connectionId,
             conversationId: conversationId,
             folderId: folderId,
-            forkFromTurnId: forkFromTurnId
+            forkFromTurnId: forkFromTurnId,
+            mode: mode
         ), session: Self.forkSession)
+    }
+
+    /// Whether `acp_fork` takes an edit `mode` (codeg's "Edit message"). The
+    /// server is asked to fork a connection that can't exist with a mode no
+    /// server has: one that knows the modes refuses the body while reading
+    /// it (422 "unknown variant") and touches nothing; an older one ignores
+    /// the field and answers "connection not found"; one without forking
+    /// answers `not_implemented`. Throws when the server can't be reached,
+    /// so a blip isn't taken for an older server.
+    func forkEditModesSupported() async throws -> Bool {
+        struct Probe: Encodable {
+            let connectionId: String
+            let mode: String
+        }
+        do {
+            _ = try await send("acp_fork", body: Probe(connectionId: "", mode: "codeg-ios-probe"),
+                               session: Self.readSession)
+            return false
+        } catch let error as APIError {
+            switch error {
+            case .server(let status, _, _) where status == 422:
+                return true
+            case .server, .turnInProgress:
+                return false
+            default:
+                throw error
+            }
+        }
     }
 
     /// Fork a finished reply into a new conversation while a turn runs

@@ -11,6 +11,8 @@ import SwiftUI
 struct GeneralSettingsView: View {
     @State private var model: GeneralSettingsModel
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Kept on this iPhone, as codeg web keeps it per browser.
+    @AppStorage(MessageEditPreferences.keepOriginalKey) private var keepOriginalOnEdit = false
 
     init(client: CodegClient?) {
         _model = State(initialValue: GeneralSettingsModel(client: client))
@@ -45,6 +47,7 @@ struct GeneralSettingsView: View {
                 VStack(spacing: 22) {
                     delegationSection
                     toolsSection
+                    editingSection
                 }
                 .padding(.horizontal, Theme.Layout.screenHMargin)
                 .padding(.top, 8)
@@ -106,6 +109,18 @@ struct GeneralSettingsView: View {
                 hint: "Let agents pause to ask you a multiple-choice question and wait for an answer."
             ) {
                 toggle(get: { model.questionEnabled }, set: { model.setQuestion($0) })
+            }
+        }
+    }
+
+    /// codeg web's "Edit message" setting, for this iPhone.
+    private var editingSection: some View {
+        EditorSection(title: "Editing Messages") {
+            settingRow(
+                "Keep the original as a separate conversation when editing",
+                hint: "Editing a past message continues the same conversation from that point. Turn this on to also keep the version before the edit in the sidebar, named “… (before edit)”."
+            ) {
+                toggle(get: { keepOriginalOnEdit }, set: { keepOriginalOnEdit = $0 })
             }
         }
     }

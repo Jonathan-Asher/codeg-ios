@@ -92,11 +92,26 @@ extension SidebarSection {
 struct NewSessionRequest: Hashable, Identifiable {
     let id: UUID
     var preselectedFolderID: Int?
+    /// The agent to start with (an edited first message keeps its session's).
+    var agent: AgentType?
+    /// Sent as the new session's first message as soon as it is set up: an
+    /// edit of a conversation's first message starts a new conversation with
+    /// the edited text (and the message's pictures).
+    var initialPrompt: InitialPrompt?
 
-    init(id: UUID = UUID(), preselectedFolderID: Int? = nil) {
+    init(id: UUID = UUID(), preselectedFolderID: Int? = nil, agent: AgentType? = nil,
+         initialPrompt: InitialPrompt? = nil) {
         self.id = id
         self.preselectedFolderID = preselectedFolderID
+        self.agent = agent
+        self.initialPrompt = initialPrompt
     }
+}
+
+/// A first message a new session sends by itself.
+struct InitialPrompt: Hashable, Sendable {
+    let text: String
+    let images: [ImageData]
 }
 
 extension Route {
