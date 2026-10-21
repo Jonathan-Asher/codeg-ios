@@ -321,8 +321,18 @@ enum DiagnosticsStore {
         exceptionPath = directory.appendingPathComponent("uncaught-exception.json").path
     }
 
+    /// The server takes up to 1 MiB; a bigger report goes without its raw
+    /// MetricKit payload (the summary and frames stay).
+    static let maxReportBytes = 900 * 1024
+
     static func enqueue(_ report: DiagnosticReport) {
-        guard let data = try? JSONEncoder().encode(report) else { return }
+        guard var data = try? JSONEncoder().encode(report) else { return }
+        if data.count > maxReportBytes {
+            var trimmed = report
+            trimmed.metricKit = nil
+            guard let smaller = try? JSONEncoder().encode(trimmed) else { return }
+            data = smaller
+        }
         lock.lock()
         defer { lock.unlock() }
         ensureDirectory()
@@ -412,12 +422,17 @@ enum DiagnosticsUploader {
                 continue
             }
             var accepted = false
+            var refused = false
             for client in clients {
                 do {
                     try await client.reportClientDiagnostic(body)
                     accepted = true
                 } catch APIError.server(let status, _, _) where status == 404 {
                     // A server without the endpoint yet: try the others.
+                } catch APIError.server(let status, _, _) where (400..<500).contains(status) && status != 408 && status != 429 {
+                    // Refused for what it is (too large, malformed): sending it
+                    // again won't help.
+                    refused = true
                 } catch {
                     Diagnostics.log.notice("Sending a crash report failed: \(String(describing: error), privacy: .public)")
                 }
@@ -425,6 +440,9 @@ enum DiagnosticsUploader {
             if accepted {
                 DiagnosticsStore.remove(file)
                 sent += 1
+            } else if refused {
+                Diagnostics.log.notice("A server refused a crash report; dropped it")
+                DiagnosticsStore.remove(file)
             }
         }
         if sent > 0 { Diagnostics.log.notice("Sent \(sent) crash report(s) to the server") }
