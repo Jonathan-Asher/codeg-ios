@@ -2068,7 +2068,7 @@ with `outputFormat(forBus: 0)` then didn't match the hardware, and AVFAudio
 raises on that. The format guard already in the code (rate and channels above
 zero) couldn't see it.
 
-1.3.17:
+1.3.19:
 
 - Every cold start builds a fresh engine after the session is active, so
   its input node reads the route as it is now. A leftover engine from a stop
@@ -2096,7 +2096,7 @@ zero) couldn't see it.
   starts the engine before scheduling or playing, restarts it after a
   configuration change while reading, and stops cleanly when it won't.
 
-## Crash reports (1.3.17)
+## Crash reports (1.3.19)
 
 The app sends its crash reports to the codeg servers it knows, and nowhere
 else; there is no third-party SDK. `CodegiOS/App/Diagnostics/`:

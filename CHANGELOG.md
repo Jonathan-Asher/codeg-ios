@@ -12,7 +12,7 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
-- Crash reports to your own codeg server (1.3.17), with nothing sent
+- Crash reports to your own codeg server (1.3.19), with nothing sent
   anywhere else. When the app crashes, hangs, uses too much CPU or disk,
   launches slowly, or catches an audio error it would have died of, a report
   goes to every saved server: MetricKit's diagnostics (delivered on the next
@@ -297,7 +297,7 @@ the text as the git tag message and the GitHub Release notes.
 ### Fixed
 
 - The app no longer crashes when the Camera Control's standby microphone
-  starts (1.3.17). Every crash TestFlight reported from 1.3.2 to 1.3.14 was
+  starts (1.3.19). Every crash TestFlight reported from 1.3.2 to 1.3.14 was
   this one: `installTap` on the microphone raised an Objective-C exception
   (SIGABRT) right after the session was activated for standby, because the
   one audio engine the recorder kept for the app's lifetime still held the
