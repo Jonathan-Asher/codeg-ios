@@ -358,6 +358,11 @@ final class DictationRecorder: @unchecked Sendable {
         let tapFormat = input.outputFormat(forBus: 0)
         let check = MicrophoneFormatCheck.evaluate(hardware: hardware, output: AudioFormatShape(tapFormat),
                                                    inputAvailable: session.isInputAvailable)
+        if MicrophoneFormatCheck.isStale(node: hardware, sessionSampleRate: session.sampleRate) {
+            // Still tapped (a fresh node is right more often than the
+            // session), but worth knowing when a report comes in.
+            Breadcrumbs.add("mic.rate_differs", "node=\(Int(hardware.sampleRate)) session=\(Int(session.sampleRate))")
+        }
         guard check == .ready else {
             let detail = "hw=\(Int(hardware.sampleRate))/\(hardware.channelCount) tap=\(Int(tapFormat.sampleRate))/\(tapFormat.channelCount) session=\(Int(session.sampleRate))"
             DictationRecorder.log.error("Microphone format not usable (\(String(describing: check), privacy: .public)): \(detail, privacy: .public)")

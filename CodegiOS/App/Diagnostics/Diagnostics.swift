@@ -26,7 +26,7 @@ final class Diagnostics: NSObject, @unchecked Sendable {
         get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
         set {
             UserDefaults.standard.set(newValue, forKey: enabledKey)
-            newValue ? shared.start() : shared.stop()
+            if newValue { shared.start() } else { shared.stop() }
         }
     }
 
@@ -261,11 +261,11 @@ extension Diagnostics: MXMetricManagerSubscriber {
         for payload in payloads {
             let when = payload.timeStampEnd
             var items: [(String, MXDiagnostic)] = []
-            items += (payload.crashDiagnostics ?? []).map { ("crash", $0) }
-            items += (payload.hangDiagnostics ?? []).map { ("hang", $0) }
-            items += (payload.cpuExceptionDiagnostics ?? []).map { ("cpu_exception", $0) }
-            items += (payload.diskWriteExceptionDiagnostics ?? []).map { ("disk_write_exception", $0) }
-            items += (payload.appLaunchDiagnostics ?? []).map { ("app_launch", $0) }
+            items += (payload.crashDiagnostics ?? []).map { ("crash", $0 as MXDiagnostic) }
+            items += (payload.hangDiagnostics ?? []).map { ("hang", $0 as MXDiagnostic) }
+            items += (payload.cpuExceptionDiagnostics ?? []).map { ("cpu_exception", $0 as MXDiagnostic) }
+            items += (payload.diskWriteExceptionDiagnostics ?? []).map { ("disk_write_exception", $0 as MXDiagnostic) }
+            items += (payload.appLaunchDiagnostics ?? []).map { ("app_launch", $0 as MXDiagnostic) }
             for (kind, diagnostic) in items {
                 let data = diagnostic.jsonRepresentation()
                 guard DiagnosticsStore.firstSighting(of: data),
@@ -400,7 +400,9 @@ enum DiagnosticsUploader {
 
         let files = DiagnosticsStore.pending()
         guard !files.isEmpty else { return }
-        let clients = ServerStore.persistedServers().compactMap(ServerStore.makeClient(for:))
+        let clients = await MainActor.run {
+            ServerStore.persistedServers().compactMap { ServerStore.makeClient(for: $0) }
+        }
         guard !clients.isEmpty else { return }
         var sent = 0
         for file in files.prefix(20) {

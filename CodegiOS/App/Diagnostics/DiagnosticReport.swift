@@ -181,9 +181,9 @@ enum DiagnosticEnvironment {
             String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
         }
         // "Version 27.2 (Build 24B5089g)" → "iOS 27.2 (24B5089g)"
-        let build = ProcessInfo.processInfo.operatingSystemVersionString
-            .range(of: #"Build ([^)]+)"#, options: .regularExpression)
-            .map { String(ProcessInfo.processInfo.operatingSystemVersionString[$0].dropFirst(6)) }
+        let described = ProcessInfo.processInfo.operatingSystemVersionString
+        let build = described.range(of: #"Build ([^)]+)"#, options: .regularExpression)
+            .map { String(described[$0].dropFirst(6)) }
         let version = ProcessInfo.processInfo.operatingSystemVersion
         let os = "iOS \(version.majorVersion).\(version.minorVersion)"
             + (version.patchVersion > 0 ? ".\(version.patchVersion)" : "") + (build.map { " (\($0))" } ?? "")
