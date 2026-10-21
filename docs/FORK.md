@@ -2043,6 +2043,142 @@ recording as standby when standby is wanted but down, marks a stopped engine
 as stopped, clears the banner when a recording starts, and logs the domain,
 code and four-character code of any failure.
 
+### The standby crash (1.3.2 to 1.3.16)
+
+Every crash TestFlight collected from 1.3.2 (40) to 1.3.14 (93), eight on
+Jonathan's iPhone 17 Pro Max on iOS 27.2, was the same one, and Apple had
+symbolicated six of them: `EXC_CRASH (SIGABRT)` from an uncaught Objective-C
+exception raised in AVFAudio, called from
+`DictationRecorder.runEngine()` at `DictationRecorder.swift:335`, the
+`input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat)` line,
+inside the first `AudioSessionOwner.acquire(.standby)` attempt, from
+`DictationRecorder.startStandby()` via `DictationController.setPreRoll` /
+`retryPreRoll` and `CameraTalkController.syncMicrophone()`. No audio thread
+was alive in any of them: it was always a cold start of the standby
+microphone, right after `setCategory` and `setActive(true)`. The
+`ggml_uncaught_exception` frame is whisper.cpp's terminate handler, which
+only passes the exception on. TestFlight's crash logs carry no exception
+reason (the App Store Connect API returns only the log text).
+
+The recorder kept one `AVAudioEngine` for the app's lifetime. Its input node
+holds the formats of the route it last ran on, and read aloud (`.playback`),
+a video, a cold recording with AirPods' HFP microphone (16 or 24 kHz) or a
+route change since then had moved the hardware to another format; `installTap`
+with `outputFormat(forBus: 0)` then didn't match the hardware, and AVFAudio
+raises on that. The format guard already in the code (rate and channels above
+zero) couldn't see it.
+
+1.3.17:
+
+- Every cold start builds a fresh engine after the session is active, so
+  its input node reads the route as it is now. A leftover engine from a stop
+  the recorder missed is stopped and its tap removed first.
+- `MicrophoneFormatCheck` checks the input before the tap: an input is
+  available, both sides of the node have a sample rate and channels, and
+  their sample rates agree (the input node converts channels, never the
+  rate). Otherwise it throws a plain error and `AudioSessionOwner` retries
+  once after a clean deactivate; the standby retries later as before.
+- Every AVFAudio call that can raise (`inputNode`, `installTap`,
+  `removeTap`, `prepare`/`start`, `stop`, read aloud's `attach`, `connect`,
+  `scheduleBuffer` and `play`) runs through `AVFAudioGuard`, an `@try/@catch`
+  in Objective-C (`Packages/ExceptionCatcher`, since Swift can't catch an
+  `NSException`). A caught exception is logged, reported to the server as a
+  `caught_exception` with its name and reason, and shown as "Couldn't start
+  the microphone: the audio system refused the request, try again."
+- The engine is registered before it starts, so a configuration change
+  posted while it starts is matched to it, and an engine stopped by a route
+  change before `start()` returns counts as a failed start. A media services
+  reset stops the microphone like an interruption.
+- The tap drops a buffer whose format differs from the one its converter was
+  built for, instead of converting it.
+- Read aloud started its player without checking the engine: a route change
+  that stopped the engine mid-reply made the next `play()` raise. It now
+  starts the engine before scheduling or playing, restarts it after a
+  configuration change while reading, and stops cleanly when it won't.
+
+## Crash reports (1.3.17)
+
+The app sends its crash reports to the codeg servers it knows, and nowhere
+else; there is no third-party SDK. `CodegiOS/App/Diagnostics/`:
+
+- **MetricKit.** `Diagnostics` subscribes to `MXMetricManager` at launch and
+  turns each diagnostic it delivers (crash, hang, CPU exception, disk-write
+  exception, slow launch) into a report: the summary (exception type,
+  signal, termination reason, the Objective-C exception's name and message
+  where iOS gives them, the crashed thread's frames from two above the app's
+  own) and the diagnostic's whole JSON, with paths and URL queries cut out.
+  Diagnostics already seen are skipped (an FNV-1a digest of the last 200).
+- **Uncaught exceptions.** `NSSetUncaughtExceptionHandler` (chained to any
+  handler already set) writes the exception's name, reason, call stack
+  symbols and return addresses, the app's version and build, the binary's
+  UUID and load address and the breadcrumbs to
+  `Application Support/Diagnostics/uncaught-exception.json`, synchronously,
+  before the abort; the next launch makes it a report.
+- **Caught exceptions.** `AVFAudioGuard` reports what it caught (at most 5
+  per launch) as `caught_exception`, with the guarded call's name.
+- **Breadcrumbs.** `Breadcrumbs` keeps the last 100 app events and writes
+  them to disk 0.3 s after each, so a crash keeps them: `app.launch`,
+  `app.active`/`background`/`memory_warning`/`thermal`, `screen.tab` and
+  `screen.open` (the tab and the kind of screen on top, no ids), `dictation.*`,
+  `standby`, `mic.start`/`stop`/`lost`/`format`/`start_failed` (with the
+  route as port types and sample rate), `cameraControl` (the mode's state),
+  `readAloud.*`, `media.play`, `audio.route` (reason and port types),
+  `audio.interruption`, `audio.engine_config_change`,
+  `audio.media_services_reset`, `audio.exception` and `network` (Wi-Fi,
+  cellular or offline). Details pass through a character filter (ASCII
+  letters, digits and `._:-/=,+`), and enum payloads are dropped
+  (`Breadcrumbs.caseName`), so no text from a message, a file or a device
+  name gets in. A crash report carries the previous launch's trail, a caught
+  exception this launch's.
+- **Privacy.** Reports hold stack frames, device and OS, the build and the
+  breadcrumbs. Free text from the system (an exception's reason, MetricKit's
+  strings) goes through `DiagnosticScrubber`: paths become `<path>`, URL
+  queries and fragments `?<redacted>`, `token=`/`password=`/`Bearer …` values
+  and 40+ character tokens `<redacted>`.
+- **Sending.** Reports wait in `Application Support/Diagnostics/pending/`
+  (excluded from backup; at most 50 and 8 MB, three weeks) and go out a few
+  seconds after launch, after the app becomes active, and after a new one:
+  `POST /api/report_client_diagnostic` with `{"report": …}` to every saved
+  server. One server answering `{"id": …, "stored": true}` is enough to drop
+  it; a server without the endpoint (404) is skipped.
+- **The switch.** Settings › About › "Send Crash Reports to Your Server", on
+  by default. Off stops all of the above and deletes what is waiting.
+
+### On the codeg server (fork)
+
+`report_client_diagnostic` stores each report as a JSON file in
+`<data dir>/client-diagnostics/` (`$CODEG_HOME`, `$CODEG_DATA_DIR`, or
+`~/.codeg`), at most 300 files and 32 MiB with the oldest evicted first, a
+resend of the same id stored once, and only the kind and size logged.
+`list_client_diagnostics` and `get_client_diagnostic` feed Settings › Logs ›
+iPhone crash reports on the desktop and web: time, version and build, iOS,
+the exception and the top frames, and "Copy report" for the whole JSON.
+
+### Symbolicating
+
+The TestFlight job keeps every upload's dSYMs as the artifact
+`dsyms-<version>-<build>` (90 days, the most a public repository allows):
+each `.dSYM` zipped, `uuids.txt` from `dwarfdump --uuid`, and
+`build-info.txt`. On the box, `~/codeg-e2e/tools/asc/watch-build.sh` pulls it
+into `~/codeg-e2e/dsyms/<version>-<build>/` when the run succeeds
+(`~/codeg-e2e/tools/fetch-ios-dsyms.sh <run-id>` does it by hand; the newest
+12 builds stay). Then:
+
+```sh
+~/codeg-e2e/tools/symbolicate-ios-crash.sh report.json    # "Copy report", or a client-diagnostics/*.json
+~/codeg-e2e/tools/symbolicate-ios-crash.sh 2026-10-19T1316.crash
+```
+
+It finds the dSYM by the binary's UUID (or the version and build) and runs
+`atos` over the app's frames: a crash log comes back whole with them
+rewritten, a JSON report as its frames with function, file and line.
+
+TestFlight's own crash submissions are pulled into `~/codeg-e2e/crashes/`
+every hour by `~/codeg-e2e/tools/pull-testflight-crashes.sh` (LaunchAgent
+`com.codeg.testflight-crashes`, through the App Store Connect helper in
+`~/codeg-e2e/tools/asc/`), and symbolicated next to the log when the build's
+dSYM is on the box.
+
 ## Upstream pull requests carried by the fork
 
 Applied on top of upstream `e2d75f9`, in this order. Each cherry-pick keeps its
@@ -2085,7 +2221,10 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   minting and refresh, Range requests against a mock byte server, and the
   player model with the audio session, the reading position and the
   transcript held still while older turns go in, measured on every frame in
-  the whole app, and editing a message against a mock server) on an
+  the whole app, editing a message against a mock server, and the
+  microphone's format checks, the AVFAudio guard catching a real AVFAudio
+  exception, and the crash reports' breadcrumbs, scrubbing and MetricKit
+  parsing) on an
   iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
   `build`. It uploads the session list screenshots as the
   `session-list-screenshots` artifact (with `transcript-scroll.txt`, the
@@ -2102,6 +2241,8 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   same archive, export and `altool` upload that `scripts/release.sh --archive`
   uses. It runs only on a manual dispatch with the `testflight` box ticked, and
   only when the repository variable `TESTFLIGHT_ENABLED` is `true`.
+  Each upload keeps its dSYMs as the `dsyms-<version>-<build>` artifact (see
+  "Crash reports", Symbolicating).
 
 ### Turning on the TestFlight job
 

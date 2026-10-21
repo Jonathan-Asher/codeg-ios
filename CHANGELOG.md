@@ -12,6 +12,24 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Crash reports to your own codeg server (1.3.17), with nothing sent
+  anywhere else. When the app crashes, hangs, uses too much CPU or disk,
+  launches slowly, or catches an audio error it would have died of, a report
+  goes to every saved server: MetricKit's diagnostics (delivered on the next
+  launch), the name, reason and stack of an uncaught Objective-C exception
+  (written down just before the app ends and sent on the next launch), and
+  each exception the new audio guard caught. A report carries the app
+  version and build, the device and iOS version, the call stack, the
+  binary's UUID and load address for symbolication, and the last 100 app
+  events: screens opened, dictation and the microphone starting and
+  stopping, Camera Control's mode, read aloud, media playing, audio route
+  changes and interruptions, and network changes; never message text, file
+  names, paths, URLs or tokens. They wait on the phone until a server takes
+  them (at most 50, for three weeks). On by default; Settings › About ›
+  "Send Crash Reports to Your Server" turns it off and drops what is
+  waiting. The codeg desktop lists them in Settings › Logs › iPhone crash
+  reports.
+
 - Edit your own messages (1.3.16), as on the desktop. Long-press a message
   you sent: Copy, and Edit Message. The editor opens with the message as you
   sent it, its pictures beside it (they are sent again with the edit), and
@@ -277,6 +295,24 @@ the text as the git tag message and the GitHub Release notes.
   `scripts/release.sh --archive` and CI.
 
 ### Fixed
+
+- The app no longer crashes when the Camera Control's standby microphone
+  starts (1.3.17). Every crash TestFlight reported from 1.3.2 to 1.3.14 was
+  this one: `installTap` on the microphone raised an Objective-C exception
+  (SIGABRT) right after the session was activated for standby, because the
+  one audio engine the recorder kept for the app's lifetime still held the
+  input formats of the route it last ran on, and read aloud, a video or
+  AirPods switching profile had changed the route since. Every cold start
+  of the microphone now builds a fresh engine, checks its input formats
+  against each other before installing the tap, and runs every AVFAudio call
+  that can raise through a guard that turns the exception into an error: the
+  standby retries, and a recording shows "Couldn't start the microphone: the
+  audio system refused the request, try again." instead of the app ending.
+
+- Read aloud no longer risks the same crash when a route change stops its
+  engine mid-reply (AirPods put in or taken out): it starts the engine again
+  before scheduling or playing audio, keeps playing after the change, or
+  stops cleanly.
 
 - A message is never lost before the server has it (1.3.19). A send that
   fails (no network, a timeout, a server error or restart) waits at the
