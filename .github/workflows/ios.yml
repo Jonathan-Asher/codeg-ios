@@ -265,6 +265,38 @@ jobs:
           BUILD_NUMBER: ${{ inputs.build_number || github.run_number }}
         run: scripts/archive.sh --tag "ci-${{ github.run_number }}" --build-number "$BUILD_NUMBER"
 
+      # Every upload keeps its dSYMs, so the crash reports the app sends to
+      # the codeg server (and TestFlight's) can be symbolicated later. The box
+      # pulls this artifact into ~/codeg-e2e/dsyms/<version>-<build>/ (see
+      # docs/FORK.md, "Crash reports").
+      - name: Collect the dSYMs
+        id: dsyms
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number || github.run_number }}
+        run: |
+          version="$(sed -n 's/^ *MARKETING_VERSION: *"\{0,1\}\([0-9.]*\)"\{0,1\}.*/\1/p' project.yml | head -1)"
+          archive="build/CodegiOS-ci-${{ github.run_number }}.xcarchive"
+          if [[ ! -d "$archive/dSYMs/Codeg.app.dSYM" ]]; then echo "::error::no Codeg.app.dSYM in $archive"; exit 1; fi
+          out="build/dsyms"
+          mkdir -p "$out"
+          for d in "$archive"/dSYMs/*.dSYM; do
+            ditto -c -k --keepParent "$d" "$out/$(basename "$d").zip"
+            dwarfdump --uuid "$d" | tee -a "$out/uuids.txt"
+          done
+          printf 'version=%s\nbuild=%s\nrun=%s\ncommit=%s\n' "$version" "$BUILD_NUMBER" \
+            "${{ github.run_id }}" "${{ github.sha }}" >"$out/build-info.txt"
+          du -sh "$out"/*
+          echo "name=dsyms-$version-$BUILD_NUMBER" >>"$GITHUB_OUTPUT"
+
+      - name: Upload the dSYMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.dsyms.outputs.name }}
+          path: build/dsyms
+          if-no-files-found: error
+          # The longest a public repository keeps an artifact.
+          retention-days: 90
+
       # Safety net: should signing ever mint a development certificate again
       # (it reaches the account's limit after a handful of runs), revoke every
       # API-created one except the long-lived certificate above.

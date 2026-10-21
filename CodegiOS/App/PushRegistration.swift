@@ -437,6 +437,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // First, so an exception anywhere after this is written down.
+        Diagnostics.shared.start()
         PushRegistration.shared.appDidLaunch()
         // Reconnect speech-model downloads that were running at the last quit.
         SpeechModelStores.resumeActiveDownloads()

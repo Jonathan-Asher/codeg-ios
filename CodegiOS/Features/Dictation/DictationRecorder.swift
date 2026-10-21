@@ -116,7 +116,9 @@ final class DictationRecorder: @unchecked Sendable {
     /// Audio kept from before a recording starts, in standby.
     static let preRollSeconds: Double = 1.5
 
-    private let engine = AVAudioEngine()
+    /// The engine while the microphone runs; a cold start builds a new one
+    /// (see ``runEngine()``).
+    private var engine: AVAudioEngine?
     private let audio: AudioSessionOwner
     private let lock = NSLock()
     private var buffer = RecordingBuffer(preRollSamples: Int(preRollSeconds * sampleRate),
@@ -143,12 +145,18 @@ final class DictationRecorder: @unchecked Sendable {
     init(audio: AudioSessionOwner = .shared) {
         self.audio = audio
         let center = NotificationCenter.default
-        observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine,
-                                            queue: nil) { [weak self] _ in
+        observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil,
+                                            queue: nil) { [weak self] note in
             // Activating the session can post one of these while the engine
-            // keeps running; only a change that stopped the engine matters.
-            guard let self, !self.engine.isRunning else { return }
+            // keeps running; only a change that stopped this recorder's
+            // current engine matters (read aloud has an engine of its own).
+            guard let self, let changed = note.object as? AVAudioEngine,
+                  changed === self.withLock({ self.engine }), !changed.isRunning else { return }
             self.engineStoppedByItself("the audio route or configuration changed")
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil,
+                                            queue: nil) { [weak self] _ in
+            self?.engineStoppedByItself("the iPhone's audio services restarted")
         })
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil,
                                             queue: nil) { [weak self] note in
@@ -309,10 +317,12 @@ final class DictationRecorder: @unchecked Sendable {
         do {
             let outcome = try audio.acquire(use) { try runEngine() }
             withLock { state.engineStarted(use) }
+            Breadcrumbs.add("mic.start", "\(use.rawValue) \(Diagnostics.routeDescription())")
             if outcome == .activatedOnRetry {
                 DictationRecorder.log.notice("Microphone started for \(use.rawValue, privacy: .public) on the second try")
             }
         } catch {
+            Breadcrumbs.add("mic.start_failed", use.rawValue)
             withLock {
                 state.engineFailed(duringRecording: recordingStarts)
                 if !recordingStarts { buffer.reset() }
@@ -321,41 +331,90 @@ final class DictationRecorder: @unchecked Sendable {
         }
     }
 
-    /// Install the tap and start the engine; undo both if it fails.
+    /// Build a fresh engine, check the microphone's formats, install the tap
+    /// and start; undo all of it if a step fails.
+    ///
+    /// A fresh engine every time: an engine that ran before keeps the formats
+    /// of the route it ran on, and after read aloud, a video or AirPods
+    /// switching profile changed the route, `installTap` with those formats
+    /// raises an Objective-C exception that ended the app (the crash in
+    /// 1.3.2 to 1.3.16, always from the Camera Control's standby). Every call
+    /// that can raise goes through ``AVFAudioGuard``, so whatever is left
+    /// becomes an error, and ``AudioSessionOwner`` retries once.
     private func runEngine() throws {
-        let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
-              let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Self.sampleRate,
-                                         channels: 1, interleaved: false),
-              let converter = AVAudioConverter(from: inputFormat, to: target) else {
+        let session = AVAudioSession.sharedInstance()
+        guard session.isInputAvailable else { throw RecorderError.noInput }
+        // One left running by a stop this recorder missed goes first.
+        if let leftover = withLock({ () -> AVAudioEngine? in
+            defer { self.engine = nil; tapInstalled = false }
+            return self.engine
+        }) {
+            try? AVFAudioGuard.run("remove the microphone tap") { leftover.inputNode.removeTap(onBus: 0) }
+            try? AVFAudioGuard.run("stop the microphone") { leftover.stop() }
+        }
+        let engine = AVAudioEngine()
+        let input = try AVFAudioGuard.run("get the microphone input") { engine.inputNode }
+        let hardware = AudioFormatShape(input.inputFormat(forBus: 0))
+        let tapFormat = input.outputFormat(forBus: 0)
+        let check = MicrophoneFormatCheck.evaluate(hardware: hardware, output: AudioFormatShape(tapFormat),
+                                                   inputAvailable: session.isInputAvailable)
+        guard check == .ready else {
+            let detail = "hw=\(Int(hardware.sampleRate))/\(hardware.channelCount) tap=\(Int(tapFormat.sampleRate))/\(tapFormat.channelCount) session=\(Int(session.sampleRate))"
+            DictationRecorder.log.error("Microphone format not usable (\(String(describing: check), privacy: .public)): \(detail, privacy: .public)")
+            Breadcrumbs.add("mic.format", detail)
+            if case .unavailable(let problem) = check { throw RecorderError.format(problem) }
             throw RecorderError.noInput
         }
-        if tapInstalled { input.removeTap(onBus: 0) }
-        input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, _ in
-            self?.consume(buffer, converter: converter, target: target)
+        guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Self.sampleRate,
+                                         channels: 1, interleaved: false),
+              let converter = AVAudioConverter(from: tapFormat, to: target) else {
+            throw RecorderError.noInput
         }
-        tapInstalled = true
-        engine.prepare()
+        try AVFAudioGuard.run("install the microphone tap") {
+            input.installTap(onBus: 0, bufferSize: 2048, format: tapFormat) { [weak self] buffer, _ in
+                self?.consume(buffer, converter: converter, target: target)
+            }
+        }
+        // Known before it starts, so a configuration change posted while it
+        // starts is matched to it.
+        withLock {
+            self.engine = engine
+            tapInstalled = true
+        }
         do {
-            try engine.start()
+            try AVFAudioGuard.run("start the microphone") {
+                engine.prepare()
+                try engine.start()
+            }
+            // A route change can stop it again before this returns.
+            guard engine.isRunning else { throw RecorderError.format(.formatChanging) }
         } catch {
-            input.removeTap(onBus: 0)
-            tapInstalled = false
+            withLock {
+                self.engine = nil
+                tapInstalled = false
+            }
+            try? AVFAudioGuard.run("remove the microphone tap") { input.removeTap(onBus: 0) }
+            try? AVFAudioGuard.run("stop the microphone") { engine.stop() }
             throw error
         }
     }
 
     private func stopEngine(releasing use: AudioSessionUse) {
-        if tapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
+        let (engine, hadTap) = withLock { () -> (AVAudioEngine?, Bool) in
+            let running = (self.engine, tapInstalled)
+            self.engine = nil
             tapInstalled = false
+            return running
         }
-        engine.stop()
+        if let engine {
+            if hadTap { try? AVFAudioGuard.run("remove the microphone tap") { engine.inputNode.removeTap(onBus: 0) } }
+            try? AVFAudioGuard.run("stop the microphone") { engine.stop() }
+        }
         withLock {
             if !state.recording { buffer.reset() }
             level = 0
         }
+        Breadcrumbs.add("mic.stop", use.rawValue)
         audio.release(use)
     }
 
@@ -368,6 +427,7 @@ final class DictationRecorder: @unchecked Sendable {
         lock.unlock()
         guard let use else { return }
         DictationRecorder.log.notice("Microphone stopped by itself: \(why, privacy: .public)")
+        Breadcrumbs.add("mic.lost", use.rawValue)
         stopEngine(releasing: use)
         if wasRecording {
             onInterrupted?()
@@ -380,6 +440,10 @@ final class DictationRecorder: @unchecked Sendable {
 
     /// On the audio thread: meter the buffer, convert it to 16 kHz mono, keep it.
     private func consume(_ input: AVAudioPCMBuffer, converter: AVAudioConverter, target: AVAudioFormat) {
+        // A buffer in another format than the converter was built for (the
+        // route changed under the tap) is dropped, not converted.
+        guard input.format.sampleRate == converter.inputFormat.sampleRate,
+              input.format.channelCount == converter.inputFormat.channelCount else { return }
         var rms: Float = 0
         if let channel = input.floatChannelData?[0], input.frameLength > 0 {
             vDSP_rmsqv(channel, 1, &rms, vDSP_Length(input.frameLength))
@@ -418,9 +482,16 @@ final class DictationRecorder: @unchecked Sendable {
         }
     }
 
-    enum RecorderError: PlainAudioError {
+    enum RecorderError: PlainAudioError, Equatable {
         case noInput
+        case format(MicrophoneFormatCheck.Problem)
 
-        var errorDescription: String? { "No microphone is available." }
+        var errorDescription: String? {
+            switch self {
+            case .noInput, .format(.noInput): "No microphone is available."
+            case .format(.emptyFormat): "The microphone isn't ready yet, try again."
+            case .format(.formatChanging): "The audio route changed as the microphone started, try again."
+            }
+        }
     }
 }

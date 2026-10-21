@@ -34,6 +34,11 @@ packages:
   # checksum. See docs/FORK.md, "Voice typing".
   WhisperCpp:
     path: Packages/WhisperCpp
+  # A one-function Objective-C helper that runs a block in @try/@catch, so a
+  # framework exception (AVFAudio raises on misuse) becomes a Swift error
+  # instead of ending the app. See docs/FORK.md, "Crash reports".
+  ExceptionCatcher:
+    path: Packages/ExceptionCatcher
 
 settings:
   base:
@@ -62,6 +67,7 @@ targets:
         product: BlueTTSEspeak
       - package: WhisperCpp
         product: whisper
+      - package: ExceptionCatcher
     scheme:
       testTargets:
         - CodegiOSTests
@@ -78,7 +84,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CODEG_BUNDLE_ID)
         PRODUCT_NAME: Codeg
-        MARKETING_VERSION: "1.3.19"
+        MARKETING_VERSION: "1.3.20"
         CURRENT_PROJECT_VERSION: "2"
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: "NO"
         # App icon lives in Assets.xcassets/AppIcon.appiconset (single-size 1024 universal).

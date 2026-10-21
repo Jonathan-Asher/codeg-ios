@@ -112,6 +112,7 @@ final class MediaPlayerModel: MediaPlaybackClient {
     }
 
     func play() {
+        Breadcrumbs.add("media.play")
         loadTask?.cancel()
         loadTask = Task { await start() }
     }

@@ -39,6 +39,8 @@ final class ServerVersionModel {
 struct AboutView: View {
     let versionModel: ServerVersionModel
     let serverName: String?
+    @State private var crashReports = Diagnostics.isEnabled
+    @State private var waitingReports = DiagnosticsStore.pendingCount
 
     private var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
@@ -55,6 +57,7 @@ struct AboutView: View {
                     headerCard
                     descriptionCard
                     versionCard
+                    crashReportsCard
                 }
                 .padding(.horizontal, Theme.Layout.screenHMargin)
                 .padding(.top, 2)
@@ -129,6 +132,35 @@ struct AboutView: View {
                 }
             }
         }
+    }
+
+    /// Crash reports go to your own codeg servers, never anywhere else.
+    private var crashReportsCard: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: Binding(get: { crashReports }, set: { on in
+                    crashReports = on
+                    Diagnostics.isEnabled = on
+                    waitingReports = DiagnosticsStore.pendingCount
+                })) {
+                    Text("Send Crash Reports to Your Server")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                }
+                .tint(Theme.accent)
+                Text("When the app crashes, hangs or catches an audio error, a report goes to your codeg servers: the app version, device and iOS version, the call stack and the last app events (screens opened, microphone and audio changes). Never message text, file names or tokens.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if crashReports, waitingReports > 0 {
+                    Text("\(waitingReports) waiting to send")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onAppear { waitingReports = DiagnosticsStore.pendingCount }
     }
 
     @ViewBuilder

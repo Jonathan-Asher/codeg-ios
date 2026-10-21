@@ -64,9 +64,19 @@ final class AppModel {
         didSet {
             guard oldValue != selectedTab else { return }
             defaults.set(selectedTab.rawValue, forKey: Self.lastTabKey)
+            Breadcrumbs.add("screen.tab", Breadcrumbs.caseName(selectedTab))
         }
     }
-    var paths: [AppTab: [Route]] = [:]
+    var paths: [AppTab: [Route]] = [:] {
+        didSet {
+            // The screen on top of each stack, by kind only (no ids, no text).
+            let top = paths[selectedTab]?.last.map { Breadcrumbs.caseName($0) } ?? "root"
+            let before = oldValue[selectedTab]?.last.map { Breadcrumbs.caseName($0) } ?? "root"
+            if top != before || paths[selectedTab]?.count != oldValue[selectedTab]?.count {
+                Breadcrumbs.add("screen.open", "\(Breadcrumbs.caseName(selectedTab))/\(top)")
+            }
+        }
+    }
     private static let lastTabKey = "codeg.lastSelectedTab"
     private let defaults: UserDefaults
 

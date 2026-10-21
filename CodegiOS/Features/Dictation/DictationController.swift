@@ -261,6 +261,7 @@ final class DictationController {
         preRollWanted = wanted
         preRollRetry?.cancel()
         CameraTalkController.log.info("Pre-roll \(wanted ? "wanted" : "off", privacy: .public)")
+        Breadcrumbs.add("standby", wanted ? "wanted" : "off")
         updatePreRoll()
     }
 
@@ -357,6 +358,7 @@ final class DictationController {
             // A Camera Control press starts with the pre-roll, when the
             // microphone was standing by: the words said as it went down.
             let started = try recorder.start(includePreRoll: source == .cameraControl, pressUptime: pressUptime)
+            Breadcrumbs.add("dictation.start", Breadcrumbs.caseName(source))
             switch started {
             case .fromStandby: log.info("Recording from the standing-by microphone")
             case .started(let use): log.info("Microphone started for the recording (\(use.rawValue, privacy: .public))")
@@ -403,6 +405,7 @@ final class DictationController {
         }
         meterTask?.cancel()
         let samples = recorder.stop()
+        Breadcrumbs.add("dictation.stop", "\(samples.count / 16_000)s")
         updatePreRoll()
         phase = .transcribing
         level = 0

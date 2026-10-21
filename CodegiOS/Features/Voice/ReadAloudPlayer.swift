@@ -108,6 +108,9 @@ final class ReadAloudPlayer: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(audioSessionInterrupted(_:)),
             name: AVAudioSession.interruptionNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(engineConfigurationChanged(_:)),
+            name: .AVAudioEngineConfigurationChange, object: nil)
     }
 
     // MARK: - Public
@@ -143,6 +146,7 @@ final class ReadAloudPlayer: NSObject {
             return
         }
         installRemoteCommands()
+        Breadcrumbs.add("readAloud.start", VoiceModelStore.shared.isReady ? "bluetts" : "system")
         if VoiceModelStore.shared.isReady {
             usingSystemVoice = false
             speakWithBlueTTS(trimmed, generation: generation)
@@ -170,9 +174,17 @@ final class ReadAloudPlayer: NSObject {
         if usingSystemVoice {
             speech.continueSpeaking()
         } else {
-            if engine?.isRunning == false { try? engine?.start() }
-            player?.play()
+            // `play()` on a stopped engine raises: start it first, and stop
+            // reading if it won't.
+            do {
+                try startEngineIfStopped()
+                try AVFAudioGuard.run("resume read-aloud playback") { player?.play() }
+            } catch {
+                fail(AudioErrorText(error).message("Couldn't resume reading aloud"))
+                return
+            }
         }
+        Breadcrumbs.add("readAloud.resume")
         state = .playing
         updateNowPlaying()
     }
@@ -186,8 +198,11 @@ final class ReadAloudPlayer: NSObject {
         synthesisTask?.cancel()
         synthesisTask = nil
         if speech.isSpeaking || speech.isPaused { speech.stopSpeaking(at: .immediate) }
-        player?.stop()
-        engine?.stop()
+        try? AVFAudioGuard.run("stop read-aloud playback") {
+            player?.stop()
+            engine?.stop()
+        }
+        if state != .idle { Breadcrumbs.add("readAloud.stop") }
         pendingBuffers = 0
         synthesisDone = false
         let wasActive = state != .idle
@@ -277,15 +292,22 @@ final class ReadAloudPlayer: NSObject {
             guard let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1) else {
                 throw NSError(domain: "ReadAloud", code: 1, userInfo: [NSLocalizedDescriptionKey: "No audio format"])
             }
-            engine.attach(player)
-            engine.connect(player, to: engine.mainMixerNode, format: format)
+            try AVFAudioGuard.run("set up read-aloud playback") {
+                engine.attach(player)
+                engine.connect(player, to: engine.mainMixerNode, format: format)
+            }
             self.engine = engine
             self.player = player
             self.format = format
         }
-        if engine?.isRunning == false {
-            engine?.prepare()
-            try engine?.start()
+        try startEngineIfStopped()
+    }
+
+    private func startEngineIfStopped() throws {
+        guard let engine, !engine.isRunning else { return }
+        try AVFAudioGuard.run("start read-aloud playback") {
+            engine.prepare()
+            try engine.start()
         }
     }
 
@@ -297,14 +319,23 @@ final class ReadAloudPlayer: NSObject {
             channel.update(from: src.baseAddress!, count: samples.count)
         }
         buffer.frameLength = AVAudioFrameCount(samples.count)
-        pendingBuffers += 1
-        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            Task { @MainActor in self?.bufferPlayed(generation: gen) }
-        }
-        if state == .preparing {
-            player.play()
-            state = .playing
-            updateNowPlaying()
+        do {
+            // A route change can stop the engine while a sentence synthesizes;
+            // scheduling and playing on a stopped engine raise.
+            try startEngineIfStopped()
+            try AVFAudioGuard.run("queue read-aloud audio") {
+                player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                    Task { @MainActor in self?.bufferPlayed(generation: gen) }
+                }
+            }
+            pendingBuffers += 1
+            if state == .preparing {
+                try AVFAudioGuard.run("start read-aloud playback") { player.play() }
+                state = .playing
+                updateNowPlaying()
+            }
+        } catch {
+            fail(AudioErrorText(error).message("Couldn't play the reply"))
         }
     }
 
@@ -313,8 +344,14 @@ final class ReadAloudPlayer: NSObject {
         // A different rate than the engine was wired for: reconnect.
         guard let engine, let player,
               let newFormat = AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate), channels: 1) else { return nil }
-        engine.disconnectNodeOutput(player)
-        engine.connect(player, to: engine.mainMixerNode, format: newFormat)
+        do {
+            try AVFAudioGuard.run("rewire read-aloud playback") {
+                engine.disconnectNodeOutput(player)
+                engine.connect(player, to: engine.mainMixerNode, format: newFormat)
+            }
+        } catch {
+            return nil
+        }
         format = newFormat
         return newFormat
     }
@@ -388,6 +425,21 @@ final class ReadAloudPlayer: NSObject {
     /// The lock screen's play, pause and stop come here while reading.
     private func installRemoteCommands() {
         RemoteCommandRouter.shared.claim(self)
+    }
+
+    /// A route change stopped the read-aloud engine mid-reply (AirPods put in
+    /// or taken out): start it again and keep playing, or stop cleanly.
+    @objc nonisolated private func engineConfigurationChanged(_ note: Notification) {
+        guard let changed = note.object as? AVAudioEngine else { return }
+        Task { @MainActor in
+            guard changed === self.engine, !changed.isRunning, self.state == .playing, !self.usingSystemVoice else { return }
+            do {
+                try self.startEngineIfStopped()
+                try AVFAudioGuard.run("resume read-aloud playback") { self.player?.play() }
+            } catch {
+                self.fail(AudioErrorText(error).message("Reading aloud stopped when the audio route changed"))
+            }
+        }
     }
 
     @objc nonisolated private func audioSessionInterrupted(_ note: Notification) {

@@ -27,7 +27,11 @@ final class CameraTalkController {
         case failed(String)
     }
 
-    private(set) var status: Status = .off
+    private(set) var status: Status = .off {
+        didSet {
+            if status != oldValue { Breadcrumbs.add("cameraControl", Breadcrumbs.caseName(status)) }
+        }
+    }
     private(set) var gate = CameraTalkGate()
 
     /// Show a small live preview in the indicator (Settings › Voice).
