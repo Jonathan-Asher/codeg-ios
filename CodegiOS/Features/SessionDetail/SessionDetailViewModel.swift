@@ -318,8 +318,29 @@ final class SessionDetailViewModel {
         /// Queued explicitly for the END of the turn: never delivered into a
         /// held turn, only sent once the turn finishes.
         let holdUntilTurnEnd: Bool
+        /// The id every send of this message carries (`client_message_id`, and
+        /// the client id of an insert into the turn). The server answers a
+        /// repeat with the same id as already delivered, so a resend after a
+        /// lost answer is never a second message.
+        var clientMessageID: String = "ios-" + UUID().uuidString
+        /// Set when a send failed: the row says "Not sent" and why. See
+        /// ``SendFailure``.
+        var failure: SendFailure? = nil
     }
-    private(set) var queuedMessages: [QueuedMessage] = []
+    /// The queue, also this conversation's local outbox: stored on every
+    /// change (see ``OutboxStore``).
+    private(set) var queuedMessages: [QueuedMessage] = [] {
+        didSet { persistOutbox() }
+    }
+    /// Messages on their way that the server has not acknowledged yet, by
+    /// client id. Stored with the queue, so one whose send outlives the app
+    /// comes back at the front of the queue.
+    @ObservationIgnored private var inflightMessages: [String: OutboxMessage] = [:]
+    @ObservationIgnored private let outboxServerKey: String
+    /// The outbox was read for this conversation.
+    @ObservationIgnored private var restoredOutboxFor: Int?
+    /// Sends a "Not sent" head again once its backoff has passed.
+    @ObservationIgnored private var unsentResendTask: Task<Void, Never>?
     /// A message sent into the running turn (`submit_session_feedback`). It
     /// waits above the composer only while it is on its way, or, on the pull
     /// channel, until the agent reads it. Once the agent has it, it is in the
@@ -416,6 +437,7 @@ final class SessionDetailViewModel {
         self.transcriptCache = transcriptCache
         self.readingPositions = readingPositions ?? .shared
         self.cacheServerKey = TranscriptCache.serverKey(for: client)
+        self.outboxServerKey = OutboxStore.serverKey(baseURL: client.baseURL)
         if let makeEventStream {
             self.makeEventStream = { makeEventStream(client) }
         } else {
@@ -557,6 +579,7 @@ final class SessionDetailViewModel {
     func load() async {
         switch mode {
         case .existing(let id):
+            restoreOutbox(conversationID: id)
             // The cached transcript first, drawn at once; then only what
             // changed since it was saved.
             if turns.isEmpty, turnsOffset == 0, let cache = transcriptCache,
@@ -663,6 +686,8 @@ final class SessionDetailViewModel {
     /// instead gets a full re-fetch, since nothing here would otherwise notice
     /// e.g. a rename or a message sent from another client while we were away.
     func refreshOnForeground() async {
+        // A "Not sent" message goes again now that the app is back.
+        defer { scheduleUnsentResend() }
         guard case .existing(let id) = mode, phase == .loaded else { return }
         // A send still attaching its stream owns its recovery (its handshake
         // opens a fresh socket); discarding the live state here would cancel it
@@ -1150,23 +1175,27 @@ final class SessionDetailViewModel {
     }
 
     /// Start a turn with `rawText` + `sending`. `fromComposer` clears the
-    /// composer once the optimistic turn is posted.
-    private func startSend(text rawText: String, attachments sending: [Attachment], fromComposer: Bool) {
+    /// composer once the optimistic turn is posted. A message from the queue
+    /// keeps its `clientMessageID` and its last `failure`. Returns whether the
+    /// send started; a caller holding the message keeps it when it did not.
+    @discardableResult
+    private func startSend(text rawText: String, attachments sending: [Attachment], fromComposer: Bool,
+                           clientMessageID: String? = nil, failure previous: SendFailure? = nil) -> Bool {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard (!text.isEmpty || !sending.isEmpty), !isInFlight else { return }
+        guard (!text.isEmpty || !sending.isEmpty), !isInFlight else { return false }
         guard sending.allSatisfy(\.isReady) else {
             notice = attachmentsNotReadyNotice ?? "Wait for the video to finish uploading."
-            return
+            return false
         }
         // Identity comes from the loaded summary (existing conversation) or the
         // new-task request; without either the screen isn't ready to send.
-        guard summary != nil || newRequest != nil else { return }
+        guard summary != nil || newRequest != nil else { return false }
         // A draft (no linked summary yet) needs a folder + agent before it can
         // connect; lock the pickers the moment its first send begins.
         if summary == nil {
             guard folder != nil, selectedAgent != nil else {
                 notice = "Pick a folder and agent first."
-                return
+                return false
             }
             hasStartedFirstSend = true
         }
@@ -1222,13 +1251,24 @@ final class SessionDetailViewModel {
         // 3) Run the network + streaming flow.
         sendTask?.cancel()
         let userTurnID = userTurn.id
+        let clientMessageID = clientMessageID ?? Self.newClientMessageID()
+        // On its way: stored until the server answers, so an app that is
+        // killed, or a screen closed, before then gives it back (and sends it
+        // again under this id). Before the task, which a closing screen can
+        // cancel before it ever runs.
+        trackInFlight(clientMessageID: clientMessageID, text: text, attachments: sending)
         sendTask = Task { [weak self] in
-            await self?.runSend(text: text, attachments: sending, live: live, userTurnID: userTurnID)
+            await self?.runSend(text: text, attachments: sending, live: live, userTurnID: userTurnID,
+                                clientMessageID: clientMessageID, previous: previous)
         }
+        return true
     }
 
-    private func runSend(text: String, attachments sending: [Attachment], live: LiveTurn, userTurnID: String) async {
-        let clientMessageID = UUID().uuidString
+    /// A new client message id (see ``QueuedMessage/clientMessageID``).
+    nonisolated static func newClientMessageID() -> String { "ios-" + UUID().uuidString }
+
+    private func runSend(text: String, attachments sending: [Attachment], live: LiveTurn, userTurnID: String,
+                         clientMessageID: String, previous: SendFailure?) async {
         sendsInProgress += 1
         defer { sendsInProgress -= 1 }
         do {
@@ -1241,28 +1281,35 @@ final class SessionDetailViewModel {
             let conn = try await resolveConnection()
             connectionID = conn
 
-            try await attachAndPrompt(conn: conn, text: text, attachments: sending, live: live,
-                                      clientMessageID: clientMessageID)
+            let duplicate = try await attachAndPrompt(conn: conn, text: text, attachments: sending, live: live,
+                                                      clientMessageID: clientMessageID)
+            settleInFlight(clientMessageID)
+            if duplicate { showAlreadyDelivered(userTurnID: userTurnID, live: live) }
         } catch let error as APIError where error.isStaleConnection {
             // Stale connection → drop it and retry once with a fresh spawn.
             connectionID = nil
-            await retrySendOnce(text: text, attachments: sending, live: live, clientMessageID: clientMessageID, userTurnID: userTurnID)
+            await retrySendOnce(text: text, attachments: sending, live: live, clientMessageID: clientMessageID,
+                                userTurnID: userTurnID, previous: previous)
         } catch APIError.turnInProgress {
-            parkBehindRunningTurn(userTurnID: userTurnID, live: live, text: text, attachments: sending)
+            parkBehindRunningTurn(userTurnID: userTurnID, live: live, text: text, attachments: sending,
+                                  clientMessageID: clientMessageID)
         } catch is CancellationError {
-            // Cancelled by the user / view teardown — handled in cancel().
+            // Cancelled by the user (`cancel()` settles it) or by the screen going
+            // away: then it stays stored as on its way, and comes back at the
+            // front of the queue when the session opens again.
         } catch {
-            // Reaching here means the prompt was never accepted (resolve or the
-            // prompt itself threw; a socket that won't attach no longer fails a
-            // send), so the optimistic user turn never made it to the server.
-            // Roll it back and surface why, instead of stranding a phantom
-            // "sent" message in the transcript.
-            discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
-            notice = Self.describe(error)
+            // The prompt was never accepted as far as this screen knows (resolve
+            // or the prompt itself threw, and the server could not confirm it;
+            // a socket that won't attach no longer fails a send). Roll back the
+            // optimistic turn and keep the message: at the queue's front, marked
+            // "Not sent", to go again under the same id.
+            keepUnsent(userTurnID: userTurnID, live: live, text: text, attachments: sending,
+                       clientMessageID: clientMessageID, error: error, previous: previous)
         }
     }
 
-    private func retrySendOnce(text: String, attachments sending: [Attachment], live: LiveTurn, clientMessageID: String, userTurnID: String) async {
+    private func retrySendOnce(text: String, attachments sending: [Attachment], live: LiveTurn, clientMessageID: String,
+                               userTurnID: String, previous: SendFailure?) async {
         do {
             closeStream()
             let prefs = preferredSelectors
@@ -1274,15 +1321,47 @@ final class SessionDetailViewModel {
                 preferredConfigValues: prefs.configValues
             )
             connectionID = conn
-            try await attachAndPrompt(conn: conn, text: text, attachments: sending, live: live,
-                                      clientMessageID: clientMessageID)
+            let duplicate = try await attachAndPrompt(conn: conn, text: text, attachments: sending, live: live,
+                                                      clientMessageID: clientMessageID)
+            settleInFlight(clientMessageID)
+            if duplicate { showAlreadyDelivered(userTurnID: userTurnID, live: live) }
         } catch is CancellationError {
-            // no-op
+            // Stays stored as on its way (see `runSend`).
         } catch APIError.turnInProgress {
-            parkBehindRunningTurn(userTurnID: userTurnID, live: live, text: text, attachments: sending)
+            parkBehindRunningTurn(userTurnID: userTurnID, live: live, text: text, attachments: sending,
+                                  clientMessageID: clientMessageID)
         } catch {
-            discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text, restoringAttachments: sending)
-            notice = Self.describe(error)
+            keepUnsent(userTurnID: userTurnID, live: live, text: text, attachments: sending,
+                       clientMessageID: clientMessageID, error: error, previous: previous)
+        }
+    }
+
+    /// A send that did not go through: back out of the conversation, into the
+    /// queue's front as "Not sent" (it was sent before anything queued since),
+    /// never into the message bar — where the user may already be writing the
+    /// next one. Reachability failures go again by themselves.
+    private func keepUnsent(userTurnID: String, live: LiveTurn, text: String, attachments sending: [Attachment],
+                            clientMessageID: String, error: Error, previous: SendFailure?) {
+        discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text,
+                              restoringAttachments: sending, restoreToComposer: false,
+                              keepCreatedConversation: true)
+        let failure = SendFailure.next(after: error, previous: previous)
+        queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending, holdUntilTurnEnd: false,
+                                            clientMessageID: clientMessageID, failure: failure), at: 0)
+        settleInFlight(clientMessageID)
+        notice = failure.autoRetry ? nil : "Not sent: \(Self.describe(error))"
+        scheduleUnsentResend()
+    }
+
+    /// The server had this message already, from an earlier attempt whose
+    /// answer was lost: nothing new runs. Drop this attempt's placeholder and
+    /// show the session as the server has it.
+    private func showAlreadyDelivered(userTurnID: String, live: LiveTurn) {
+        discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: "", restoringAttachments: [],
+                              restoreToComposer: false, keepCreatedConversation: true)
+        Task { [weak self] in
+            await Task.yield()
+            await self?.refreshOnForeground()
         }
     }
 
@@ -1291,8 +1370,9 @@ final class SessionDetailViewModel {
     /// again, and when it still won't attach the prompt goes anyway and the
     /// stream is recovered once the turn runs. The reconnect's snapshot carries
     /// everything the agent streamed in the meantime.
+    @discardableResult
     private func attachAndPrompt(conn: String, text: String, attachments sending: [Attachment],
-                                 live: LiveTurn, clientMessageID: String) async throws {
+                                 live: LiveTurn, clientMessageID: String) async throws -> Bool {
         let attached = try await openStream(connectionID: conn, live: live)
         try Task.checkCancellation()
 
@@ -1305,16 +1385,19 @@ final class SessionDetailViewModel {
         // send failure, so the optimistic turn must stay on screen.
         promptInFlight = true
         defer { promptInFlight = false }
-        try await sendPromptConfirmed(conn: conn, text: text, attachments: sending, clientMessageID: clientMessageID)
+        let duplicate = try await sendPromptConfirmed(conn: conn, text: text, attachments: sending,
+                                                      clientMessageID: clientMessageID)
         // Prompt accepted — the created conversation is now legitimately in use,
         // so it must not be rolled back by a later stream failure.
         draftCreatedConversationID = nil
+        if duplicate { return true }
         attachPhase = nil
         refreshSteeringAvailability(connectionID: conn)
         if !attached || streamLostBeforeTurn {
             streamLostBeforeTurn = false
             reconnectStream(into: live, connectionID: conn, reason: nil)
         }
+        return false
     }
 
     /// `acp_prompt`, where an unclear failure is checked against the server
@@ -1323,10 +1406,11 @@ final class SessionDetailViewModel {
     /// a turn is already running — its own. The prompt counts as sent when the
     /// stream echoed its client message id or the connection's snapshot shows
     /// it as the running turn's prompt. Otherwise the error stands.
+    @discardableResult
     private func sendPromptConfirmed(conn: String, text: String, attachments sending: [Attachment],
-                                     clientMessageID: String) async throws {
+                                     clientMessageID: String) async throws -> Bool {
         do {
-            try await sendPrompt(conn: conn, text: text, attachments: sending, clientMessageID: clientMessageID)
+            return try await sendPrompt(conn: conn, text: text, attachments: sending, clientMessageID: clientMessageID)
         } catch let error as APIError {
             let unclear: Bool
             if case .turnInProgress = error { unclear = true } else { unclear = error.isTransient }
@@ -1335,6 +1419,7 @@ final class SessionDetailViewModel {
             if case .turnInProgress = error { checks = 1 } else { checks = 3 }
             let accepted = await promptWasAccepted(conn: conn, clientMessageID: clientMessageID, checks: checks)
             if !accepted { throw error }
+            return false
         }
     }
 
@@ -1360,11 +1445,14 @@ final class SessionDetailViewModel {
     /// Keep the message instead of handing it back: queue it at the front, and
     /// attach to that turn so the message goes when the turn ends (or at once,
     /// when the turn is only held open for background work).
-    private func parkBehindRunningTurn(userTurnID: String, live: LiveTurn, text: String, attachments sending: [Attachment]) {
+    private func parkBehindRunningTurn(userTurnID: String, live: LiveTurn, text: String, attachments sending: [Attachment],
+                                       clientMessageID: String) {
         discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text,
-                              restoringAttachments: sending, restoreToComposer: false)
+                              restoringAttachments: sending, restoreToComposer: false,
+                              keepCreatedConversation: true)
         queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending,
-                                            holdUntilTurnEnd: false), at: 0)
+                                            holdUntilTurnEnd: false, clientMessageID: clientMessageID), at: 0)
+        settleInFlight(clientMessageID)
         notice = "A turn is already running on this session. Your message is queued and goes when it ends."
         Task { [weak self] in await self?.reattachIfLive(serverSaysLive: true) }
     }
@@ -1427,7 +1515,8 @@ final class SessionDetailViewModel {
         return conn
     }
 
-    private func sendPrompt(conn: String, text: String, attachments sending: [Attachment], clientMessageID: String) async throws {
+    /// Returns whether the server answered that it already had this message.
+    private func sendPrompt(conn: String, text: String, attachments sending: [Attachment], clientMessageID: String) async throws -> Bool {
         // Text first, then images — matches the web client's block order.
         var blocks: [PromptInputBlock] = []
         if !text.isEmpty { blocks.append(.text(text)) }
@@ -1435,7 +1524,7 @@ final class SessionDetailViewModel {
         // A new task sends a nil conversationId + the target folderId; the
         // server creates the conversation and announces it via
         // `conversation_linked` on the stream.
-        try await client.prompt(
+        return try await client.prompt(
             connectionId: conn,
             blocks: blocks,
             folderId: summary?.folderId ?? folder?.id,
@@ -1463,6 +1552,8 @@ final class SessionDetailViewModel {
         )
         conversationID = id
         draftCreatedConversationID = id
+        restoredOutboxFor = id
+        persistOutbox()
         presenceReporter.update(conversationID: id, looking: isOnScreen)
         currentBranch = folder?.gitBranch
         // Refresh this app's own session list so the new row shows there too.
@@ -2260,7 +2351,8 @@ final class SessionDetailViewModel {
     /// `restoreToComposer` is false: the caller keeps the message elsewhere).
     /// The caller surfaces the reason via `notice`.
     private func discardOptimisticSend(userTurnID: String, live: LiveTurn, restoringDraft text: String,
-                                       restoringAttachments sent: [Attachment], restoreToComposer: Bool = true) {
+                                       restoringAttachments sent: [Attachment], restoreToComposer: Bool = true,
+                                       keepCreatedConversation: Bool = false) {
         isTurnActive = false
         clearInteractivePrompts()
         closeStream()
@@ -2271,7 +2363,11 @@ final class SessionDetailViewModel {
         // the prompt was never accepted, roll that creation back too: delete the
         // empty row (so it doesn't linger in every client's sidebar) and clear the
         // adopted identity, returning the screen to a clean, editable draft.
-        if let createdID = draftCreatedConversationID {
+        // Not when the message stays queued for it: the conversation is where it
+        // goes once the server answers.
+        if keepCreatedConversation {
+            draftCreatedConversationID = nil
+        } else if let createdID = draftCreatedConversationID {
             draftCreatedConversationID = nil
             conversationID = nil
             summary = nil
@@ -2764,8 +2860,11 @@ final class SessionDetailViewModel {
         }
         draft = ""
         attachments = []
+        let clientMessageID = Self.newClientMessageID()
+        trackInFlight(clientMessageID: clientMessageID, text: text, attachments: sending)
         Task { [weak self] in
-            await self?.deliverIntoTurn(text: text, attachments: sending, connectionID: conn, restoreToComposer: true)
+            await self?.deliverIntoTurn(text: text, attachments: sending, connectionID: conn,
+                                        clientMessageID: clientMessageID)
         }
     }
 
@@ -2788,6 +2887,7 @@ final class SessionDetailViewModel {
 
     func removeQueued(_ id: UUID) {
         queuedMessages.removeAll { $0.id == id }
+        scheduleUnsentResend()
     }
 
     /// Put a queued message back in the composer to edit it.
@@ -2804,22 +2904,33 @@ final class SessionDetailViewModel {
     func sendQueuedNow(_ id: UUID) {
         guard let item = queuedMessages.first(where: { $0.id == id }) else { return }
         if !isInFlight {
+            // Taken off the queue only once the send has started.
+            let before = queuedMessages
             queuedMessages.removeAll { $0.id == id }
-            startSend(text: item.text, attachments: item.attachments, fromComposer: false)
+            if !startSend(text: item.text, attachments: item.attachments, fromComposer: false,
+                          clientMessageID: item.clientMessageID, failure: item.failure) {
+                queuedMessages = before
+            }
         } else if canInsertIntoTurn, let conn = connectionID {
             queuedMessages.removeAll { $0.id == id }
             Task { [weak self] in
-                await self?.deliverIntoTurn(text: item.text, attachments: item.attachments,
-                                            connectionID: conn, restoreToComposer: false)
+                await self?.deliverIntoTurn(text: item.text, attachments: item.attachments, connectionID: conn,
+                                            clientMessageID: item.clientMessageID, previous: item.failure)
             }
         }
     }
 
-    /// The turn ended: send the next queued message as a fresh prompt.
+    /// The turn ended: send the next queued message as a fresh prompt. A
+    /// "Not sent" head the server refused waits for Send now, and holds the
+    /// rest behind it.
     private func sendNextQueued() {
         guard !isInFlight, let next = queuedMessages.first else { return }
+        if let failure = next.failure, !failure.autoRetry { return }
         queuedMessages.removeFirst()
-        startSend(text: next.text, attachments: next.attachments, fromComposer: false)
+        if !startSend(text: next.text, attachments: next.attachments, fromComposer: false,
+                      clientMessageID: next.clientMessageID, failure: next.failure) {
+            queuedMessages.insert(next, at: 0)
+        }
     }
 
     /// While the turn is held for background work, deliver the queue's head
@@ -2831,8 +2942,8 @@ final class SessionDetailViewModel {
         queuedMessages.removeFirst()
         deliveringQueued = true
         Task { [weak self] in
-            await self?.deliverIntoTurn(text: head.text, attachments: head.attachments,
-                                        connectionID: conn, restoreToComposer: false)
+            await self?.deliverIntoTurn(text: head.text, attachments: head.attachments, connectionID: conn,
+                                        clientMessageID: head.clientMessageID, previous: head.failure)
             self?.deliveringQueued = false
         }
     }
@@ -2845,7 +2956,12 @@ final class SessionDetailViewModel {
     /// response, whichever comes first), it moves into the conversation, inside
     /// the reply where the agent took it, as the desktop shows it.
     private func deliverIntoTurn(text: String, attachments sending: [Attachment], connectionID conn: String,
-                                 restoreToComposer: Bool) async {
+                                 clientMessageID: String = SessionDetailViewModel.newClientMessageID(),
+                                 previous: SendFailure? = nil) async {
+        // On its way until the server answers (see `runSend`); an insert that
+        // outlives the app comes back as a queued prompt under the same id,
+        // which the server answers as a duplicate when the insert had arrived.
+        trackInFlight(clientMessageID: clientMessageID, text: text, attachments: sending)
         var shown: [ContentBlock] = text.isEmpty ? [] : [.text(text)]
         shown.append(contentsOf: sending.map { $0.optimisticBlock })
         let note = InsertedNote(id: UUID(), text: text.isEmpty ? "(image)" : text, blocks: shown,
@@ -2860,7 +2976,8 @@ final class SessionDetailViewModel {
         var failure: Error?
         var recorded: FeedbackNoteSnapshot?
         do {
-            recorded = try await client.submitSessionFeedback(connectionId: conn, text: text, blocks: blocks)
+            recorded = try await client.submitSessionFeedback(connectionId: conn, text: text, blocks: blocks,
+                                                              clientId: clientMessageID)
         } catch {
             failure = error
         }
@@ -2869,7 +2986,7 @@ final class SessionDetailViewModel {
         // can take a while to confirm, and the server finishes a delivery it
         // started. Ask it before handing back a message the agent already has.
         if case .transport? = failure as? APIError,
-           await insertWasRecorded(noteID: note.id, text: text, connectionID: conn) {
+           await insertWasRecorded(noteID: note.id, text: text, connectionID: conn, clientID: clientMessageID) {
             failure = nil
         }
         // The stream's echo already said the server recorded it (it echoes only
@@ -2878,30 +2995,34 @@ final class SessionDetailViewModel {
         if failure != nil, insertedNotes.first(where: { $0.id == note.id })?.serverID != nil {
             failure = nil
         }
+        // Answered either way below: the server has it, or it is handed on
+        // (as a prompt, or queued as "Not sent") under the same id.
+        settleInFlight(clientMessageID)
         guard let error = failure else {
             insertAccepted(note.id, recorded: recorded)
             return
         }
         if let api = error as? APIError, api.isNoActiveTurn {
             insertedNotes.removeAll { $0.id == note.id }
-            // The turn finished meanwhile: this is simply the next prompt.
-            if isInFlight {
+            // The turn finished meanwhile: this is simply the next prompt (under
+            // the same id).
+            if isInFlight || !startSend(text: text, attachments: sending, fromComposer: false,
+                                        clientMessageID: clientMessageID, failure: previous) {
                 queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending,
-                                                    holdUntilTurnEnd: false), at: 0)
-            } else {
-                startSend(text: text, attachments: sending, fromComposer: false)
+                                                    holdUntilTurnEnd: false, clientMessageID: clientMessageID,
+                                                    failure: previous), at: 0)
             }
             return
         }
         insertedNotes.removeAll { $0.id == note.id }
-        if restoreToComposer, draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            draft = text
-            if attachments.isEmpty { attachments = sending }
-        } else {
-            queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending,
-                                                holdUntilTurnEnd: false), at: 0)
-        }
-        notice = Self.describe(error)
+        // Not delivered as far as this screen knows: kept at the queue's front as
+        // "Not sent", for the turn's end (never put back into the message bar,
+        // and never retried into the same failure). Its id makes the prompt it
+        // becomes a no-op if the insert did arrive.
+        let failed = SendFailure.next(after: error, previous: previous)
+        queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending, holdUntilTurnEnd: true,
+                                            clientMessageID: clientMessageID, failure: failed), at: 0)
+        notice = failed.autoRetry ? nil : "Not sent: \(Self.describe(error))"
     }
 
     /// The server took a message sent into the turn. `recorded` is the note
@@ -3002,7 +3123,8 @@ final class SessionDetailViewModel {
     /// a server note, or the connection's snapshot lists a note with its text
     /// that no other message on screen claims. The server finishes a delivery
     /// it started even after the request is gone, so it is asked a few times.
-    private func insertWasRecorded(noteID: UUID, text: String, connectionID conn: String) async -> Bool {
+    private func insertWasRecorded(noteID: UUID, text: String, connectionID conn: String,
+                                   clientID: String) async -> Bool {
         func echoed() -> Bool { insertedNotes.first(where: { $0.id == noteID })?.serverID != nil }
         for check in 0..<3 {
             if echoed() { return true }
@@ -3012,7 +3134,10 @@ final class SessionDetailViewModel {
             if echoed() { return true }
             var claimed = Set(insertedNotes.compactMap { $0.id == noteID ? nil : $0.serverID })
             if let live = liveTurn { claimed.formUnion(live.steeredMessages.compactMap(\.serverID)) }
-            if let recorded = SendConfirmation.recordedNote(text: text, in: snap?.feedback ?? [], excluding: claimed) {
+            // A server that takes client ids records the note under ours.
+            let byID = snap?.feedback.first { $0.id == clientID }
+            if let recorded = byID
+                ?? SendConfirmation.recordedNote(text: text, in: snap?.feedback ?? [], excluding: claimed) {
                 if let idx = insertedNotes.firstIndex(where: { $0.id == noteID }) {
                     insertedNotes[idx].serverID = recorded.id
                     insertedNotes[idx].serverStatus = recorded.status
@@ -3053,8 +3178,7 @@ final class SessionDetailViewModel {
     func sendContinue() {
         if canDeliverIntoHeldTurn, let conn = connectionID {
             Task { [weak self] in
-                await self?.deliverIntoTurn(text: ContinuePrompt.text, attachments: [], connectionID: conn,
-                                            restoreToComposer: false)
+                await self?.deliverIntoTurn(text: ContinuePrompt.text, attachments: [], connectionID: conn)
             }
         } else if !isInFlight {
             startSend(text: ContinuePrompt.text, attachments: [], fromComposer: false)
@@ -3066,6 +3190,11 @@ final class SessionDetailViewModel {
     func cancel() {
         guard let live = liveTurn else { return }
         let conn = connectionID
+        // The user stopped it: a message still on its way is not resent later.
+        if !inflightMessages.isEmpty {
+            inflightMessages.removeAll()
+            persistOutbox()
+        }
         isTurnActive = false
         awaitingBackground = false
         attachPhase = nil
@@ -3110,6 +3239,8 @@ final class SessionDetailViewModel {
     /// Tear down all live work — call from `.onDisappear` / deinit paths.
     func teardown() {
         isOnScreen = false
+        unsentResendTask?.cancel()
+        unsentResendTask = nil
         presenceReporter.stop()
         reattachRetryTask?.cancel()
         reattachRetryTask = nil
@@ -3620,6 +3751,101 @@ final class SessionDetailViewModel {
     }
 
     // MARK: - Errors
+
+    // MARK: - Outbox (messages the server does not have yet)
+
+    /// Store the queue and the messages on their way (see ``OutboxStore``).
+    /// Not before the stored copy was read, which it would overwrite.
+    private func persistOutbox() {
+        guard let id = conversationID, restoredOutboxFor == id else { return }
+        let contents = OutboxStore.Contents(
+            queue: queuedMessages.map { Self.outboxMessage($0) },
+            inflight: Array(inflightMessages.values)
+        )
+        OutboxStore.save(contents, serverKey: outboxServerKey, conversationID: id)
+    }
+
+    /// Read the stored outbox, once per conversation: the queue as it was,
+    /// behind the messages that were on their way when the app last went away
+    /// (marked interrupted, to go again under their ids).
+    private func restoreOutbox(conversationID id: Int) {
+        guard restoredOutboxFor != id else { return }
+        restoredOutboxFor = id
+        guard let stored = OutboxStore.load(serverKey: outboxServerKey, conversationID: id) else { return }
+        let have = Set(queuedMessages.map(\.clientMessageID))
+        let restored = stored.restoredQueue
+            .filter { !have.contains($0.clientMessageID) }
+            .map { Self.queuedMessage($0) }
+        inflightMessages = [:]
+        queuedMessages = restored + queuedMessages
+        scheduleUnsentResend()
+    }
+
+    private func trackInFlight(clientMessageID: String, text: String, attachments sending: [Attachment]) {
+        inflightMessages[clientMessageID] = Self.outboxMessage(
+            QueuedMessage(id: UUID(), text: text, attachments: sending, holdUntilTurnEnd: false,
+                          clientMessageID: clientMessageID)
+        )
+        persistOutbox()
+    }
+
+    private func settleInFlight(_ clientMessageID: String) {
+        guard inflightMessages.removeValue(forKey: clientMessageID) != nil else { return }
+        persistOutbox()
+    }
+
+    /// The stored form: text and pictures; an uploaded video stays on the
+    /// server and comes back as its reference in the text.
+    private static func outboxMessage(_ item: QueuedMessage) -> OutboxMessage {
+        var text = item.text
+        var images: [OutboxMessage.Image] = []
+        for attachment in item.attachments {
+            if let uploaded = attachment.upload?.uploaded {
+                let marker = MediaAttachmentText.marker(name: uploaded.name, path: uploaded.path)
+                text = text.isEmpty ? marker : text + "\n" + marker
+            } else if !attachment.isVideo {
+                images.append(OutboxMessage.Image(name: attachment.name, mimeType: attachment.mimeType,
+                                                  data: attachment.data))
+            }
+        }
+        return OutboxMessage(clientMessageID: item.clientMessageID, text: text, images: images,
+                             holdUntilTurnEnd: item.holdUntilTurnEnd, failure: item.failure)
+    }
+
+    private static func queuedMessage(_ stored: OutboxMessage) -> QueuedMessage {
+        QueuedMessage(
+            id: UUID(),
+            text: stored.text,
+            attachments: stored.images.map { Attachment(name: $0.name, mimeType: $0.mimeType, data: $0.data) },
+            holdUntilTurnEnd: stored.holdUntilTurnEnd,
+            clientMessageID: stored.clientMessageID,
+            failure: stored.failure
+        )
+    }
+
+    /// When the queue's head is "Not sent" for a reason that goes again by
+    /// itself, send it once its backoff has passed (at the earliest
+    /// `minimumDelay` seconds from now).
+    private func scheduleUnsentResend(minimumDelay: Double = 0) {
+        unsentResendTask?.cancel()
+        unsentResendTask = nil
+        guard let head = queuedMessages.first, let failure = head.failure, failure.autoRetry else { return }
+        let delay = max(minimumDelay, failure.retryDelay)
+        unsentResendTask = Task { [weak self] in
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+            guard !Task.isCancelled, let self else { return }
+            self.unsentResendTask = nil
+            // In the background it waits for the app to come back
+            // (`refreshOnForeground`).
+            guard !self.isSuspended else { return }
+            let before = self.queuedMessages.first?.id
+            self.sendNextQueued()
+            // Not started (the screen is not ready to send yet): look again.
+            if !self.isInFlight, self.queuedMessages.first?.id == before {
+                self.scheduleUnsentResend(minimumDelay: 3)
+            }
+        }
+    }
 
     private static func describe(_ error: Error) -> String {
         if let api = error as? APIError { return api.errorDescription ?? "\(api)" }

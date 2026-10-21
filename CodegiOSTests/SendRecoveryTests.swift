@@ -13,12 +13,16 @@ final class SendRecoveryTests: XCTestCase {
 
     override func setUp() async throws {
         server = MockCodegServer()
+        OutboxStore.rootOverride = FileManager.default.temporaryDirectory
+            .appendingPathComponent("outbox-\(UUID().uuidString)", isDirectory: true)
     }
 
     override func tearDown() async throws {
         models.forEach { $0.teardown() }
         models = []
         server = nil
+        if let root = OutboxStore.rootOverride { try? FileManager.default.removeItem(at: root) }
+        OutboxStore.rootOverride = nil
     }
 
     private func makeModel(_ factory: StreamFactory) -> SessionDetailViewModel {
@@ -121,7 +125,7 @@ final class SendRecoveryTests: XCTestCase {
         XCTAssertEqual(server.calls("acp_prompt").count, 1, "never sent twice")
     }
 
-    func testAPromptLostForGoodIsHandedBack() async {
+    func testAPromptLostForGoodIsKeptAsNotSent() async {
         server.on("acp_prompt") { _ in .fail(.networkConnectionLost) }
         server.on("acp_get_session_snapshot") { _ in .body(Fixtures.snapshotJSON(status: "connected")) }
         let model = await openIdleSession(StreamFactory([.attach(Fixtures.snapshot(status: "connected"))]))
@@ -129,11 +133,15 @@ final class SendRecoveryTests: XCTestCase {
         model.draft = "Deploy it"
         model.sendFromComposer()
 
-        let failed = await eventually { model.notice != nil }
-        XCTAssertTrue(failed)
-        XCTAssertEqual(model.draft, "Deploy it", "a prompt the server never took goes back to the composer")
-        XCTAssertTrue(model.pendingUserTurns.isEmpty)
-        XCTAssertFalse(model.isInFlight)
+        let kept = await eventually { model.queuedMessages.first?.failure != nil }
+        XCTAssertTrue(kept)
+        let item = model.queuedMessages.first
+        XCTAssertEqual(item?.text, "Deploy it", "a prompt the server never took waits in the queue")
+        XCTAssertEqual(item?.failure?.reason, .network)
+        XCTAssertEqual(item?.failure?.autoRetry, true)
+        XCTAssertEqual(item?.clientMessageID, server.calls("acp_prompt").first?.body["clientMessageId"] as? String,
+                       "under the id it was sent with")
+        XCTAssertEqual(model.draft, "", "never back in the message bar")
     }
 
     func testATurnThisScreenDidNotKnowAboutQueuesTheMessage() async {
@@ -190,7 +198,7 @@ final class SendRecoveryTests: XCTestCase {
         XCTAssertEqual(server.calls("submit_session_feedback").count, 1, "never sent twice")
     }
 
-    func testAnInsertTheServerNeverGotIsHandedBack() async {
+    func testAnInsertTheServerNeverGotIsKeptAsNotSent() async {
         let factory = StreamFactory([
             .attach(Fixtures.snapshot(status: "prompting", awaitingBackground: true, nativeSteering: true)),
         ])
@@ -205,9 +213,14 @@ final class SendRecoveryTests: XCTestCase {
         model.draft = "Ship it"
         model.sendFromComposer()
 
-        let failed = await eventually { model.notice != nil }
-        XCTAssertTrue(failed)
-        XCTAssertEqual(model.draft, "Ship it")
+        let kept = await eventually { model.queuedMessages.first?.text == "Ship it" }
+        XCTAssertTrue(kept, "kept in the queue, for the turn's end")
+        XCTAssertEqual(model.queuedMessages.first?.holdUntilTurnEnd, true)
+        XCTAssertEqual(model.queuedMessages.first?.failure?.reason, .timeout)
+        XCTAssertEqual(model.queuedMessages.first?.clientMessageID,
+                       server.calls("submit_session_feedback").first?.body["clientId"] as? String,
+                       "the prompt it becomes carries the insert's id")
+        XCTAssertEqual(model.draft, "")
         XCTAssertTrue(model.insertedNotes.isEmpty)
         XCTAssertEqual(model.liveTurn?.steeredMessages.count, 0, "nothing the server never got is shown as sent")
     }

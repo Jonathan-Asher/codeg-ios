@@ -156,16 +156,26 @@ struct QueuedMessagesView: View, Equatable {
     /// the queue), so the ids say whether the rows changed. The closures
     /// belong to the session's view model, which outlives this view.
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.items.map(\.id) == rhs.items.map(\.id) && lhs.canSendNow == rhs.canSendNow
+        lhs.items.map(\.id) == rhs.items.map(\.id) && lhs.items.map(\.failure) == rhs.items.map(\.failure)
+            && lhs.canSendNow == rhs.canSendNow
+    }
+
+    /// The line above the rows.
+    static func header(for items: [SessionDetailViewModel.QueuedMessage]) -> String {
+        let unsent = items.filter { $0.failure != nil }.count
+        if unsent > 0 {
+            return unsent == 1 ? "1 message not sent yet" : "\(unsent) messages not sent yet"
+        }
+        return items.count == 1 ? "1 message queued for when the turn ends"
+            : "\(items.count) messages queued for when the turn ends"
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 5) {
-                Image(systemName: "clock")
+                Image(systemName: items.contains { $0.failure != nil } ? "exclamationmark.circle" : "clock")
                     .font(.system(size: 10, weight: .semibold))
-                Text(verbatim: items.count == 1 ? "1 message queued for when the turn ends"
-                     : "\(items.count) messages queued for when the turn ends")
+                Text(verbatim: Self.header(for: items))
                     .font(.caption2.weight(.semibold))
             }
             .foregroundStyle(Theme.textTertiary)
@@ -185,13 +195,23 @@ struct QueuedMessagesView: View, Equatable {
 
     private func row(_ item: SessionDetailViewModel.QueuedMessage) -> some View {
         HStack(spacing: 0) {
-            Text(verbatim: item.text.isEmpty ? "(\(item.attachments.count) image)" : item.text)
-                .font(.caption)
-                .foregroundStyle(Theme.textSecondary)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .contentShape(Rectangle())
-                .contextMenu { actions(for: item) }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: item.text.isEmpty ? "(\(item.attachments.count) image)" : item.text)
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(2)
+                if let failure = item.failure {
+                    // Why it is still here, and whether it goes by itself.
+                    Text(verbatim: "Not sent · \(failure.label)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                        .accessibilityIdentifier("queued-not-sent")
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+            .contextMenu { actions(for: item) }
             Menu {
                 actions(for: item)
             } label: {

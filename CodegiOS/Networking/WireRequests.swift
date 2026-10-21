@@ -241,6 +241,15 @@ struct SubmitFeedbackBody: Encodable, Sendable {
     let connectionId: String
     let text: String
     var blocks: [PromptInputBlock]?
+    /// The message's client id: the server records the note under it, and
+    /// answers a repeat with that note instead of delivering it twice.
+    var clientId: String?
+}
+
+/// The answer to `acp_prompt` (fork): `duplicate` when the server had already
+/// accepted a message with the same client id and did not send it again.
+struct PromptAccepted: Decodable, Sendable {
+    let duplicate: Bool?
 }
 
 /// One row of `list_conversation_attention` (fork).

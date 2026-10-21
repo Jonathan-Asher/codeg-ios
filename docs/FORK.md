@@ -1053,6 +1053,56 @@ and put back on a refusal. The list screenshots show a flagged row.
   (`{"forkModes": ["branch", "edit", "edit_in_place"], …}`) would replace the
   probes.
 
+### Messages that could not be sent (1.3.19)
+
+`Features/SessionDetail/Outbox.swift` (`SendFailure`, `OutboxStore`), the send,
+queue and insert paths of `SessionDetailViewModel` (`keepUnsent`,
+`scheduleUnsentResend`, `restoreOutbox`) and the queued rows in
+`SessionActivityViews.swift`.
+
+- **The rule.** A message the user sent is kept until the server has it. When
+  a send fails (no network, a timeout, a 5xx, a server restart, the agent's
+  connection gone), the message leaves the conversation and waits at the
+  front of the queue above the message bar, marked "Not sent" with the
+  reason: "Connection lost — will resend", "No answer — will resend",
+  "Server error — will resend", "Interrupted — will resend", "Refused by the
+  server". It is never put back into the message bar, where the next message
+  may already be half written (1.3.16 put it back only when the bar was
+  empty, and lost it otherwise). A failed insert into a running turn is kept
+  the same way, for the turn's end. A busy turn and the account pool still
+  queue the message unmarked, as before.
+- **Sent again by itself.** A failure that only means the server could not
+  be reached goes again after a backoff (1 s, 2 s, 4 s … up to 30 s) and when
+  the app comes back to the foreground; an unexpected server error gets three
+  tries; a message the server refused (413, invalid) waits for Send now and
+  holds the queue behind it, keeping the order.
+- **Exactly once.** Every attempt of a message carries one client id: the
+  `client_message_id` of `acp_prompt`, and the `clientId` of
+  `submit_session_feedback` (the note is recorded under it). The codeg server
+  (fork, `acp/message_receipts.rs`) keeps a receipt per conversation for every
+  id it accepted, written to its database, and answers a repeat with
+  `{"duplicate": true}` (or the note it recorded) instead of delivering it
+  again — also after a restart, and also when an insert that went through is
+  resent as the next prompt. The 1.3.4 check against the echo and the snapshot
+  still runs first; a duplicate answer drops the attempt's placeholder and
+  re-reads the session. An older server ignores the id, so there a resend
+  after a lost answer can still arrive twice.
+- **On disk.** The queue and the messages on their way are stored per server
+  (its address) and conversation in Application Support/Outbox, on every
+  change. A message is recorded as on its way before its send starts, so a
+  screen that closes, an app that is killed or suspended mid-send gives it
+  back: when the conversation opens again it is at the front of the queue,
+  marked interrupted, and goes again under its id. Pictures are stored with
+  the message; an uploaded video comes back as its reference in the text.
+  Stop on a running turn drops what was on its way, as the user asked.
+- **After a restart.** A prompt for a connection the server no longer has is
+  answered with a 500 that says "connection not found"; that now counts as a
+  stale connection, so the send opens a fresh one and tries once more before
+  it is kept as not sent.
+- **Not covered.** A brand-new task whose conversation could not even be
+  created keeps its message in the queue while the screen is open, but there
+  is no conversation to store it under.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one

@@ -78,8 +78,11 @@ enum APIError: LocalizedError, Sendable {
         switch self {
         case .streamGone:
             return true
-        case .server(let status, let code, _):
+        case .server(let status, let code, let message):
+            // codeg answers a prompt for a connection it no longer has (after
+            // a restart) with a 500 that says so.
             return status == 404 || code == "connection_not_found" || code == "unknown_connection"
+                || message.lowercased().contains("connection not found")
         default:
             return false
         }

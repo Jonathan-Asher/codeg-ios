@@ -278,6 +278,19 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- A message is never lost before the server has it (1.3.19). A send that
+  fails (no network, a timeout, a server error or restart) waits at the
+  front of the queue above the message bar, marked "Not sent" with the
+  reason, instead of going back into the message bar, where it was lost when
+  another message was already being written. It goes again by itself once
+  the server answers, under the same client id, so a send whose answer was
+  lost is not delivered twice (the codeg server answers the repeat as a
+  duplicate). The queue and the messages on their way are kept on disk per
+  server and conversation: closing the screen, a killed app or a restart
+  brings them back when the session opens again. A message the server
+  refuses waits for Send now. Inserts into a running turn are kept the same
+  way.
+
 - The transcript jumped (1.3.16). Each page of older messages pushed the
   view down by its own height, so the message being read went off screen and
   more pages followed, and opening a session, coming back to it (also from
