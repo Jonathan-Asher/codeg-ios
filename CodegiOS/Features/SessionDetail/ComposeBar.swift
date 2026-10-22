@@ -18,10 +18,13 @@ struct ComposeBar: View {
     let canAttachMore: Bool
     let onAddAttachments: ([Attachment]) -> Void
     let onRemoveAttachment: (UUID) -> Void
-    /// A video picked, recorded or chosen in Files: it uploads while the user writes.
-    var onAddVideo: (VideoSource) -> Void = { _ in }
-    /// Try a video that didn't upload again.
+    /// A video picked, recorded or chosen in Files, or an audio file from
+    /// Files: it uploads while the user writes.
+    var onAddMedia: (AttachmentSource) -> Void = { _ in }
+    /// Try a video or audio file that didn't upload again.
     var onRetryAttachment: (UUID) -> Void = { _ in }
+    /// Send a video as it is or compressed.
+    var onSetVideoQuality: (VideoQuality, UUID) -> Void = { _, _ in }
     /// Every attachment can go (each video is uploaded).
     var attachmentsReady = true
     let onNotice: (String) -> Void
@@ -135,7 +138,7 @@ struct ComposeBar: View {
 
             if !attachments.isEmpty {
                 AttachmentChipsView(attachments: attachments, onRemove: onRemoveAttachment,
-                                    onRetry: onRetryAttachment)
+                                    onRetry: onRetryAttachment, onSetQuality: onSetVideoQuality)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
@@ -240,12 +243,12 @@ struct ComposeBar: View {
         .onChange(of: photoItems) { _, items in handlePhotoItems(items) }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker(onCapture: { image in addCaptured(image) },
-                         onRecord: { url in onAddVideo(.file(url)) })
+                         onRecord: { url in onAddMedia(.file(url)) })
                 .ignoresSafeArea()
         }
         .fileImporter(
             isPresented: $showFileImporter,
-            allowedContentTypes: [.image, .movie],
+            allowedContentTypes: [.image, .movie, .audio],
             allowsMultipleSelection: true
         ) { result in handleFiles(result) }
         .sheet(item: $presentedInsert) { source in
@@ -645,7 +648,7 @@ struct ComposeBar: View {
         let videos = items.prefix(slots).filter { item in
             item.supportedContentTypes.contains { $0.conforms(to: .movie) }
         }
-        for item in videos { onAddVideo(.library(item)) }
+        for item in videos { onAddMedia(.library(item)) }
         let pictures = items.prefix(slots).filter { item in !videos.contains(item) }
         let attempted = pictures.count
         Task { @MainActor in
@@ -669,21 +672,22 @@ struct ComposeBar: View {
     private func handleFiles(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, !urls.isEmpty else { return }
         let slots = remainingSlots
-        let isMovie: (URL) -> Bool = { url in
-            UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true
+        // Videos and audio files are uploaded; pictures ride in the prompt.
+        let isUploaded: (URL) -> Bool = { url in
+            UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true || AttachmentSource.isAudioFile(url)
         }
-        let videos = urls.prefix(slots).filter(isMovie)
-        let pictures = urls.prefix(slots).filter { !isMovie($0) }
+        let media = urls.prefix(slots).filter(isUploaded)
+        let pictures = urls.prefix(slots).filter { !isUploaded($0) }
         let attempted = pictures.count
         Task { @MainActor in
             // A file from Files is copied into the app's own folder first.
-            for url in videos {
+            for url in media {
                 let copied = await Task.detached(priority: .userInitiated) { () -> URL? in
                     let scoped = url.startAccessingSecurityScopedResource()
                     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                     return try? VideoAttachmentPrep.keep(url)
                 }.value
-                if let copied { onAddVideo(.file(copied)) } else { onNotice("\(url.lastPathComponent) couldn't be read.") }
+                if let copied { onAddMedia(.file(copied)) } else { onNotice("\(url.lastPathComponent) couldn't be read.") }
             }
             var prepared: [Attachment] = []
             for url in pictures {

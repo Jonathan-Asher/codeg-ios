@@ -222,7 +222,7 @@ final class SessionDetailViewModel {
             && attachments.reduce(0) { $0 + $1.byteCount } < AttachmentPrep.maxTotalBytes
     }
 
-    /// Uploads attached videos: the server, or a fake in tests.
+    /// Uploads attached videos and audio files: the server, or a fake in tests.
     @ObservationIgnored var uploaderOverride: (any AttachmentUploading)?
     private var uploader: any AttachmentUploading { uploaderOverride ?? client }
     /// Compresses attached videos (AVFoundation; a fake in tests).
@@ -1115,10 +1115,11 @@ final class SessionDetailViewModel {
         attachments.removeAll { $0.id == id }
     }
 
-    /// Attach a video: it is fetched (from iCloud if it has to be),
-    /// compressed when it needs to be and uploaded to codeg while the user
-    /// writes; the message can go once it is uploaded.
-    func addVideo(_ source: VideoSource) {
+    /// Attach a video or an audio file: it is fetched (from iCloud if it has
+    /// to be), compressed when it needs to be and uploaded to codeg while the
+    /// user writes; the message can go once it is uploaded. A video goes as
+    /// the user last chose (``VideoQuality/preferred``).
+    func addMedia(_ source: AttachmentSource) {
         guard attachments.count < AttachmentPrep.maxCount else {
             notice = "You can attach up to \(AttachmentPrep.maxCount) files."
             if case .file(let url) = source { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
@@ -1127,14 +1128,20 @@ final class SessionDetailViewModel {
         let name: String
         if case .file(let url) = source { name = url.lastPathComponent } else { name = "Video" }
         let upload = AttachmentUpload(source: source, displayName: name, uploader: uploader, bucket: uploadBucket,
-                                      preparer: videoPreparer)
-        attachments.append(Attachment(video: upload))
+                                      preparer: videoPreparer, quality: VideoQuality.preferred)
+        attachments.append(Attachment(upload: upload))
         upload.start()
     }
 
-    /// Try a video that didn't upload again.
+    /// Try a video or audio file that didn't upload again.
     func retryAttachment(_ id: UUID) {
         attachments.first { $0.id == id }?.upload?.start()
+    }
+
+    /// Send a video as it is or compressed, and do so for the next ones too.
+    func setVideoQuality(_ quality: VideoQuality, for id: UUID) {
+        VideoQuality.preferred = quality
+        attachments.first { $0.id == id }?.upload?.setQuality(quality)
     }
 
     /// Every attachment can be sent (a video is uploaded).
@@ -1143,10 +1150,16 @@ final class SessionDetailViewModel {
     /// Why the staged attachments can't be sent yet, nil when they can.
     private var attachmentsNotReadyNotice: String? {
         guard !attachmentsReady else { return nil }
-        if attachments.contains(where: { $0.upload?.failure != nil }) {
-            return "A video didn't upload. Tap it to try again, or remove it."
+        let waiting = attachments.compactMap(\.upload).filter { !$0.isDone }
+        let failed = waiting.filter { $0.failure != nil }
+        if !failed.isEmpty {
+            return failed.contains { $0.kind == .video }
+                ? "A video didn't upload. Tap it to try again, or remove it."
+                : "An audio file didn't upload. Tap it to try again, or remove it."
         }
-        return "Wait for the video to finish uploading."
+        return waiting.contains { $0.kind == .video }
+            ? "Wait for the video to finish uploading."
+            : "Wait for the audio file to finish uploading."
     }
 
     /// Where `upload_attachment` keeps this session's files: the bucket codeg

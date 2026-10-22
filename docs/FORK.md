@@ -671,7 +671,8 @@ uploading), `Networking/CodegClient+Media.swift` (`upload_attachment`).
   is a template.
 - **Is it there.** Before a card shows, `MediaPresence` asks the server, one
   `list_directory_with_files` per directory however many files and messages
-  name it (codeg has no stat endpoint). A file that isn't listed doesn't
+  name it (codeg had no stat endpoint; since 1.3.22 a server with
+  `stat_paths` answers in one request, see the next section). A file that isn't listed doesn't
   show; a directory that isn't there ("Path is not a directory") means its
   files aren't either. The one exception is a file the reply wrote with
   Write / Edit / apply_patch and that is gone since: it is listed, struck
@@ -747,7 +748,10 @@ uploading), `Networking/CodegClient+Media.swift` (`upload_attachment`).
 
 #### What the codeg server should change
 
-- **A larger limit for video attachments.** `upload_attachment` takes at
+Both done in fork.191 and used since 1.3.22 (see "Catching up with the
+server (1.3.22)").
+
+- ~~**A larger limit for video attachments.**~~ `upload_attachment` takes at
   most 20 MiB a file (`UPLOAD_MAX_BYTES`, `web/handlers/files.rs`, mirrored in
   `commands/remote_proxy.rs` and `src/lib/api.ts`), the cap meant for
   pictures that `prompt_hydration` reads back into the prompt. A video is
@@ -762,7 +766,7 @@ uploading), `Networking/CodegClient+Media.swift` (`upload_attachment`).
   would let a large one survive a dropped cellular connection.
   `upload_workspace_file` has no limit but writes into the project's folder,
   which is not where a chat attachment belongs.
-- **A stat endpoint.** `stat_paths {paths: [...]}` →
+- ~~**A stat endpoint.**~~ `stat_paths {paths: [...]}` →
   `[{path, exists, isFile, size, modifiedMs}]` (a few hundred paths at most)
   would answer the existence check in one request, without listing whole
   directories (`list_directory_with_files` also opens every subdirectory to
@@ -2252,10 +2256,16 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   minting and refresh, Range requests against a mock byte server, and the
   player model with the audio session, the reading position and the
   transcript held still while older turns go in, measured on every frame in
-  the whole app, editing a message against a mock server, and the
+  the whole app, editing a message against a mock server, the
   microphone's format checks, the AVFAudio guard catching a real AVFAudio
-  exception, and the crash reports' breadcrumbs, scrubbing and MetricKit
-  parsing) on an
+  exception, the crash reports' breadcrumbs, scrubbing and MetricKit
+  parsing; attachments: `upload_limits` and the older-server fallback, the
+  resumable upload against a mock server that keeps the bytes it gets
+  (pieces, a dropped piece resumed from the server's offset, a wrong
+  offset, a superseded piece, a lost upload started over, giving up and Try
+  Again, removing, pausing in the background, Original and Compressed,
+  audio), the video policy on real movies, and `stat_paths` batching, roots
+  and fallback) on an
   iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
   `build`. It uploads the session list screenshots as the
   `session-list-screenshots` artifact (with `transcript-scroll.txt`, the

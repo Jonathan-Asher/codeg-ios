@@ -223,7 +223,7 @@ enum TranscriptTimeline {
                 // Only a file the reply itself wrote is worth saying is gone.
                 if ref.origin == .written { items.append(MediaItem(ref: ref, isDeleted: true)) }
             case nil:
-                presence.enqueue(ref.path)
+                presence.enqueue(ref.path, roots: MediaPresence.roots(for: ref, context: context))
             }
         }
         return items.isEmpty ? nil : MediaGroup(items: items)

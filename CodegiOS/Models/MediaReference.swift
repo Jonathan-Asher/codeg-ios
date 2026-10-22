@@ -84,6 +84,10 @@ struct MediaRef: Hashable, Identifiable, Sendable {
     /// The turn it came from. Pictures are cached per reply, so a file the
     /// agent writes again under the same name shows its new contents.
     let scope: String
+    /// The directory a relative name was joined to when that was a command's
+    /// own `cd`, not the session's folder or the home. The existence check
+    /// names it as one of its roots.
+    var base: String? = nil
 
     var id: String { path }
     var kind: MediaKind { format.kind }
@@ -430,7 +434,8 @@ enum MediaDetector {
                 }
                 guard let path = MediaPaths.resolve(raw, in: context),
                       let format = MediaFormats.format(forPath: path) else { continue }
-                found.append(MediaRef(path: path, format: format, origin: .printed, scope: scope))
+                found.append(MediaRef(path: path, format: format, origin: .printed, scope: scope,
+                                      base: isAnchored(token) ? nil : base))
                 break
             }
             if found.count >= printedLimit { break }

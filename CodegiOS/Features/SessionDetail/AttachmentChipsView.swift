@@ -4,11 +4,13 @@ import SwiftUI
 /// field, each with a remove button. Mirrors the web client's attachment row in
 /// `ConversationContextBar`. A video's chip shows its poster and length once
 /// it is ready, and until then how far it is: downloading from iCloud,
-/// compressing, uploading. One that failed says why and tries again on a tap.
+/// compressing, uploading, paused. One that failed says why and tries again on
+/// a tap. An audio file's chip is a waveform with its length.
 struct AttachmentChipsView: View {
     let attachments: [Attachment]
     let onRemove: (UUID) -> Void
     var onRetry: (UUID) -> Void = { _ in }
+    var onSetQuality: (VideoQuality, UUID) -> Void = { _, _ in }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -17,7 +19,8 @@ struct AttachmentChipsView: View {
                     if let upload = attachment.upload {
                         VideoAttachmentChip(upload: upload,
                                             onRemove: { onRemove(attachment.id) },
-                                            onRetry: { onRetry(attachment.id) })
+                                            onRetry: { onRetry(attachment.id) },
+                                            onSetQuality: { onSetQuality($0, attachment.id) })
                     } else {
                         AttachmentChip(attachment: attachment) { onRemove(attachment.id) }
                     }
@@ -79,12 +82,15 @@ private struct AttachmentChip: View {
     }
 }
 
-/// A video on its way: its poster (or a film symbol), a ring with how far it
-/// is, and what it is doing.
+/// A video or audio file on its way: its poster (or a film or waveform
+/// symbol), a ring with how far it is, and what it is doing. A long press
+/// offers Original or Compressed for a video on a server that takes large
+/// files.
 struct VideoAttachmentChip: View {
     let upload: AttachmentUpload
     let onRemove: () -> Void
     let onRetry: () -> Void
+    var onSetQuality: (VideoQuality) -> Void = { _ in }
 
     @State private var showsFailure = false
 
@@ -103,12 +109,29 @@ struct VideoAttachmentChip: View {
             .hairlineBorder(Theme.Radius.sm, color: upload.failure == nil ? Theme.surfaceStroke : Theme.danger)
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if upload.offersQuality {
+                Picker(selection: Binding(get: { upload.quality }, set: { onSetQuality($0) })) {
+                    ForEach(VideoQuality.allCases, id: \.self) { quality in
+                        Text(verbatim: quality.label).tag(quality)
+                    }
+                } label: {
+                    Text("Send the video")
+                }
+                .pickerStyle(.inline)
+            }
+            if let note = upload.note {
+                Text(verbatim: note)
+            }
+            Button("Remove", systemImage: "xmark", role: .destructive, action: onRemove)
+        }
         .overlay(alignment: .topTrailing) { ChipRemoveButton(action: onRemove) }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text(verbatim: upload.displayName))
         .accessibilityValue(Text(verbatim: statusText))
         .accessibilityHint(upload.failure != nil ? Text("Shows why, and tries again") : Text(verbatim: ""))
-        .alert("The video didn't upload", isPresented: $showsFailure) {
+        .alert(upload.kind == .audio ? "The audio file didn't upload" : "The video didn't upload",
+               isPresented: $showsFailure) {
             Button("Try Again", action: onRetry)
             Button("Remove", role: .destructive, action: onRemove)
             Button("Cancel", role: .cancel) {}
@@ -127,7 +150,7 @@ struct VideoAttachmentChip: View {
         } else {
             ZStack {
                 Color.primary.opacity(0.06)
-                Image(systemName: "film")
+                Image(systemName: upload.kind == .audio ? "waveform" : "film")
                     .font(.system(size: 18))
                     .foregroundStyle(Theme.textTertiary)
             }
@@ -141,7 +164,8 @@ struct VideoAttachmentChip: View {
             VStack {
                 Spacer()
                 HStack(spacing: 3) {
-                    Image(systemName: "play.fill").font(.system(size: 7, weight: .bold))
+                    Image(systemName: upload.kind == .audio ? "waveform" : "play.fill")
+                        .font(.system(size: 7, weight: .bold))
                     if let duration = upload.duration {
                         Text(DurationText.clock(duration)).font(.system(size: 9, weight: .semibold).monospacedDigit())
                     }
@@ -165,10 +189,14 @@ struct VideoAttachmentChip: View {
             progressRing(fraction, symbol: "wand.and.stars")
         case .uploading(let fraction):
             progressRing(fraction, symbol: "arrow.up")
+        case .waiting(let fraction, .network):
+            progressRing(fraction, symbol: "wifi.exclamationmark", dimmed: true)
+        case .waiting(let fraction, .background):
+            progressRing(fraction, symbol: "pause.fill", dimmed: true)
         }
     }
 
-    private func progressRing(_ fraction: Double?, symbol: String) -> some View {
+    private func progressRing(_ fraction: Double?, symbol: String, dimmed: Bool = false) -> some View {
         ZStack {
             Color.black.opacity(0.4)
             Circle()
@@ -177,7 +205,7 @@ struct VideoAttachmentChip: View {
             if let fraction {
                 Circle()
                     .trim(from: 0, to: max(0.03, min(1, fraction)))
-                    .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .stroke(.white.opacity(dimmed ? 0.6 : 1), style: StrokeStyle(lineWidth: 3, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                     .frame(width: 30, height: 30)
                     .animation(.linear(duration: 0.2), value: fraction)
@@ -195,11 +223,24 @@ struct VideoAttachmentChip: View {
     private var statusText: String {
         switch upload.phase {
         case .fetching(let fraction):
-            return fraction.map { "Downloading from iCloud, \(Int($0 * 100)) percent" } ?? "Getting the video"
+            return fraction.map { "Downloading from iCloud, \(Int($0 * 100)) percent" }
+                ?? (upload.kind == .audio ? "Getting the audio file" : "Getting the video")
         case .compressing(let fraction): return "Compressing, \(Int(fraction * 100)) percent"
-        case .uploading(let fraction): return "Uploading, \(Int(fraction * 100)) percent"
+        case .uploading(let fraction): return "Uploading, \(Int(fraction * 100)) percent\(bytesText)"
+        case .waiting(let fraction, .network):
+            return "Waiting for the network, \(Int(fraction * 100)) percent uploaded"
+        case .waiting(let fraction, .background):
+            return "Paused, \(Int(fraction * 100)) percent uploaded. It goes on when the app is open."
         case .done: return [upload.note, upload.duration.map(DurationText.clock)].compactMap { $0 }.joined(separator: ", ")
         case .failed(let message): return message
         }
+    }
+
+    /// ", 12 MB of 340 MB" for a file of a few megabytes or more.
+    private var bytesText: String {
+        guard upload.totalBytes >= 4 * 1024 * 1024 else { return "" }
+        let sent = ByteCountFormatter.string(fromByteCount: upload.sentBytes, countStyle: .file)
+        let total = ByteCountFormatter.string(fromByteCount: upload.totalBytes, countStyle: .file)
+        return ", \(sent) of \(total)"
     }
 }
