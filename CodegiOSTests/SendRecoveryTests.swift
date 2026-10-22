@@ -216,7 +216,10 @@ final class SendRecoveryTests: XCTestCase {
         let kept = await eventually { model.queuedMessages.first?.text == "Ship it" }
         XCTAssertTrue(kept, "kept in the queue, for the turn's end")
         XCTAssertEqual(model.queuedMessages.first?.holdUntilTurnEnd, true)
-        XCTAssertEqual(model.queuedMessages.first?.failure?.reason, .timeout)
+        // A lost answer: goes again by itself (the mock's URLError carries no
+        // "timed out" wording, so it may read as a lost connection).
+        XCTAssertEqual(model.queuedMessages.first?.failure?.autoRetry, true)
+        XCTAssertTrue([.timeout, .network].contains(model.queuedMessages.first?.failure?.reason))
         XCTAssertEqual(model.queuedMessages.first?.clientMessageID,
                        server.calls("submit_session_feedback").first?.body["clientId"] as? String,
                        "the prompt it becomes carries the insert's id")
