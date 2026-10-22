@@ -203,7 +203,7 @@ final class DiagnosticReportTests: XCTestCase {
                                               "exceptionType": "ObjectiveC", "arguments": [], "formatString": "%s"],
             ],
         ]
-        let value = JSONValue(any: json)
+        let value = DiagnosticJSON(any: json)
         let report = DiagnosticReport.metricKit(kind: "crash", json: value, occurredAt: nil, breadcrumbs: [],
                                                 breadcrumbsFrom: nil)
         XCTAssertEqual(report.app.version, "1.3.14")
@@ -223,11 +223,11 @@ final class DiagnosticReportTests: XCTestCase {
     }
 
     func testJSONValueKeepsBooleansAndNumbersApart() throws {
-        let value = JSONValue(any: try JSONSerialization.jsonObject(with: Data(#"{"a":true,"b":1,"c":2.5,"d":[null,"x"]}"#.utf8)))
+        let value = DiagnosticJSON(any: try JSONSerialization.jsonObject(with: Data(#"{"a":true,"b":1,"c":2.5,"d":[null,"x"]}"#.utf8)))
         XCTAssertEqual(value["a"], .bool(true))
         XCTAssertEqual(value["b"], .number(1))
         XCTAssertEqual(value["c"], .number(2.5))
         XCTAssertEqual(value["d"], .array([.null, .string("x")]))
-        XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: try JSONEncoder().encode(value)), value)
+        XCTAssertEqual(try JSONDecoder().decode(DiagnosticJSON.self, from: try JSONEncoder().encode(value)), value)
     }
 }

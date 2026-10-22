@@ -273,7 +273,7 @@ extension Diagnostics: MXMetricManagerSubscriber {
                 // A crash is the previous launch's end: its trail goes with it.
                 let crumbs = kind == "crash" ? Breadcrumbs.shared.takePreviousLaunch() : []
                 let report = DiagnosticReport.metricKit(
-                    kind: kind, json: JSONValue(any: object), occurredAt: when, breadcrumbs: crumbs,
+                    kind: kind, json: DiagnosticJSON(any: object), occurredAt: when, breadcrumbs: crumbs,
                     breadcrumbsFrom: crumbs.isEmpty ? nil : "previous_launch")
                 DiagnosticsStore.enqueue(report)
                 queued += 1

@@ -3,21 +3,21 @@ import MachO
 import UIKit
 
 /// A JSON value of any shape, for the MetricKit payload a report carries.
-indirect enum JSONValue: Codable, Equatable, Sendable {
+indirect enum DiagnosticJSON: Codable, Equatable, Sendable {
     case null
     case bool(Bool)
     case number(Double)
     case string(String)
-    case array([JSONValue])
-    case object([String: JSONValue])
+    case array([DiagnosticJSON])
+    case object([String: DiagnosticJSON])
 
     init(any value: Any) {
         switch value {
         case let v as NSNumber:
             self = CFGetTypeID(v) == CFBooleanGetTypeID() ? .bool(v.boolValue) : .number(v.doubleValue)
         case let v as String: self = .string(v)
-        case let v as [Any]: self = .array(v.map(JSONValue.init(any:)))
-        case let v as [String: Any]: self = .object(v.mapValues(JSONValue.init(any:)))
+        case let v as [Any]: self = .array(v.map(DiagnosticJSON.init(any:)))
+        case let v as [String: Any]: self = .object(v.mapValues(DiagnosticJSON.init(any:)))
         default: self = .null
         }
     }
@@ -28,8 +28,8 @@ indirect enum JSONValue: Codable, Equatable, Sendable {
         else if let v = try? c.decode(Bool.self) { self = .bool(v) }
         else if let v = try? c.decode(Double.self) { self = .number(v) }
         else if let v = try? c.decode(String.self) { self = .string(v) }
-        else if let v = try? c.decode([JSONValue].self) { self = .array(v) }
-        else { self = .object(try c.decode([String: JSONValue].self)) }
+        else if let v = try? c.decode([DiagnosticJSON].self) { self = .array(v) }
+        else { self = .object(try c.decode([String: DiagnosticJSON].self)) }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -44,7 +44,7 @@ indirect enum JSONValue: Codable, Equatable, Sendable {
         }
     }
 
-    subscript(key: String) -> JSONValue? {
+    subscript(key: String) -> DiagnosticJSON? {
         if case .object(let o) = self { return o[key] }
         return nil
     }
@@ -58,13 +58,13 @@ indirect enum JSONValue: Codable, Equatable, Sendable {
         }
     }
 
-    var arrayValue: [JSONValue] {
+    var arrayValue: [DiagnosticJSON] {
         if case .array(let a) = self { return a }
         return []
     }
 
     /// Every string scrubbed with ``DiagnosticScrubber``.
-    func scrubbed() -> JSONValue {
+    func scrubbed() -> DiagnosticJSON {
         switch self {
         case .string(let s): return .string(DiagnosticScrubber.scrub(s, max: 4000))
         case .array(let a): return .array(a.map { $0.scrubbed() })
@@ -155,7 +155,7 @@ struct DiagnosticReport: Codable, Equatable, Sendable {
     var breadcrumbs: [Breadcrumb] = []
     /// `this_launch` or `previous_launch`.
     var breadcrumbsFrom: String?
-    var metricKit: JSONValue?
+    var metricKit: DiagnosticJSON?
 
     static func iso(_ date: Date) -> String {
         let f = ISO8601DateFormatter()
@@ -272,7 +272,7 @@ extension DiagnosticReport {
     }
 
     /// A report from one MetricKit diagnostic's JSON (`jsonRepresentation()`).
-    static func metricKit(kind: String, json: JSONValue, occurredAt: Date?, breadcrumbs: [Breadcrumb],
+    static func metricKit(kind: String, json: DiagnosticJSON, occurredAt: Date?, breadcrumbs: [Breadcrumb],
                           breadcrumbsFrom: String?, fallbackApp: App = DiagnosticEnvironment.app,
                           fallbackDevice: Device = DiagnosticEnvironment.device) -> DiagnosticReport {
         let meta = json["diagnosticMetaData"] ?? json["metaData"] ?? .object([:])
@@ -305,7 +305,7 @@ extension DiagnosticReport {
 
     /// The attributed thread's stack, innermost first: MetricKit nests each
     /// caller as the first sub-frame of its callee.
-    static func topFrames(fromCallStackTree tree: JSONValue?, appBinary: String = appBinaryName,
+    static func topFrames(fromCallStackTree tree: DiagnosticJSON?, appBinary: String = appBinaryName,
                           limit: Int = 12) -> [String] {
         guard let stacks = tree?["callStacks"]?.arrayValue, !stacks.isEmpty else { return [] }
         let stack = stacks.first { $0["threadAttributed"] == .bool(true) } ?? stacks[0]
