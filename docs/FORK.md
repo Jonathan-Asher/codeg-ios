@@ -2043,7 +2043,7 @@ recording as standby when standby is wanted but down, marks a stopped engine
 as stopped, clears the banner when a recording starts, and logs the domain,
 code and four-character code of any failure.
 
-### The standby crash (1.3.2 to 1.3.16)
+### The standby crash (1.3.2 to 1.3.19)
 
 Every crash TestFlight collected from 1.3.2 (40) to 1.3.14 (93), eight on
 Jonathan's iPhone 17 Pro Max on iOS 27.2, was the same one, and Apple had
@@ -2068,7 +2068,7 @@ with `outputFormat(forBus: 0)` then didn't match the hardware, and AVFAudio
 raises on that. The format guard already in the code (rate and channels above
 zero) couldn't see it.
 
-1.3.19:
+1.3.20:
 
 - Every cold start builds a fresh engine after the session is active, so
   its input node reads the route as it is now. A leftover engine from a stop
@@ -2096,7 +2096,7 @@ zero) couldn't see it.
   starts the engine before scheduling or playing, restarts it after a
   configuration change while reading, and stops cleanly when it won't.
 
-## Crash reports (1.3.19)
+## Crash reports (1.3.20)
 
 The app sends its crash reports to the codeg servers it knows, and nowhere
 else; there is no third-party SDK. `CodegiOS/App/Diagnostics/`:

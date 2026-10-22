@@ -170,7 +170,7 @@ final class DiagnosticReportTests: XCTestCase {
             kind: "caught_exception", source: "audio_guard", name: "com.apple.coreaudio.avfaudio",
             reason: "required condition is false: nullptr == Tap()", symbols: [], addresses: [0x104d98448],
             occurredAt: Date(timeIntervalSince1970: 0), context: "install the microphone tap",
-            app: .init(version: "1.3.19", build: "105", bundleId: "io.ashurov.codeg"),
+            app: .init(version: "1.3.20", build: "105", bundleId: "io.ashurov.codeg"),
             device: .init(model: "iPhone18,2", os: "iOS 27.2 (24B5089g)"),
             image: .init(name: "Codeg", uuid: "F4831FCC-086B-3337-BD9E-AFCB958BD693", loadAddress: "0x1045fc000"),
             breadcrumbs: [Breadcrumb(t: 1, event: "mic.start", detail: "standby")], breadcrumbsFrom: "this_launch")

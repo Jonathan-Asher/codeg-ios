@@ -338,7 +338,7 @@ final class DictationRecorder: @unchecked Sendable {
     /// of the route it ran on, and after read aloud, a video or AirPods
     /// switching profile changed the route, `installTap` with those formats
     /// raises an Objective-C exception that ended the app (the crash in
-    /// 1.3.2 to 1.3.16, always from the Camera Control's standby). Every call
+    /// 1.3.2 to 1.3.19, always from the Camera Control's standby). Every call
     /// that can raise goes through ``AVFAudioGuard``, so whatever is left
     /// becomes an error, and ``AudioSessionOwner`` retries once.
     private func runEngine() throws {
