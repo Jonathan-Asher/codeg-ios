@@ -237,7 +237,7 @@ struct SessionRow: View {
     private var dotTint: Color {
         switch activity {
         case .needsYou: return Theme.warning
-        case .interrupted, .connectFailed: return Theme.danger
+        case .interrupted, .connectFailed, .limitStopped: return Theme.danger
         case .limitPaused: return Color.secondary
         default: return conversation.status.tint
         }
@@ -272,8 +272,18 @@ struct SessionRow: View {
                              spoken: String(localized: "Continuing"), tint: Theme.textSecondary)
             }
             let time = LimitResetFormat.parts(resetsAt: pause.resetsAt).time
+            if pause.isPool {
+                // codeg's "Paused by usage limits — continues at 14:30": no
+                // account behind the account pool can take the turn yet.
+                return .init(symbol: "pause.circle.fill", text: "Paused · continues \(time)",
+                             spoken: String(localized: "Paused by usage limits, continues at \(time)"),
+                             tint: Theme.textSecondary)
+            }
             return .init(symbol: "pause.circle.fill", text: "Paused · \(time)",
                          spoken: String(localized: "Paused until \(time)"), tint: Theme.textSecondary)
+        case .limitStopped:
+            return .init(symbol: "pause.circle", text: "Stopped by limits",
+                         spoken: String(localized: "Stopped by usage limits"), tint: Theme.danger)
         case .connecting:
             return .init(symbol: "antenna.radiowaves.left.and.right", text: "Connecting",
                          spoken: String(localized: "Connecting"), tint: Theme.textSecondary)

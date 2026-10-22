@@ -10552,6 +10552,126 @@
           }
         }
       }
+    },
+    "Kept as spoken" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已按原话保留"
+          }
+        }
+      }
+    },
+    "Paused by usage limits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "因用量限制已暂停"
+          }
+        }
+      }
+    },
+    "Paused on the usage limit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已因用量上限暂停"
+          }
+        }
+      }
+    },
+    "The limit has reset — continuing now." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "限额已重置 — 正在继续。"
+          }
+        }
+      }
+    },
+    "Continues automatically when it resets at %@ (in %@)." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将于 %1$@ 重置后自动继续（还有 %2$@）。"
+          }
+        }
+      }
+    },
+    "Cancel auto-continue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消自动继续"
+          }
+        }
+      }
+    },
+    "Continue now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "立即继续"
+          }
+        }
+      }
+    },
+    "Don’t continue by itself: leave the turn interrupted, with Continue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不自动继续：保留中断的回合，可手动继续"
+          }
+        }
+      }
+    },
+    "Send the continuation now — it may hit the limit again" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "立即发送继续指令 — 可能再次触及限额"
+          }
+        }
+      }
+    },
+    "Couldn’t update the paused session: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法更新已暂停的会话：%@"
+          }
+        }
+      }
+    },
+    "Paused by usage limits, continues at %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "因用量限制已暂停，将于 %@ 继续"
+          }
+        }
+      }
+    },
+    "Stopped by usage limits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "因用量限制已停止"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

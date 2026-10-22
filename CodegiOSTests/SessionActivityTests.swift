@@ -94,6 +94,11 @@ final class SessionActivityTests: XCTestCase {
         XCTAssertNil(ContinuePrompt.variant(ofText: "Continue"))
         XCTAssertEqual(ContinuePrompt.variant(ofText: ContinuePrompt.resumeAfterRestart), .resumed)
         XCTAssertEqual(ContinuePrompt.variant(ofText: ContinuePrompt.limitContinue), .limit)
+        // codeg's limit-continue now resumes stopped sub-agents first; the
+        // earlier wording still reads as the same divider in older transcripts.
+        XCTAssertEqual(ContinuePrompt.variant(ofText: "Your usage limit has reset. First resume any sub-agents the limit stopped, each from where it stopped with its context intact rather than starting it over; then continue the task you were working on when the usage limit was reached. Do not repeat work that is already complete."), .limit)
+        XCTAssertEqual(ContinuePrompt.variant(ofText: "Your usage limit has reset. Continue the task you were working on when the usage limit was reached; do not repeat work that is already complete.\n"), .limit)
+        XCTAssertNil(ContinuePrompt.variant(ofText: "Your usage limit has reset."))
 
         let plain = MessageTurn(id: "u1", role: .user, blocks: [.text("continue")], timestamp: Date())
         XCTAssertEqual(ContinuePrompt.variant(of: plain), .continued)

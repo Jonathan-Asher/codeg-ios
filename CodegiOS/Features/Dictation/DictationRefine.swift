@@ -51,7 +51,7 @@ enum DictationRefineWire {
     }
 
     enum ResultKey: String, CodingKey {
-        case text, provider, model, elapsedMs
+        case text, provider, model, elapsedMs, keptOriginal
     }
 
     /// The server has no such command: an older codeg. Unknown commands answer
@@ -254,12 +254,18 @@ struct DictationRefineResult: Decodable, Equatable, Sendable {
     var provider: String?
     var model: String?
     var elapsedMs: Int?
+    /// The server rejected the model's answer (a refusal, a reply to the
+    /// dictation, nothing, or a cut-off answer) and `text` is the dictation
+    /// as it came. Absent from an older server: false.
+    var keptOriginal = false
 
-    init(text: String, provider: String? = nil, model: String? = nil, elapsedMs: Int? = nil) {
+    init(text: String, provider: String? = nil, model: String? = nil, elapsedMs: Int? = nil,
+         keptOriginal: Bool = false) {
         self.text = text
         self.provider = provider
         self.model = model
         self.elapsedMs = elapsedMs
+        self.keptOriginal = keptOriginal
     }
 
     init(from decoder: Decoder) throws {
@@ -274,6 +280,7 @@ struct DictationRefineResult: Decodable, Equatable, Sendable {
         } else {
             elapsedMs = nil
         }
+        keptOriginal = ((try? c.decodeIfPresent(Bool.self, forKey: .keptOriginal)) ?? nil) ?? false
     }
 }
 
@@ -375,6 +382,9 @@ enum DictationRefineFallback: Equatable, Sendable {
     /// Skipped from the strip, or the dictation was abandoned.
     case skipped
     case failed(String)
+    /// The server rejected the clean-up's answer and kept the words exactly
+    /// as spoken (`keptOriginal`).
+    case rejected
 }
 
 /// The text to insert, and what happened to it.
@@ -404,6 +414,8 @@ struct DictationRefineOutcome: Equatable, Sendable {
             return "\(what) took too long. Kept as spoken."
         case .failed(let message):
             return "\(what) failed: \(message). Kept as spoken."
+        case .rejected:
+            return String(localized: "Kept as spoken")
         }
     }
 }
@@ -465,6 +477,8 @@ struct TranscriptPostProcessor: Sendable {
         do {
             let result = try await transport.refineDictation(
                 DictationRefineRequest(text: text, mode: mode, sourceLanguage: sourceLanguage, provider: provider))
+            // The server turned the answer down and sent the words back as spoken.
+            if result.keptOriginal { return kept(.rejected) }
             let refined = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !refined.isEmpty else { return kept(.failed("the server returned no text")) }
             return DictationRefineOutcome(

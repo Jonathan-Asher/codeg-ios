@@ -526,7 +526,9 @@ struct CodegClient: Sendable {
         guard (200..<300).contains(http.statusCode) else {
             if http.statusCode == 401 { throw APIError.unauthorized }
             let parsed = try? CodegJSON.decoder.decode(ServerError.self, from: data)
-            if http.statusCode == 409 || parsed?.code == "turn_in_progress" {
+            // codeg's `pool_exhausted` is a 409 too, but no turn runs: every
+            // account of the account pool is at its limit (see `isPoolExhausted`).
+            if (http.statusCode == 409 && parsed?.code != "pool_exhausted") || parsed?.code == "turn_in_progress" {
                 throw APIError.turnInProgress
             }
             throw APIError.server(

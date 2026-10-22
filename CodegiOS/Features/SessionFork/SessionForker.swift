@@ -12,6 +12,8 @@ final class ForkCapabilities {
 
     private var endpointsByServer: [String: ForkEndpoints] = [:]
     private var agentForks: [String: [String: Bool]] = [:]
+    /// What each agent's adapter said about forking while a turn runs.
+    private var agentForksWhileRunning: [String: [String: Bool]] = [:]
     @ObservationIgnored private var probes: [String: Task<ForkEndpoints, Never>] = [:]
     /// Whether each server's `acp_fork` takes an edit mode.
     private var editModesByServer: [String: Bool] = [:]
@@ -48,11 +50,23 @@ final class ForkCapabilities {
         agentForks[TranscriptCache.serverKey(for: client)]?[agent.wireValue]
     }
 
-    func note(agent: AgentType, forks: Bool?, client: CodegClient) {
+    /// Whether `agent`'s adapter said it forks while a turn runs on this
+    /// server (`fork_while_running`); nil until a live session of it said so.
+    func agentForksWhileRunning(_ agent: AgentType, client: CodegClient) -> Bool? {
+        agentForksWhileRunning[TranscriptCache.serverKey(for: client)]?[agent.wireValue]
+    }
+
+    /// `whileRunning` counts only beside a fork the agent supports: the
+    /// server reports it false until the adapter has started.
+    func note(agent: AgentType, forks: Bool?, whileRunning: Bool? = nil, client: CodegClient) {
         guard let forks else { return }
         let key = TranscriptCache.serverKey(for: client)
-        guard agentForks[key]?[agent.wireValue] != forks else { return }
-        agentForks[key, default: [:]][agent.wireValue] = forks
+        if agentForks[key]?[agent.wireValue] != forks {
+            agentForks[key, default: [:]][agent.wireValue] = forks
+        }
+        if forks, let whileRunning, agentForksWhileRunning[key]?[agent.wireValue] != whileRunning {
+            agentForksWhileRunning[key, default: [:]][agent.wireValue] = whileRunning
+        }
     }
 
     func noteEndpointsMissing(client: CodegClient) {
@@ -78,6 +92,7 @@ final class ForkCapabilities {
     func reset() {
         endpointsByServer = [:]
         agentForks = [:]
+        agentForksWhileRunning = [:]
         probes = [:]
         editModesByServer = [:]
         editProbes = [:]
@@ -157,13 +172,15 @@ struct SessionForker {
                 let conn = try await connection(for: target, resolve: resolveConnection, fresh: retried)
                 onConnection?(conn)
                 let snapshot = try await waitUntilReady(conn)
-                capabilities.note(agent: target.agentType, forks: snapshot.forkSupported, client: client)
+                capabilities.note(agent: target.agentType, forks: snapshot.forkSupported,
+                                  whileRunning: snapshot.forkWhileRunning, client: client)
                 if snapshot.forkSupported == false {
                     throw ForkError.agentCannotFork(target.agentType.displayName)
                 }
                 return try await forkFromTurn(target, at: point, connection: conn,
                                               turnRunning: snapshot.status == .prompting,
-                                              endpoints: endpoints)
+                                              endpoints: endpoints,
+                                              adapterForksWhileRunning: snapshot.forkWhileRunning)
             } catch let error as APIError where error.isConnectionNotFound || error.isStreamGone {
                 // The connection went away between finding it and forking:
                 // resume the session once more.
@@ -229,9 +246,11 @@ struct SessionForker {
     /// codeg web's `forkFromTurn`: in place between turns, into a new
     /// conversation when a turn runs (or starts under the request).
     private func forkFromTurn(_ target: ForkTarget, at point: ForkPoint, connection conn: String,
-                              turnRunning: Bool, endpoints: ForkEndpoints) async throws -> ForkOutcome {
+                              turnRunning: Bool, endpoints: ForkEndpoints,
+                              adapterForksWhileRunning: Bool?) async throws -> ForkOutcome {
         func intoNewConversation() async throws -> ForkOutcome {
-            guard SessionForkRules.forksWhileRunning(target.agentType) else { throw ForkError.betweenTurnsOnly }
+            guard SessionForkRules.forksWhileRunning(target.agentType, adapter: adapterForksWhileRunning)
+            else { throw ForkError.betweenTurnsOnly }
             if case .available(let toNew) = endpoints, !toNew { throw ForkError.betweenTurnsOnly }
             let reply: String
             switch point {

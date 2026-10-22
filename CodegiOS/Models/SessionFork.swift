@@ -139,12 +139,18 @@ enum ForkEndpoints: Equatable, Sendable {
 /// codeg web's rules for "Fork from here" and where a fork lands
 /// (`src/lib/fork-from-turn.ts`, `message-list-view.tsx`), as plain functions.
 enum SessionForkRules {
-    /// Agents whose fork works while a turn runs (into a new conversation).
-    /// Mirrors `FORK_WHILE_RUNNING_AGENTS` / Rust `forks_while_running`: only
-    /// Claude Code's adapter forks safely from a transcript another process
-    /// is still writing.
-    static func forksWhileRunning(_ agent: AgentType) -> Bool {
-        agent == .claudeCode
+    /// Whether a fork works while a turn runs (into a new conversation): the
+    /// adapter must fork safely from a transcript another process is still
+    /// writing. The server's word comes first when it gave one (`adapter`,
+    /// the session snapshot's or `fork_supported`'s `fork_while_running`),
+    /// with Claude Code always able, as codeg web's `supportsForkWhileRunning`
+    /// and Rust `fork_adapter_of` have it. Without it, the agent decides:
+    /// Claude Code, or Pi (pi-acp forks from the session file since
+    /// 0.0.34-steering.3; an older one is refused by the server, between
+    /// turns only).
+    static func forksWhileRunning(_ agent: AgentType, adapter: Bool? = nil) -> Bool {
+        if let adapter { return adapter || agent == .claudeCode }
+        return agent == .claudeCode || agent == .pi
     }
 
     static let reasonBetweenTurns = String(localized: "This agent can only fork between turns")
@@ -185,6 +191,7 @@ enum SessionForkRules {
         endpoints: ForkEndpoints,
         agent: AgentType,
         agentForks: Bool?,
+        adapterForksWhileRunning: Bool? = nil,
         turnRunning: Bool,
         forking: Bool
     ) -> ForkAvailability {
@@ -192,7 +199,7 @@ enum SessionForkRules {
         if endpoints == .missing { return .unavailable(reasonServerTooOld) }
         if agentForks == false { return .unavailable(reasonAgentCannotFork(agent)) }
         if turnRunning {
-            if !forksWhileRunning(agent) { return .unavailable(reasonBetweenTurns) }
+            if !forksWhileRunning(agent, adapter: adapterForksWhileRunning) { return .unavailable(reasonBetweenTurns) }
             if case .available(let toNew) = endpoints, !toNew { return .unavailable(reasonBetweenTurns) }
         }
         return .available
@@ -220,6 +227,7 @@ enum SessionForkRules {
         endpoints: ForkEndpoints,
         agent: AgentType,
         agentForks: Bool?,
+        adapterForksWhileRunning: Bool? = nil,
         turnRunning: Bool,
         forking: Bool
     ) -> ForkAvailability {
@@ -230,7 +238,7 @@ enum SessionForkRules {
         if agentForks == false { return .unavailable(reasonAgentCannotFork(agent)) }
         let isTail = index == turns.count - 1
         if turnRunning {
-            if !forksWhileRunning(agent) { return .unavailable(reasonBetweenTurns) }
+            if !forksWhileRunning(agent, adapter: adapterForksWhileRunning) { return .unavailable(reasonBetweenTurns) }
             if case .available(let toNew) = endpoints, !toNew { return .unavailable(reasonBetweenTurns) }
             // With the running prompt still on the phone (a send from here),
             // every reply in `turns` has finished. Otherwise the reply after

@@ -225,6 +225,10 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
     var limitPause: LimitPause? = nil
     /// Whether the session continues by itself once the limit resets.
     var limitAutoContinue: Bool = true
+    /// What stopped the last turn on a usage limit (`limit_reason`): the
+    /// account's own limit, or the account pool with no account free. Kept
+    /// once a pause ends without continuing; nil from an older server.
+    var limitReason: LimitReason? = nil
     /// The mode / model / effort this conversation's session last ran with.
     /// The decoder converts dictionary keys from snake_case too, which would
     /// mangle config ids like `reasoning_effort`, so this is filled from the raw
@@ -238,7 +242,7 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, folderId, title, agentType, status, model, gitBranch, externalId
         case messageCount, createdAt, updatedAt, pinnedAt
-        case turnState, critical, criticalStall, parentId, limitPause, limitAutoContinue
+        case turnState, critical, criticalStall, parentId, limitPause, limitAutoContinue, limitReason
         case background
     }
 
@@ -266,6 +270,7 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         parentId = (try? c.decodeIfPresent(Int.self, forKey: .parentId)) ?? nil
         limitPause = (try? c.decodeIfPresent(LimitPause.self, forKey: .limitPause)) ?? nil
         limitAutoContinue = (try? c.decodeIfPresent(Bool.self, forKey: .limitAutoContinue)) ?? true
+        limitReason = (try? c.decodeIfPresent(LimitReason.self, forKey: .limitReason)) ?? nil
         background = (try? c.decodeIfPresent(ConversationBackground.self, forKey: .background)) ?? nil
     }
 
@@ -296,6 +301,7 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         try c.encodeIfPresent(parentId, forKey: .parentId)
         try c.encodeIfPresent(limitPause, forKey: .limitPause)
         try c.encode(limitAutoContinue, forKey: .limitAutoContinue)
+        try c.encodeIfPresent(limitReason, forKey: .limitReason)
         try c.encodeIfPresent(background, forKey: .background)
     }
 
@@ -334,17 +340,38 @@ enum LimitResumeState: String, Codable, Hashable, Sendable {
     }
 }
 
+/// Rust `ConversationLimitReason`: what stopped a turn on a usage limit.
+enum LimitReason: String, Codable, Hashable, Sendable {
+    /// The account's own usage limit ("You've hit your weekly limit").
+    case usageLimit = "usage_limit"
+    /// The local account pool (maxpool) had no account that could take the
+    /// request: every one is at its limit.
+    case poolCapacity = "pool_capacity"
+}
+
 /// A conversation paused by the account's usage limit (Rust `LimitPause`).
 struct LimitPause: Codable, Hashable, Sendable {
     let resetsAt: Date
     let state: LimitResumeState
     let attempts: Int
+    /// Why it waits, from the conversation's `limit_reason` (not part of
+    /// the pause on the wire): an older server's pause reads as the
+    /// account's own limit.
+    var reason: LimitReason = .usageLimit
 
-    init(resetsAt: Date, state: LimitResumeState, attempts: Int = 0) {
+    private enum CodingKeys: String, CodingKey {
+        case resetsAt, state, attempts
+    }
+
+    init(resetsAt: Date, state: LimitResumeState, attempts: Int = 0, reason: LimitReason = .usageLimit) {
         self.resetsAt = resetsAt
         self.state = state
         self.attempts = attempts
+        self.reason = reason
     }
+
+    /// Waiting on the account pool rather than on the account's own limit.
+    var isPool: Bool { reason == .poolCapacity }
 
     /// Waiting for the reset: the continuation has not run yet (`scheduled`)
     /// or is being sent (`claimed`). A `continuing` pause reads as working.

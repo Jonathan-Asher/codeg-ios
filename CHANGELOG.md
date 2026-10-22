@@ -12,6 +12,43 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Large videos and audio files, uploaded in pieces that survive a dropped
+  connection (1.3.22). A codeg server from fork.191 on takes video and audio
+  attachments up to 1 GB (it says so through `upload_limits`), so a video
+  now goes as the iPhone recorded it, HEVC included, and is compressed only
+  when it is over that limit (to H.264 at 1080p, or smaller to fit). A long
+  press on the video's chip chooses Original or Compressed (H.264 at 720p, a
+  quicker upload that plays in any browser); the choice is kept for the next
+  video. The file goes up in pieces of 8 MB, its progress on the chip. When
+  the connection drops it waits for the network and carries on from what the
+  server already has; when you leave the app it keeps going for the time iOS
+  allows, pauses before the app is suspended and carries on when you are
+  back; a server that restarted meanwhile gets the file again from the start.
+  Removing the attachment stops the upload and the server throws away what
+  it had. Against an older codeg server, attaching works as in 1.3.14.
+- Attach audio files (1.3.22). Files takes mp3, m4a, wav, aac, flac and the
+  other audio formats; an audio file is uploaded as it is, the same way as a
+  video, and shows in your message as an audio card that plays.
+- A session paused on a usage limit says why and when it goes on, and can
+  be continued now or left stopped (1.3.22), as on the desktop. When no
+  account behind codeg's account pool can take the turn, the session reads
+  "Paused by usage limits — continues at 14:30" under its title and
+  "Paused · continues 14:30" in the lists. Above the message bar a paused
+  session says when it continues by itself, with Cancel auto-continue (the
+  turn stays interrupted, with Continue) and Continue now (the continuation
+  goes out at once and may meet the limit again). A session whose
+  continuations gave up or were cancelled reads "Stopped by usage limits",
+  with Continue. Opening a session while every account is at its limit
+  says "all Claude subscriptions are at their limit — the next one frees at
+  14:30". A message the server holds back for the same reason stays above
+  the message bar, "Not sent · All accounts at their limit — will resend at
+  14:30", and goes by itself then, instead of waiting for a turn that isn't
+  running.
+- "Kept as spoken" (1.3.22). When the codeg server turns down the clean-up's
+  answer (a refusal, a reply to what you said, nothing, or a cut-off answer)
+  and keeps your words exactly as you said them, a small note at the
+  message bar says so.
+
 - Crash reports to your own codeg server (1.3.20), with nothing sent
   anywhere else. When the app crashes, hangs, uses too much CPU or disk,
   launches slowly, or catches an audio error it would have died of, a report
@@ -231,6 +268,21 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Changed
 
+- Fork while a Pi reply is running (1.3.22). Pi forks mid-turn since pi-acp
+  0.0.34-steering.3, into a new conversation as Claude Code does. The app
+  follows what the server says the session's adapter can do
+  (`fork_while_running`); without that, Claude Code and Pi are offered it.
+- The continuation codeg sends when a usage limit resets now also asks the
+  agent to resume the sub-agents the limit stopped (1.3.22). The transcript
+  draws it, and the earlier wording, as the "Continued after limit reset"
+  divider, never as a message you typed.
+- Checking that a message's files are still there takes one request
+  (1.3.22). Against codeg fork.191 or later the app asks `stat_paths` about
+  up to 200 files at once, under the session's folder, the home and the
+  folder a command moved to, instead of listing each of their directories;
+  hidden files are checked too. A file outside those folders, and every file
+  on an older server, is checked by listing its directory as before.
+
 - A fork shows its progress until it opens (1.3.21). From a reply's Fork,
   the session's ⋯ menu or a list row's long press, "Forking “<session>”…"
   stands at the top of the screen with a spinner from the tap until the
@@ -311,6 +363,10 @@ the text as the git tag message and the GitHub Release notes.
   `scripts/release.sh --archive` and CI.
 
 ### Fixed
+
+- An H.264 `.mp4` over the size limit (one from Files, say) couldn't be
+  compressed (1.3.22): its compressed copy was written over the original,
+  so the export failed. Compressed copies now go to a folder of their own.
 
 - The app no longer crashes when the Camera Control's standby microphone
   starts (1.3.20). Every crash TestFlight reported from 1.3.2 to 1.3.14 was

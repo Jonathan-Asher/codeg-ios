@@ -124,18 +124,28 @@ final class SessionForkTests: XCTestCase {
     }
 
     func testWhileATurnRunsOnlyAnAgentThatForksWhileRunningCanFork() {
-        func running(_ agent: AgentType, _ endpoints: ForkEndpoints = .available(toNewConversation: true)) -> ForkAvailability {
+        func running(_ agent: AgentType, _ endpoints: ForkEndpoints = .available(toNewConversation: true),
+                     adapter: Bool? = nil) -> ForkAvailability {
             SessionForkRules.listAvailability(endpoints: endpoints, agent: agent, agentForks: true,
-                                              turnRunning: true, forking: false)
+                                              adapterForksWhileRunning: adapter, turnRunning: true, forking: false)
         }
         XCTAssertEqual(running(.claudeCode), .available)
         XCTAssertEqual(running(.codex), .unavailable("This agent can only fork between turns"))
-        XCTAssertEqual(running(.pi), .unavailable(SessionForkRules.reasonBetweenTurns))
+        // Pi forks mid-turn (pi-acp 0.0.34-steering.3) unless its adapter said otherwise.
+        XCTAssertEqual(running(.pi), .available)
+        XCTAssertEqual(running(.pi, adapter: false), .unavailable(SessionForkRules.reasonBetweenTurns))
+        XCTAssertEqual(running(.pi, adapter: true), .available)
+        // The server's word holds for any agent; Claude Code always forks mid-turn.
+        XCTAssertEqual(running(.codex, adapter: true), .available)
+        XCTAssertEqual(running(.claudeCode, adapter: false), .available)
         // A server with in-place forks only can't fork while a turn runs.
         XCTAssertEqual(running(.claudeCode, .available(toNewConversation: false)),
                        .unavailable(SessionForkRules.reasonBetweenTurns))
         XCTAssertTrue(SessionForkRules.forksWhileRunning(.claudeCode))
+        XCTAssertTrue(SessionForkRules.forksWhileRunning(.pi))
         XCTAssertFalse(SessionForkRules.forksWhileRunning(.codex))
+        XCTAssertFalse(SessionForkRules.forksWhileRunning(.pi, adapter: false))
+        XCTAssertTrue(SessionForkRules.forksWhileRunning(.gemini, adapter: true))
     }
 
     func testAnAgentThatSaidItCantForkIsGreyedOut() {
@@ -241,6 +251,14 @@ final class SessionForkTests: XCTestCase {
         let event = try CodegJSON.decoder.decode(EventEnvelope.self, from: Data(
             #"{"seq": 4, "connection_id": "conn-1", "type": "fork_supported", "supported": false}"#.utf8))
         XCTAssertEqual(event.event, .forkSupported(false))
+        let piEvent = try CodegJSON.decoder.decode(EventEnvelope.self, from: Data(
+            #"{"seq": 5, "connection_id": "conn-1", "type": "fork_supported", "supported": true, "strict_point": true, "while_running": true}"#.utf8))
+        XCTAssertEqual(piEvent.event, .forkSupported(true, whileRunning: true))
+        XCTAssertNil(snap.forkWhileRunning)
+        let pi = try CodegJSON.decoder.decode(LiveSessionSnapshot.self, from: Data(
+            snapshotJSON(status: "prompting").replacingOccurrences(
+                of: #""fork_supported": true"#, with: #""fork_supported": true, "fork_while_running": true"#).utf8))
+        XCTAssertEqual(pi.forkWhileRunning, true)
     }
 
     func testDecodesBothForkResults() throws {
@@ -377,6 +395,35 @@ final class SessionForkTests: XCTestCase {
         }
         XCTAssertTrue(forkCalls("acp_fork").isEmpty)
         XCTAssertTrue(forkCalls("acp_fork_to_new_conversation").isEmpty)
+    }
+
+    func testPiForksWhileATurnRunsUnlessItsAdapterSaysOtherwise() async throws {
+        let pi = ForkTarget(conversationID: 7, folderID: 1, agentType: .pi, sessionID: "ext-7", workingDir: nil)
+        // An older pi-acp: the snapshot says it can't fork mid-turn.
+        serveFork(status: "prompting")
+        let older = snapshotJSON(status: "prompting").replacingOccurrences(
+            of: #""fork_supported": true"#, with: #""fork_supported": true, "fork_while_running": false"#)
+        server.on("acp_get_session_snapshot") { _ in .body(older) }
+        do {
+            _ = try await forker().fork(pi, at: .reply("turn-2"))
+            XCTFail("no fork")
+        } catch let error as ForkError {
+            XCTAssertEqual(error, .betweenTurnsOnly)
+        }
+        XCTAssertTrue(forkCalls("acp_fork_to_new_conversation").isEmpty)
+        XCTAssertEqual(capabilities.agentForksWhileRunning(.pi, client: server.client), false)
+
+        // pi-acp 0.0.34-steering.3 says it can: the fork goes into a new conversation.
+        let current = snapshotJSON(status: "prompting").replacingOccurrences(
+            of: #""fork_supported": true"#, with: #""fork_supported": true, "fork_while_running": true"#)
+        let result = newConversationResult
+        server.on("acp_get_session_snapshot") { _ in .body(current) }
+        server.on("acp_fork_to_new_conversation") { call in
+            (call.body["connectionId"] as? String) == "" ? .status(500, #"{"message": "connection not found: "}"#) : .body(result)
+        }
+        let outcome = try await forker().fork(pi, at: .reply("turn-2"))
+        XCTAssertEqual(outcome.forkConversationID, 9)
+        XCTAssertEqual(capabilities.agentForksWhileRunning(.pi, client: server.client), true)
     }
 
     func testTheServerSayingOnlyBetweenTurnsReadsTheSame() async throws {

@@ -308,6 +308,9 @@ final class SessionDetailViewModel {
     private(set) var backgroundOutstanding = 0
     /// The latest `attach_progress` phase while the session is being opened.
     private(set) var attachPhase: String?
+    /// With `attachPhase` `pool_wait`: when the account pool's first account
+    /// frees up, if the pool knows.
+    private(set) var attachPoolResumesAt: Date?
 
     /// A message waiting for the running turn to end (or, while the turn is
     /// held for background work, for the agent to go idle).
@@ -2207,8 +2210,9 @@ final class SessionDetailViewModel {
             live.updatePlan(entries)
             requestScrollToBottom()
 
-        case .attachProgress(let phase, _):
+        case .attachProgress(let phase, _, let poolResumesAt):
             attachPhase = (phase == "ready" || phase == "failed") ? nil : phase
+            attachPoolResumesAt = phase == "pool_wait" ? poolResumesAt : nil
 
         case .awaitingBackground(let awaiting, let nativeSteering):
             awaitingBackground = awaiting
@@ -2244,8 +2248,9 @@ final class SessionDetailViewModel {
             agentOptions.applyRejection(configId: configId, optionName: optionName, requested: requested,
                                         actual: actual, actualValue: actualValue)
 
-        case .forkSupported(let supported):
-            ForkCapabilities.shared.note(agent: agentTypeForUI, forks: supported, client: client)
+        case .forkSupported(let supported, let whileRunning):
+            ForkCapabilities.shared.note(agent: agentTypeForUI, forks: supported, whileRunning: whileRunning,
+                                         client: client)
 
         case .sessionStarted, .conversationStatusChanged, .userPromptSent, .unknown:
             break
@@ -2275,7 +2280,8 @@ final class SessionDetailViewModel {
         agentOptions.applyLiveSnapshot(modes: snap.modes, currentMode: snap.currentMode,
                                        configOptions: snap.configOptions)
         if snap.nativeSteeringAvailable { nativeSteeringAvailable = true }
-        ForkCapabilities.shared.note(agent: agentTypeForUI, forks: snap.forkSupported, client: client)
+        ForkCapabilities.shared.note(agent: agentTypeForUI, forks: snap.forkSupported,
+                                     whileRunning: snap.forkWhileRunning, client: client)
         awaitingBackground = snap.awaitingBackground && snap.status == .prompting
         backgroundOutstanding = snap.backgroundOutstanding
         if awaitingBackground { drainIntoHeldTurnIfPossible() }
@@ -2811,7 +2817,8 @@ final class SessionDetailViewModel {
             turnState: summary?.turnState,
             turnStateReported: summary?.turnStateReported ?? true,
             status: summary?.status,
-            limitPause: summary?.limitPause
+            limitPause: summary?.limitPause,
+            limitReason: summary?.limitReason
             // `summary.background` is deliberately left out: this screen's
             // summary is refreshed by detail reads, which don't carry it, so
             // it would linger from whichever list read last set it.
@@ -2821,7 +2828,8 @@ final class SessionDetailViewModel {
         }
         if isInFlight {
             if !isTurnActive, case .connecting = sendState {
-                inputs.connection = .connecting(phase: attachPhase)
+                inputs.connection = .connecting(phase: attachPhase,
+                                                poolResumesAt: attachPhase == "pool_wait" ? attachPoolResumesAt : nil)
             } else {
                 inputs.connectionStatus = .prompting
                 inputs.awaitingBackground = awaitingBackground
@@ -3181,7 +3189,7 @@ final class SessionDetailViewModel {
         guard localAttention == nil else { return false }
         switch activity {
         case .idle: return !isInFlight && endsWithAgentReply
-        case .interrupted: return !isInFlight
+        case .interrupted, .limitStopped: return !isInFlight
         case .background: return canDeliverIntoHeldTurn
         default: return false
         }
@@ -3448,6 +3456,60 @@ final class SessionDetailViewModel {
         }
     }
 
+    // MARK: - Usage-limit pause
+
+    /// Cancel auto-continue or Continue now is on its way to the server.
+    private(set) var limitActionBusy = false
+
+    /// "Cancel auto-continue" on a session paused on a usage limit: it no
+    /// longer continues by itself and reads stopped, with Continue. Shown at
+    /// once, put back if the server refuses.
+    func cancelLimitContinue() async {
+        guard let id = conversationID, let previous = summary?.limitPause, !limitActionBusy else { return }
+        limitActionBusy = true
+        defer { limitActionBusy = false }
+        userToggleTick &+= 1
+        summary?.limitPause = nil
+        do {
+            _ = try await client.cancelLimitContinue(conversationId: id)
+            notifyConversationsChanged()
+        } catch {
+            summary?.limitPause = previous
+            notice = String(localized: "Couldn’t update the paused session: \(Self.describe(error))")
+            return
+        }
+        await refreshLimitPause(id)
+    }
+
+    /// "Continue now": the continuation goes out ahead of the reset (it may
+    /// meet the limit again, and pause again).
+    func continueLimitNow() async {
+        guard let id = conversationID, let pause = summary?.limitPause, !limitActionBusy else { return }
+        limitActionBusy = true
+        defer { limitActionBusy = false }
+        do {
+            if try await client.continueLimitNow(conversationId: id) {
+                summary?.limitPause = LimitPause(resetsAt: pause.resetsAt, state: .claimed, attempts: pause.attempts)
+            }
+            notifyConversationsChanged()
+        } catch {
+            notice = String(localized: "Couldn’t update the paused session: \(Self.describe(error))")
+            return
+        }
+        // The server sends it within moments; then read where it stands.
+        try? await Task.sleep(for: .seconds(4))
+        await refreshLimitPause(id)
+    }
+
+    /// The pause, its reason and the turn state as the server now has them.
+    private func refreshLimitPause(_ id: Int) async {
+        guard let detail = try? await client.conversationDetail(id: id, window: .tail(1)),
+              conversationID == id else { return }
+        summary?.limitPause = detail.summary.limitPause
+        summary?.limitReason = detail.summary.limitReason
+        summary?.turnState = detail.summary.turnState
+    }
+
     /// Change lifecycle status. Optimistically updates, reverting on failure.
     func setStatus(_ status: ConversationStatus) async {
         guard let id = conversationID, summary?.status != status else { return }
@@ -3499,6 +3561,7 @@ final class SessionDetailViewModel {
             endpoints: ForkCapabilities.shared.endpoints(for: client),
             agent: agentTypeForUI,
             agentForks: ForkCapabilities.shared.agentForks(agentTypeForUI, client: client),
+            adapterForksWhileRunning: ForkCapabilities.shared.agentForksWhileRunning(agentTypeForUI, client: client),
             turnRunning: isInFlight,
             forking: forking
         )
@@ -3515,6 +3578,7 @@ final class SessionDetailViewModel {
             endpoints: ForkCapabilities.shared.endpoints(for: client),
             agent: agentTypeForUI,
             agentForks: ForkCapabilities.shared.agentForks(agentTypeForUI, client: client),
+            adapterForksWhileRunning: ForkCapabilities.shared.agentForksWhileRunning(agentTypeForUI, client: client),
             turnRunning: isInFlight,
             forking: forking
         )

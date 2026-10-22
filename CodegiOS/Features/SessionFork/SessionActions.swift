@@ -49,6 +49,7 @@ final class SessionActions {
             endpoints: capabilities.endpoints(for: client),
             agent: summary.agentType,
             agentForks: capabilities.agentForks(summary.agentType, client: client),
+            adapterForksWhileRunning: capabilities.agentForksWhileRunning(summary.agentType, client: client),
             turnRunning: SessionForkRules.turnRunning(summary),
             forking: false
         )

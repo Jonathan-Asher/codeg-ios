@@ -25,11 +25,17 @@ enum SessionActivity: Equatable, Sendable {
     /// The last turn was cut off before it finished.
     case interrupted
     /// The last turn stopped on the usage limit; the session continues by
-    /// itself once the limit resets.
+    /// itself once the limit resets (or, paused by the account pool, once an
+    /// account frees up). The pause carries why it waits.
     case limitPaused(LimitPause)
+    /// The last turn stopped on a usage limit and no longer continues by
+    /// itself: the continuations kept meeting the limit and gave up, or they
+    /// were cancelled. The turn is interrupted, with the manual Continue.
+    case limitStopped(LimitReason)
     /// This client is opening the session. `phase` is the latest
-    /// `attach_progress` phase, when one arrived.
-    case connecting(phase: String?)
+    /// `attach_progress` phase, when one arrived; `poolResumesAt` comes with
+    /// `pool_wait` (every account of the account pool is at its limit).
+    case connecting(phase: String?, poolResumesAt: Date? = nil)
     /// This client's attempt to open the session failed.
     case connectFailed
 
@@ -60,13 +66,16 @@ struct SessionActivityInputs: Sendable {
     var backgroundCount: Int = 0
     /// The summary's usage-limit pause.
     var limitPause: LimitPause? = nil
+    /// The summary's `limit_reason`: why the pause waits, or why the last
+    /// turn stopped once the pause has ended.
+    var limitReason: LimitReason? = nil
     /// The server's live background status (`background`): tasks running,
     /// the agent working out of turn, a turn held open. Nil when nothing and
     /// against an older server, which then reads exactly as before.
     var background: ConversationBackground? = nil
 
     enum ConnectAttempt: Equatable, Sendable {
-        case connecting(phase: String?)
+        case connecting(phase: String?, poolResumesAt: Date? = nil)
         case failed
     }
 }
@@ -84,7 +93,7 @@ extension SessionActivity {
         // This client cannot reach the agent right now.
         switch i.connection {
         case .failed: return .connectFailed
-        case .connecting(let phase): return .connecting(phase: phase)
+        case .connecting(let phase, let poolResumesAt): return .connecting(phase: phase, poolResumesAt: poolResumesAt)
         case nil: break
         }
         // The agent runs a turn of its own (its background work woke it): no
@@ -95,10 +104,15 @@ extension SessionActivity {
         let tasks = max(0, i.background?.taskCount ?? 0)
         // The turn is held open only for background work, by the server's word.
         if i.background?.heldOpen == true, !liveAndIdle { return .background(count: tasks) }
-        if i.turnState != .running, let pause = i.limitPause, pause.isWaiting {
+        if i.turnState != .running, var pause = i.limitPause, pause.isWaiting {
+            pause.reason = i.limitReason ?? .usageLimit
             return .limitPaused(pause)
         }
-        if i.turnState == .interrupted { return .interrupted }
+        if i.turnState == .interrupted {
+            // `limitStopReason`: stopped on a usage limit, no pause left.
+            if i.limitPause == nil, let reason = i.limitReason { return .limitStopped(reason) }
+            return .interrupted
+        }
         if i.turnState == .running {
             if !liveAndIdle { return .working }
             return tasks > 0 ? .background(count: tasks) : .idle
@@ -120,6 +134,7 @@ extension SessionActivity {
             turnStateReported: summary.turnStateReported,
             status: summary.status,
             limitPause: summary.limitPause,
+            limitReason: summary.limitReason,
             background: summary.background
         ))
     }
@@ -145,8 +160,14 @@ extension SessionActivity {
         case .limitPaused(let pause):
             if pause.state == .claimed { return "Continuing — the usage limit has reset" }
             let parts = LimitResetFormat.parts(resetsAt: pause.resetsAt, now: now)
+            if pause.isPool { return "Paused by usage limits — continues at \(parts.time)" }
             return "Paused — limit resets at \(parts.time) (in \(parts.remaining))"
-        case .connecting(let phase):
+        case .limitStopped: return "Stopped by usage limits"
+        case .connecting(let phase, let poolResumesAt):
+            if phase == "pool_wait", let poolResumesAt {
+                let time = LimitResetFormat.parts(resetsAt: poolResumesAt, now: now).time
+                return "Connecting… (all Claude subscriptions are at their limit — the next one frees at \(time))"
+            }
             guard let phase, let step = Self.attachPhaseLabel(phase, agentName: agentName) else {
                 return "Connecting…"
             }
@@ -165,6 +186,7 @@ extension SessionActivity {
         case "loading": return "loading the \(agent) session"
         case "creating": return "creating a \(agent) session"
         case "configuring": return "applying \(agent) session settings"
+        case "pool_wait": return "all Claude subscriptions are at their limit"
         default: return nil
         }
     }
@@ -177,7 +199,10 @@ extension SessionActivity {
         case .needsYou: return "The agent is waiting for you before it can go on."
         case .idle: return "Nothing is running. Send a message to start a turn."
         case .interrupted: return "The last turn was cut off before it finished. Continue picks it up where it left off."
+        case .limitPaused(let pause) where pause.isPool:
+            return "Every Claude account behind the account pool is at its limit. This session continues by itself once one frees up."
         case .limitPaused: return "The account hit its usage limit. This session continues by itself shortly after the limit resets."
+        case .limitStopped: return "The last turn stopped on a usage limit and no longer continues by itself. Continue it once the limit allows."
         case .connecting: return "The agent is opening this session."
         case .connectFailed: return "The agent could not be reached."
         }
@@ -191,7 +216,7 @@ extension SessionActivity {
         case .working, .connecting: return .active
         case .needsYou: return .attention
         case .idle, .background: return .quiet
-        case .interrupted, .connectFailed: return .warning
+        case .interrupted, .connectFailed, .limitStopped: return .warning
         case .limitPaused: return .paused
         }
     }
@@ -204,6 +229,7 @@ extension SessionActivity {
         case .idle: return "moon.zzz"
         case .interrupted: return "exclamationmark.triangle.fill"
         case .limitPaused: return "pause.circle.fill"
+        case .limitStopped: return "pause.circle"
         case .connecting: return "antenna.radiowaves.left.and.right"
         case .connectFailed: return "wifi.exclamationmark"
         }
@@ -286,9 +312,15 @@ enum ContinuePrompt {
     static let resumeAfterRestart =
         "codeg restarted while you were working, so your last turn was cut off. Anything that was running in the background (sub-agents, background shells, monitors) was stopped. Continue where you left off, re-launching anything that still needs to run."
 
-    /// The backend's `LIMIT_CONTINUE_PROMPT`, verbatim.
+    /// The backend's `LIMIT_CONTINUE_PROMPT`, verbatim. Since codeg's
+    /// limit-continue also picks up the sub-agents the limit stopped.
     static let limitContinue =
-        "Your usage limit has reset. Continue the task you were working on when the usage limit was reached; do not repeat work that is already complete."
+        "Your usage limit has reset. First resume any sub-agents the limit stopped, each from where it stopped with its context intact rather than starting it over; then continue the task you were working on when the usage limit was reached. Do not repeat work that is already complete."
+
+    /// The continuation's earlier wording, still in older transcripts.
+    static let earlierLimitContinues = [
+        "Your usage limit has reset. Continue the task you were working on when the usage limit was reached; do not repeat work that is already complete.",
+    ]
 
     /// The kinds of "keep going" turn drawn as a divider instead of a bubble.
     enum Variant: String, Equatable, Sendable {
@@ -322,7 +354,7 @@ enum ContinuePrompt {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed == Self.text { return .continued }
         if trimmed == resumeAfterRestart { return .resumed }
-        if trimmed == limitContinue { return .limit }
+        if trimmed == limitContinue || earlierLimitContinues.contains(trimmed) { return .limit }
         return nil
     }
 

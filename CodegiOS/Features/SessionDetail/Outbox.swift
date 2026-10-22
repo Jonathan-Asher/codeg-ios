@@ -14,11 +14,15 @@ import Foundation
 struct SendFailure: Hashable, Codable, Sendable {
     enum Reason: String, Codable, Sendable {
         case network, timeout, server, connection, unauthorized, rejected, interrupted
+        /// Every account of the server's account pool is at its limit.
+        case poolExhausted
     }
 
     var reason: Reason
     var autoRetry: Bool
     var attempts: Int
+    /// `poolExhausted`: when the pool's first account frees up, if known.
+    var retryAt: Date? = nil
 
     /// Automatic attempts for an unexpected server error before it waits for
     /// the user: it may pass, but must not loop.
@@ -35,11 +39,12 @@ struct SendFailure: Hashable, Codable, Sendable {
         let attempts = (previous?.attempts ?? 0) + 1
         let auto: Bool
         switch reason {
-        case .network, .timeout, .connection, .unauthorized, .interrupted: auto = true
+        case .network, .timeout, .connection, .unauthorized, .interrupted, .poolExhausted: auto = true
         case .server: auto = attempts < maxUnexpectedAttempts
         case .rejected: auto = false
         }
-        return SendFailure(reason: reason, autoRetry: auto, attempts: attempts)
+        let retryAt = reason == .poolExhausted ? (error as? APIError)?.poolResumesAt : nil
+        return SendFailure(reason: reason, autoRetry: auto, attempts: attempts, retryAt: retryAt)
     }
 
     static func classify(_ error: Error) -> Reason {
@@ -53,6 +58,7 @@ struct SendFailure: Hashable, Codable, Sendable {
                 return .connection
             case .server(let status, let code, _):
                 if api.isStaleConnection { return .connection }
+                if api.isPoolExhausted { return .poolExhausted }
                 if status >= 500 { return .server }
                 if status == 401 || status == 403 || code == "authentication_failed" { return .unauthorized }
                 if status == 408 { return .timeout }
@@ -67,9 +73,15 @@ struct SendFailure: Hashable, Codable, Sendable {
         return .server
     }
 
-    /// Seconds before the next automatic attempt.
+    /// Seconds before the next automatic attempt. Held back by the account
+    /// pool, it goes a moment after the first account frees up (every minute
+    /// while that time is unknown), for as long as it takes.
     var retryDelay: Double {
-        attempts <= 0 ? 0 : min(30, pow(2, Double(attempts - 1)))
+        if reason == .poolExhausted {
+            guard let retryAt else { return 60 }
+            return min(6 * 3600, max(5, retryAt.timeIntervalSinceNow + 5))
+        }
+        return attempts <= 0 ? 0 : min(30, pow(2, Double(attempts - 1)))
     }
 
     /// What the queued row says after "Not sent".
@@ -84,6 +96,9 @@ struct SendFailure: Hashable, Codable, Sendable {
         case .unauthorized: return "Signed out — will resend after you sign in"
         case .interrupted: return "Interrupted — will resend"
         case .rejected: return "Refused by the server"
+        case .poolExhausted:
+            guard let retryAt else { return "All accounts at their limit — will resend when one frees up" }
+            return "All accounts at their limit — will resend at \(LimitResetFormat.parts(resetsAt: retryAt).time)"
         }
     }
 }

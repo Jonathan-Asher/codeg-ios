@@ -672,8 +672,8 @@ uploading), `Networking/CodegClient+Media.swift` (`upload_attachment`).
 - **Is it there.** Before a card shows, `MediaPresence` asks the server, one
   `list_directory_with_files` per directory however many files and messages
   name it (codeg had no stat endpoint; since 1.3.22 a server with
-  `stat_paths` answers in one request, see the next section). A file that isn't listed doesn't
-  show; a directory that isn't there ("Path is not a directory") means its
+  `stat_paths` answers in one request, see "Catching up with the server
+  (1.3.22)"). A file that isn't listed doesn't show; a directory that isn't there ("Path is not a directory") means its
   files aren't either. The one exception is a file the reply wrote with
   Write / Edit / apply_patch and that is gone since: it is listed, struck
   through, as "Deleted". An answer is kept for 10 minutes when the file is
@@ -1137,6 +1137,231 @@ the banner in `App/RootView.swift`; `Models/ProviderError.swift` and
 `CodegiOSTests/SessionForkTests.swift` covers one fork at a time, the banner
 text and which buttons say "Forking…"; `CodegiOSTests/ProviderErrorTests.swift`
 the recognition, the titles and the sub-agent card.
+
+### Catching up with the server (1.3.22)
+
+What the codeg fork (`fork/solution-plan`) gained since 1.3.21 that the app
+now follows: a new continuation prompt, dictation kept as spoken, forking
+while a Pi reply runs, the resumable upload, and the account pool's waiting
+and exhausted states.
+
+#### The continuation's new wording
+
+`ContinuePrompt.limitContinue` and `earlierLimitContinues`
+(`Models/SessionActivity.swift`). codeg's `LIMIT_CONTINUE_PROMPT`
+(`src-tauri/src/acp/limit_continue.rs`) now reads "Your usage limit has
+reset. First resume any sub-agents the limit stopped, each from where it
+stopped with its context intact rather than starting it over; then continue
+the task you were working on when the usage limit was reached. Do not repeat
+work that is already complete." Both it and the earlier wording ("…Continue
+the task you were working on when the usage limit was reached; do not repeat
+work that is already complete.") are the "Continued after limit reset"
+divider, matched exactly on the trimmed text, as codeg web's
+`isLimitContinuePrompt` does, so neither shows as a message the user typed.
+
+#### "Kept as spoken"
+
+`DictationRefineResult.keptOriginal`, `DictationRefineFallback.rejected`
+(`Features/Dictation/DictationRefine.swift`). `refine_dictation` answers
+`keptOriginal: true` when it rejected the model's answer (a refusal, a reply
+to or comment on the dictation, nothing, a cut-off answer, most of it
+dropped) and its one stricter retry gave nothing usable either; `text` is
+then the dictation as it came. The app inserts its own words unchanged and
+the composer's dismissible notice says "Kept as spoken" (in the string
+catalog; zh-Hans "已按原话保留"). An older server never sends the field, and
+nothing changes there.
+
+#### Forking while a Pi reply runs
+
+`SessionForkRules.forksWhileRunning(_:adapter:)`,
+`ForkCapabilities.agentForksWhileRunning`. pi-acp 0.0.34-steering.3 writes a
+fork from the session file, skipping a half-written last line, and says so at
+`initialize` (`_meta.forkPoint.whileRunning`); codeg passes that on as the
+session snapshot's `fork_while_running` and the `fork_supported` event's
+`while_running`. The app records it per server and agent beside
+`fork_supported` (only when the agent forks at all: the server reports
+`false` until the adapter has started), and offers a fork while a turn runs
+when the server says the adapter can, with Claude Code always able, as
+codeg's `fork_adapter_of` and codeg web's `supportsForkWhileRunning` have it.
+Without the server's word (an older server, or no live session of that agent
+seen yet) Claude Code and Pi are offered it; an older pi-acp is then refused
+by the server ("this agent can only fork between turns"), which the app
+already reports.
+
+#### Large videos, audio, resumable uploads, stat_paths
+
+`Networking/CodegClient+Uploads.swift` (`upload_limits`, the resumable
+calls, `stat_paths`), `Networking/ResumableUpload.swift`
+(`ResumableTransfer`), `Features/SessionDetail/VideoAttachment.swift` (the
+job, `VideoPolicy`, `AttachmentUploadLifecycle`, `AudioAttachmentPrep`),
+`Features/Media/MediaPresence.swift`.
+
+- **What the server takes.** codeg fork.191 answers `POST /api/upload_limits`
+  with `{maxFileBytes, maxMediaBytes, mediaTypes, maxTotalBytes,
+  remainingTotalBytes, resumable: {chunkBytesHint, idleTimeoutSecs,
+  maxActive}}`: 20 MiB for pictures and other files, 1 GiB for `video/*` and
+  `audio/*` (`CODEG_UPLOAD_MAX_MEDIA_BYTES`), pieces of 8 MiB suggested,
+  an idle upload dropped after 24 h. The app asks once per server
+  (`UploadLimitsCache`: an answer is kept for an hour; "unknown call" for ten
+  minutes, so an upgraded server is noticed). A 404, 405 or 501, or an
+  answer that doesn't parse, is a server before fork.191
+  (`ServerUploadLimits.legacy`: 20 MiB for everything, no resumable
+  upload), and the job then does exactly what 1.3.14 did; the one
+  `upload_limits` request is the only difference.
+- **Which video goes.** Against a server that reports its limits:
+  - *Original* (the default) sends the file as the iPhone has it, in any
+    codec (HEVC included) and any container, whenever it is within
+    `maxMediaBytes`. Only a larger one is exported, to H.264 MP4 at 1080p,
+    or 720p, 540p, 480p or about 360p when that is still over.
+  - HEVC is not converted to H.264, because nothing on the way needs it:
+    codeg stores the file and serves byte ranges, it never decodes it; the
+    iPhone, Safari, the codeg desktop app's WebKit view and Chrome on a Mac
+    play HEVC; an agent that looks at a video extracts frames with ffmpeg,
+    which reads HEVC. A transcode on the phone would cost about the clip's
+    length in time and battery and lose quality on every upload. The one
+    place HEVC fails is a browser without it (Firefox, Chrome on Linux)
+    showing the clip in codeg web, and *Compressed* covers that.
+  - *Compressed* exports to H.264 MP4 at 720p (down the same ladder to fit);
+    an H.264 MP4, MOV or M4V whose shorter side is 720 or less goes as it
+    is. The choice is in the long-press menu of the video's chip ("Send the
+    video": Original / Compressed (720p)), offered for a video on such a
+    server until it is uploaded. Switching starts over from the picked file
+    and cancels the other upload on the server. The choice is stored
+    (`attachments.videoQuality` in the user defaults) and used for the next
+    video.
+  - A file AVFoundation can't read (WebM, Matroska, …) goes as it is within
+    the limit, without a poster.
+  - On an older server the 1.3.14 rules stay: an H.264 MP4, MOV or M4V
+    within 20 MiB as it is, anything else exported at 720p, 540p, 480p or
+    360p to fit.
+  - Exports go to an `export-<id>/` folder beside the picked file. 1.3.14
+    wrote the export of an H.264 `clip.mp4` over 20 MiB onto `clip.mp4`
+    itself, which deleted its own source and failed.
+- **The resumable upload.** `ResumableTransfer` sends the prepared file:
+  `upload_attachment_create {fileName, size, mimeType, sessionId}` (the
+  conversation's bucket, as `upload_attachment`'s `session_id`), then
+  `PUT /api/upload_attachment_chunk?uploadId=…&offset=N` with
+  `chunkBytesHint` bytes of the file as the raw body
+  (`application/octet-stream`, read with a `FileHandle` off the main
+  thread), each answer's `offset` being where the next piece starts, then
+  `upload_attachment_complete`, whose `{path, name, size, mimeType}` is what
+  `upload_attachment` answers, so the prompt's `resource_link` and the card
+  are as in 1.3.14. The chip's ring is the server's offset plus what the
+  current piece has sent (`didSendBodyData`); VoiceOver reads "Uploading,
+  40 percent, 61 MB of 152 MB".
+  - A piece at the wrong offset (409 `errors.upload.offsetMismatch`) starts
+    again at `i18n_params.offset`. A piece taken over by a newer request
+    (409 `superseded`) and an early complete (409 `incomplete`) ask
+    `upload_attachment_status` and go on from its offset.
+  - An upload the server no longer has (404 `errors.upload.notFound`: a
+    restarted server keeps none, an idle one lapses after a day) starts
+    over from zero with a new create, three times at most.
+  - A network failure or a 5xx waits 1, 2, 4, 8, 15, then 30 s, asks
+    `upload_attachment_status` and goes on; the bytes of a piece cut off
+    midway stay on the server, so little is sent twice. Eight failures in a
+    row with nothing getting through mark the chip failed; the upload id is
+    kept, so Try Again goes on where the server stopped.
+  - Too large, the upload space full and too many uploads in progress fail
+    at once, in the server's terms. A proxy that refuses `PUT` (405) gets the
+    piece as a `POST`, which codeg takes too.
+  - Pieces go through their own session: a minute without a byte ends a
+    piece (the server keeps what arrived), and a request waits up to half an
+    hour for the network to come back (`waitsForConnectivity`), the chip
+    showing a Wi-Fi symbol meanwhile (`taskIsWaitingForConnectivity`).
+  - Removing the chip cancels the request, tells the server
+    (`upload_attachment_cancel`, which deletes its staging file and frees
+    its quota) and deletes the copies on the iPhone.
+- **In the background.** `AttachmentUploadLifecycle` holds a
+  `beginBackgroundTask` while any upload runs, so an upload keeps going
+  for the time iOS gives an app that leaves the screen (about 30 s). Just
+  before that time runs out every upload pauses: its request is cancelled
+  (the server keeps what arrived) and the chip shows a pause symbol. On
+  `willEnterForeground` each one asks `upload_attachment_status` and goes
+  on. An app suspended without that warning finds its request failed when
+  it wakes, which is a network failure like any other: status, then go on.
+  An export or an iCloud download stopped this way is done again.
+  - Not a background `URLSession`: iOS treats every task an app creates
+    while in the background as discretionary (it may wait for Wi-Fi and
+    power) and wakes the app between tasks with growing delays, so a piece
+    at a time would crawl or stop on cellular, and one task for the whole
+    remainder would give up the pieces (and need a copy of the rest of the
+    file). An app iOS ends while suspended loses its composer, as before;
+    its upload on the server lapses after `idleTimeoutSecs`.
+- **Audio files.** The Files picker takes `.audio` types too (mp3, m4a, aac,
+  wav, flac, aif, aiff, caf, ogg, opus, …). An audio file is an
+  `AttachmentUpload` of kind `.audio`: never compressed, refused over
+  `maxMediaBytes` (20 MiB on an older server), uploaded the same way, its
+  type from the extension (`audio/mpeg`, `audio/mp4`, `audio/wav`, …). Its
+  chip is a waveform with its length; the message's `resource_link` becomes
+  the inline audio card, which streams from fork.190 on.
+- **Is it there, in one request.** `MediaPresence` asks `stat_paths {paths,
+  rootPaths}` about every queued path, up to 200 paths and 32 roots a
+  request. A path's roots are the session's folder, the home when the path
+  is in it, and the `cd` a printed relative name was joined to
+  (`MediaRef.base`); codeg adds its uploads directory itself. An answer
+  `allowed`, `exists` and `isFile` is there with its size; `exists: false`
+  or a directory is missing; an `error` leaves the card to find out
+  (`unverified`), as does `invalidPath`. A path `outsideRoots` or
+  `symlinkEscape` (an absolute path elsewhere, a link out of the folder) has
+  its directory listed as in 1.3.14, so `/tmp/render/cut.mp4` still shows.
+  A 404, 405 or 501 means a server without `stat_paths`: listings from then
+  on; any other failure lists that batch. Hidden files are now checked too
+  (a listing leaves out dotfiles).
+- **Checked live**: LIVE_RESULTS
+
+#### Usage limits and the account pool
+
+`LimitReason`, `LimitPause.reason`, `SessionActivity.limitPaused` and
+`.limitStopped` (`Models/`), `LimitPausedBanner`
+(`Features/SessionDetail/SessionActivityViews.swift`),
+`Networking/CodegClient+LimitContinue.swift`, `SendFailure.poolExhausted`
+(`Features/SessionDetail/Outbox.swift`). Mirrors codeg web's
+`limit-pause.tsx`, `lib/limit-continue.ts` and the `pool_wait` attach phase.
+
+- **Why it waits.** A conversation's `limit_reason` is `usage_limit` (the
+  account's own limit) or `pool_capacity` (the local account pool, maxpool,
+  answered 429: every account behind it is at its limit). A pool pause reads
+  "Paused by usage limits — continues at 14:30" under the session's title
+  and "Paused · continues 14:30" on its row (VoiceOver: "Paused by usage
+  limits, continues at 14:30"), with the hint "Every Claude account behind
+  the account pool is at its limit. This session continues by itself once
+  one frees up." The time is the pause's `resets_at`, for the pool when its
+  first account frees up. A pause from a server without `limit_reason` reads
+  as the account's own limit, as before.
+- **Stopped.** A turn interrupted on a usage limit whose pause ended without
+  continuing (the continuations met the limit three times and gave up, or
+  were cancelled): `limit_reason` set, no `limit_pause`. It reads "Stopped by
+  usage limits" ("Stopped by limits" on the row) and offers Continue.
+- **Cancel auto-continue and Continue now.** Above the message bar a paused
+  session shows "Paused by usage limits" (or "Paused on the usage limit")
+  and "Continues automatically when it resets at 14:30 (in 2h 5m).", with
+  Cancel auto-continue (`POST /api/cancel_limit_continue {conversationId}`:
+  the pause ends and the turn stays interrupted, with Continue) and Continue
+  now (`POST /api/continue_limit_now`: the continuation goes out at once and
+  may meet the limit again, which pauses it again). Once the continuation is
+  claimed only "The limit has reset — continuing now." remains. Cancel shows
+  at once and is put back if the server refuses; each reads the
+  conversation again afterwards (Continue now after a few seconds).
+- **Opening a session while the pool is full.** The `attach_progress` phase
+  `pool_wait` comes with `pool_resumes_at` (epoch seconds); the title line
+  reads "Connecting… (all Claude subscriptions are at their limit — the
+  next one frees at 14:30)", without the time when the pool doesn't know it.
+- **A message the pool holds back.** codeg refuses a prompt with 409
+  `pool_exhausted` ("All Claude subscriptions behind the account pool are at
+  their limit, so Claude Code cannot take a request yet; the next one frees
+  at 14:30 UTC. [pool_exhausted resumes_at=N]"). The app read every 409 as
+  "a turn is already running" and waited for a turn that wasn't running.
+  Now `CodegClient` keeps it a server error (`APIError.isPoolExhausted`,
+  `poolResumesAt`), and the message stays at the front of the queue, "Not
+  sent · All accounts at their limit — will resend at 14:30", going again by
+  itself five seconds after that time (every minute when it isn't known),
+  however many times it meets the limit.
+
+`CodegiOSTests/SessionActivityTests.swift` covers both continuation
+wordings; `DictationRefineTests` the kept answer and its decoding;
+`SessionForkTests` Pi and the server's word, in the rules and through the
+forker; `LimitPauseTests` the pool pause, the stop, the two actions on the
+wire, `pool_wait` and a prompt the pool held back.
 
 ## Session lists
 
@@ -2264,8 +2489,9 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   (pieces, a dropped piece resumed from the server's offset, a wrong
   offset, a superseded piece, a lost upload started over, giving up and Try
   Again, removing, pausing in the background, Original and Compressed,
-  audio), the video policy on real movies, and `stat_paths` batching, roots
-  and fallback) on an
+  audio), the video policy on real movies, `stat_paths` batching, roots
+  and fallback, and the usage-limit pause, stop and account pool states) on
+  an
   iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
   `build`. It uploads the session list screenshots as the
   `session-list-screenshots` artifact (with `transcript-scroll.txt`, the

@@ -82,7 +82,9 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     case planUpdate(entries: [PlanEntry])
     /// Progress of opening the session (`queued`, `starting`, `resuming`,
     /// `loading`, `creating`, `configuring`, `ready`, `failed`).
-    case attachProgress(phase: String, elapsedMs: Int)
+    /// `poolResumesAt` rides with `pool_wait`: when the account pool's first
+    /// held-back account frees up, if the pool knows.
+    case attachProgress(phase: String, elapsedMs: Int, poolResumesAt: Date? = nil)
     /// The prompting turn is held open only for background work: the agent
     /// answered and is idle. `nativeSteering` says a message can be delivered
     /// into the held turn right away (`_session/steering`).
@@ -108,8 +110,9 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     /// asked for (labels for the message, `actualValue` the raw id).
     case configOptionRejected(configId: String, optionName: String, requested: String, actual: String, actualValue: String)
     /// Whether the agent can fork its session (`session/fork`), once it has
-    /// started.
-    case forkSupported(Bool)
+    /// started, and whether its adapter forks while a turn runs
+    /// (`while_running`; nil from a server that doesn't say).
+    case forkSupported(Bool, whileRunning: Bool? = nil)
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -119,10 +122,10 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         case used, size, messageId, blocks, message, code, textPreview
         case requestId, toolCall, options, questionId, questions, entries
         case approvalId, planMarkdown
-        case phase, elapsedMs, awaiting, nativeSteering, outstanding, item, ids
+        case phase, elapsedMs, poolResumesAt, awaiting, nativeSteering, outstanding, item, ids
         case images
         case modeId, modes, configOptions, configId, optionName, requested, actual, actualValue
-        case supported
+        case supported, whileRunning
     }
 
     init(from decoder: Decoder) throws {
@@ -225,7 +228,9 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         case "attach_progress":
             self = .attachProgress(
                 phase: (try? c.decodeIfPresent(String.self, forKey: .phase)) ?? "starting",
-                elapsedMs: (try? c.decodeIfPresent(Int.self, forKey: .elapsedMs)) ?? 0
+                elapsedMs: (try? c.decodeIfPresent(Int.self, forKey: .elapsedMs)) ?? 0,
+                poolResumesAt: ((try? c.decodeIfPresent(Int64.self, forKey: .poolResumesAt)) ?? nil)
+                    .map { Date(timeIntervalSince1970: TimeInterval($0)) }
             )
         case "awaiting_background":
             self = .awaitingBackground(
@@ -267,7 +272,8 @@ enum AcpEvent: Hashable, Sendable, Decodable {
             )
         case "fork_supported":
             if let supported = (try? c.decodeIfPresent(Bool.self, forKey: .supported)) ?? nil {
-                self = .forkSupported(supported)
+                self = .forkSupported(
+                    supported, whileRunning: (try? c.decodeIfPresent(Bool.self, forKey: .whileRunning)) ?? nil)
             } else {
                 self = .unknown(type: type)
             }
@@ -346,6 +352,10 @@ struct LiveSessionSnapshot: Sendable, Decodable {
     /// The agent can fork its session (`fork_supported`, from its
     /// `session/fork` capability). nil from a server that doesn't say.
     let forkSupported: Bool?
+    /// The agent's adapter forks from a separate process while a turn runs
+    /// (`fork_while_running`: Claude Code, and pi-acp from 0.0.34-steering.3).
+    /// nil from a server that doesn't say.
+    let forkWhileRunning: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case connectionId, conversationId, folderId, status, externalId, eventSeq
@@ -353,7 +363,7 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         case awaitingBackground, backgroundOutstanding, nativeSteeringAvailable
         case pendingUserMessage, feedback
         case modes, currentMode, configOptions
-        case forkSupported
+        case forkSupported, forkWhileRunning
     }
 
     private struct PendingUserMessageRef: Decodable {
@@ -383,6 +393,7 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         currentMode = (try? c.decodeIfPresent(String.self, forKey: .currentMode)) ?? nil
         configOptions = (try? c.decodeIfPresent([SessionConfigOption].self, forKey: .configOptions)) ?? nil
         forkSupported = (try? c.decodeIfPresent(Bool.self, forKey: .forkSupported)) ?? nil
+        forkWhileRunning = (try? c.decodeIfPresent(Bool.self, forKey: .forkWhileRunning)) ?? nil
     }
 }
 

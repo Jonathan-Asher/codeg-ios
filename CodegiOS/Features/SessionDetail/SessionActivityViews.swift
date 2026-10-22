@@ -279,3 +279,78 @@ struct ContinueChip: View {
         .accessibilityHint(Text("Sends “continue” so the agent keeps going"))
     }
 }
+
+/// Above the message bar of a session paused on a usage limit (codeg's
+/// `LimitPausedBanner`): why it waits and when it continues by itself, with
+/// Cancel auto-continue and Continue now. Once the continuation is going out
+/// there is nothing left to choose, so only the line stays.
+struct LimitPausedBanner: View {
+    let pause: LimitPause
+    var busy = false
+    let onCancel: () -> Void
+    let onContinueNow: () -> Void
+
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            content(now: context.date)
+        }
+        .accessibilityIdentifier("limit-paused-banner")
+    }
+
+    static func title(_ pause: LimitPause) -> String {
+        pause.isPool ? String(localized: "Paused by usage limits") : String(localized: "Paused on the usage limit")
+    }
+
+    static func detail(_ pause: LimitPause, now: Date) -> String {
+        if pause.state == .claimed { return String(localized: "The limit has reset — continuing now.") }
+        let parts = LimitResetFormat.parts(resetsAt: pause.resetsAt, now: now)
+        return String(localized: "Continues automatically when it resets at \(parts.time) (in \(parts.remaining)).")
+    }
+
+    /// The title in bold, then when it continues.
+    static func line(_ pause: LimitPause, now: Date) -> AttributedString {
+        var head = AttributedString(Self.title(pause))
+        head.inlinePresentationIntent = .stronglyEmphasized
+        return head + AttributedString(" " + Self.detail(pause, now: now))
+    }
+
+    private func content(now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "hourglass")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.textSecondary)
+                Text(Self.line(pause, now: now))
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityHint(Text(verbatim: SessionActivity.limitPaused(pause).hint))
+            if pause.state != .claimed {
+                HStack(spacing: 8) {
+                    Button(action: onCancel) {
+                        Label("Cancel auto-continue", systemImage: "xmark")
+                    }
+                    .accessibilityHint(Text("Don’t continue by itself: leave the turn interrupted, with Continue"))
+                    .accessibilityIdentifier("limit-cancel-auto-continue")
+                    Button(action: onContinueNow) {
+                        Label("Continue now", systemImage: "play.fill")
+                    }
+                    .accessibilityHint(Text("Send the continuation now — it may hit the limit again"))
+                    .accessibilityIdentifier("limit-continue-now")
+                }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(busy)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+        .hairlineBorder(Theme.Radius.md)
+        .padding(.bottom, 6)
+    }
+}

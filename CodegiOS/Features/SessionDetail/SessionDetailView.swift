@@ -510,6 +510,16 @@ struct SessionDetailView: View {
                     .padding(.horizontal, ComposeBar.sideMargin(focused: composeFocused))
                     .transition(.opacity)
                 }
+                if case .limitPaused(let pause) = model.activity {
+                    LimitPausedBanner(
+                        pause: pause,
+                        busy: model.limitActionBusy,
+                        onCancel: { Task { await model.cancelLimitContinue() } },
+                        onContinueNow: { Task { await model.continueLimitNow() } }
+                    )
+                    .padding(.horizontal, ComposeBar.sideMargin(focused: composeFocused))
+                    .transition(.opacity)
+                }
                 if model.canOfferContinue {
                     ContinueChip { model.sendContinue() }
                         .padding(.bottom, 2)

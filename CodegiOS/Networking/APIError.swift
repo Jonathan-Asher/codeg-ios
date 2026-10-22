@@ -33,6 +33,24 @@ enum APIError: LocalizedError, Sendable {
         }
     }
 
+    /// The prompt was held back because every account of the server's account
+    /// pool (maxpool) is at its limit (codeg's `pool_exhausted`, HTTP 409).
+    /// The message goes again once one frees up.
+    var isPoolExhausted: Bool {
+        guard case .server(_, let code, let message) = self else { return false }
+        return code == "pool_exhausted" || message.contains("[pool_exhausted")
+    }
+
+    /// When the pool's first account frees up: the `resumes_at` (epoch
+    /// seconds) of the message's `[pool_exhausted resumes_at=…]` tail.
+    var poolResumesAt: Date? {
+        guard isPoolExhausted, case .server(_, _, let message) = self,
+              let range = message.range(of: "[pool_exhausted resumes_at=") else { return nil }
+        let digits = message[range.upperBound...].prefix { $0.isNumber }
+        guard let seconds = TimeInterval(digits), seconds > 0 else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
     /// The folder isn't a git repository — the server's git endpoints guard with
     /// `ensure_git_repo`, returning HTTP 422 `not_a_git_repository`. Lets the
     /// Changes/Commits views show a calm "not a repo" state instead of an error.

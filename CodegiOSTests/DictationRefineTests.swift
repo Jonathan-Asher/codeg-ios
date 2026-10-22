@@ -117,6 +117,22 @@ final class TranscriptPostProcessorTests: XCTestCase {
         if case .kept(.failed) = outcome.status {} else { XCTFail("expected a failure, got \(outcome.status)") }
     }
 
+    func testARejectedAnswerIsKeptAsSpoken() async {
+        // The server turned the model's answer down (a refusal, a reply to the
+        // dictation) and sent the words back as they came.
+        let server = MockRefineServer(refine: .success(DictationRefineResult(
+            text: "שלום", provider: "groq", model: "m", elapsedMs: 900, keptOriginal: true)))
+        let outcome = await makeProcessor(server).process("שלום ", mode: .cleanUp, sourceLanguage: "he")
+        XCTAssertEqual(outcome.text, "שלום ")
+        XCTAssertEqual(outcome.status, .kept(.rejected))
+        XCTAssertEqual(outcome.notice, "Kept as spoken")
+
+        let translated = MockRefineServer(refine: .success(DictationRefineResult(text: "Hello", keptOriginal: false)))
+        let refined = await makeProcessor(translated).process("שלום", mode: .translate, sourceLanguage: "he")
+        XCTAssertEqual(refined.text, "Hello")
+        XCTAssertNil(refined.notice)
+    }
+
     func testATimeoutKeepsTheWords() async {
         let server = MockRefineServer(refineDelay: .seconds(10))
         let started = Date()
@@ -261,6 +277,9 @@ final class DictationRefineWireTests: XCTestCase {
         let json = #"{"text": "Hello", "provider": "groq", "model": "m", "elapsed_ms": 312}"#
         let result = try CodegJSON.decoder.decode(DictationRefineResult.self, from: Data(json.utf8))
         XCTAssertEqual(result, DictationRefineResult(text: "Hello", provider: "groq", model: "m", elapsedMs: 312))
+        XCTAssertFalse(result.keptOriginal)
+        let kept = #"{"text": "שלום", "provider": "groq", "model": "m", "elapsedMs": 40, "keptOriginal": true}"#
+        XCTAssertTrue(try CodegJSON.decoder.decode(DictationRefineResult.self, from: Data(kept.utf8)).keptOriginal)
     }
 
     func testWhichErrorsMeanAnOlderServer() {
