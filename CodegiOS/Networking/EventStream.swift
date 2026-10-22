@@ -462,23 +462,26 @@ final class EventStream: @unchecked Sendable {
         let probe = self.probe
         Task { [weak self] in
             let outcome = await probe()
-            guard let self else { return }
-            self.lock.lock()
-            guard !self.isClosed else { self.lock.unlock(); return }
-            let now = self.clock.now
-            let verdict = self.liveness.onProbeResult(now: now, outcome: outcome, elapsed: now - startedAt)
-            let current = self.socket
-            self.lock.unlock()
-            switch verdict {
-            case .extend:
-                // A write is what makes a dead connection fail fast.
-                self.sendPing(current)
-                self.scheduleCheck()
-            case .dead:
-                self.die(reason: EventStream.noAnswerReason)
-            case .ignored:
-                break
-            }
+            self?.probeSettled(outcome, startedAt: startedAt)
+        }
+    }
+
+    private func probeSettled(_ outcome: StreamLiveness.ProbeOutcome, startedAt: TimeInterval) {
+        lock.lock()
+        guard !isClosed else { lock.unlock(); return }
+        let now = clock.now
+        let verdict = liveness.onProbeResult(now: now, outcome: outcome, elapsed: now - startedAt)
+        let current = socket
+        lock.unlock()
+        switch verdict {
+        case .extend:
+            // A write is what makes a dead connection fail fast.
+            sendPing(current)
+            scheduleCheck()
+        case .dead:
+            die(reason: Self.noAnswerReason)
+        case .ignored:
+            break
         }
     }
 
