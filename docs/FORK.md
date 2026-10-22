@@ -122,8 +122,10 @@ remains.
   `deriveSessionActivity` (`src/lib/session-activity.ts`) and the held-turn
   rules of `src/lib/background-idle.ts`: Working, Needs you, Idle, Interrupted,
   "Idle — N background tasks running", "Paused — limit resets at … (in …)",
-  Connecting… (with the `attach_progress` phase) and Couldn't connect. Inputs:
-  the summary's `turn_state` and `limit_pause`, the attention snapshot
+  "Paused by usage limits — continues at …" and "Stopped by usage limits"
+  (1.3.22), Connecting… (with the `attach_progress` phase) and Couldn't
+  connect. Inputs: the summary's `turn_state`, `limit_pause` and
+  `limit_reason`, the attention snapshot
   (`list_conversation_attention`, refreshed with the session list), and, on
   the open session, its own live connection (`awaiting_background`,
   `background_outstanding`). Session rows and the session title show it.
@@ -1307,7 +1309,15 @@ job, `VideoPolicy`, `AttachmentUploadLifecycle`, `AudioAttachmentPrep`),
   A 404, 405 or 501 means a server without `stat_paths`: listings from then
   on; any other failure lists that batch. Hidden files are now checked too
   (a listing leaves out dotfiles).
-- **Checked live**: LIVE_RESULTS
+- **Checked live** (on macOS, with the app's own `ResumableTransfer` and
+  `CodegClient` built into a small command-line harness, against codeg
+  fork.203): `upload_limits` answered 1 GiB for video and audio, resumable,
+  8 MiB pieces suggested. A 6 MiB file sent in 2 MiB pieces through a proxy
+  that cut the connection 3 MiB in, in the middle of the second piece:
+  the transfer waited, asked `upload_attachment_status`, which held
+  3,144,868 bytes (what had landed of the cut piece, less the requests'
+  headers), went on from there rather than from the piece's start or from
+  zero, and completed; the stored file's SHA-256 matched the original.
 
 #### Usage limits and the account pool
 
