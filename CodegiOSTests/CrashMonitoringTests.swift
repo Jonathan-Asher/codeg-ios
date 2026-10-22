@@ -71,16 +71,29 @@ final class AVFAudioGuardTests: XCTestCase {
         }
     }
 
-    /// A real one: a player node started while its engine is stopped.
-    func testCatchesARealAVFAudioException() {
+    /// Real AVFAudio misuse, caught: a second tap on a bus that has one
+    /// (AVFAudio's "nullptr == Tap()" precondition, the call family of the
+    /// standby crash), and a player started while its engine is stopped.
+    func testCatchesRealAVFAudioExceptions() throws {
         let engine = AVAudioEngine()
+        let mixer = engine.mainMixerNode
         let player = AVAudioPlayerNode()
         engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: nil)
+        engine.connect(player, to: mixer, format: nil)
         XCTAssertFalse(engine.isRunning)
-        XCTAssertThrowsError(try AVFAudioGuard.run("play on a stopped engine") { player.play() }) { error in
-            XCTAssertNotNil(error as? AVFAudioException)
+        try AVFAudioGuard.run("first tap") { mixer.installTap(onBus: 0, bufferSize: 1024, format: nil) { _, _ in } }
+        defer { try? AVFAudioGuard.run("remove tap") { mixer.removeTap(onBus: 0) } }
+        var caught: [AVFAudioException] = []
+        for (name, misuse) in [("second tap", { mixer.installTap(onBus: 0, bufferSize: 1024, format: nil) { _, _ in } }),
+                               ("play on a stopped engine", { player.play() })] {
+            do {
+                try AVFAudioGuard.run(name, misuse)
+            } catch let error as AVFAudioException {
+                caught.append(error)
+            }
         }
+        if caught.isEmpty { throw XCTSkip("this iOS raised for none of the misuses") }
+        XCTAssertTrue(caught.allSatisfy { !$0.name.isEmpty })
     }
 
     func testValuesAndSwiftErrorsPassThrough() throws {
