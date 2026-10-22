@@ -3,44 +3,59 @@ import Foundation
 
 // MARK: - Protected files
 
-/// How saved session content is written: with complete file protection, on
-/// the files and on their folders. These are attorney-client conversations;
-/// iOS keeps such a file unreadable from about 10 seconds after the phone
-/// locks until it is unlocked again. Nothing reads them while the phone is
-/// locked: the app has no background tasks, and read-aloud speaks from
-/// memory.
-enum SavedFiles {
-    static let protection = FileProtectionType.complete
-
+/// How saved session content reaches the disk. These are attorney-client
+/// conversations: in the app (``ProtectedFiles``) every file and folder gets
+/// complete file protection, and iOS keeps it unreadable from about 10
+/// seconds after the phone locks until it is unlocked. Nothing reads them
+/// while the phone is locked: the app has no background tasks, and
+/// read-aloud speaks from memory. The tests record what was asked for, since
+/// a simulator doesn't apply protection.
+protocol SavedFileStore: Sendable {
     /// Write `data` to `url` atomically and protected, making its folder
     /// (protected too, like any folder made up to it) first.
-    static func write(_ data: Data, to url: URL, root: URL) throws {
+    func write(_ data: Data, to url: URL) throws
+    /// Give a file or folder that exists complete protection.
+    func protect(_ url: URL)
+    /// The protection a file or folder has, when the platform reports one.
+    func protection(of url: URL) -> FileProtectionType?
+}
+
+extension SavedFileStore {
+    /// Give every folder and file under `root` complete protection: what an
+    /// earlier version saved had the default. Best effort.
+    func protectTree(at root: URL) {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: root.path) else { return }
+        var items = [root]
+        if let walker = fileManager.enumerator(at: root, includingPropertiesForKeys: nil) {
+            for case let url as URL in walker { items.append(url) }
+        }
+        for url in items where protection(of: url) != ProtectedFiles.protection {
+            protect(url)
+        }
+    }
+}
+
+/// The app's file store: complete protection on every file and folder.
+struct ProtectedFiles: SavedFileStore {
+    static let protection = FileProtectionType.complete
+    static let writeOptions: Data.WritingOptions = [.atomic, .completeFileProtection]
+    static var folderAttributes: [FileAttributeKey: Any] { [.protectionKey: protection] }
+
+    func write(_ data: Data, to url: URL) throws {
         let dir = url.deletingLastPathComponent()
         if !FileManager.default.fileExists(atPath: dir.path) {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
-                                                    attributes: [.protectionKey: protection])
+                                                    attributes: Self.folderAttributes)
         }
-        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        try data.write(to: url, options: Self.writeOptions)
     }
 
-    /// Give every folder and file under `root` complete protection: what an
-    /// earlier version saved had the default. Best effort.
-    static func protectTree(at root: URL) {
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: root.path) else { return }
-        protect(root)
-        guard let walker = fileManager.enumerator(at: root, includingPropertiesForKeys: nil) else { return }
-        for case let url as URL in walker { protect(url) }
+    func protect(_ url: URL) {
+        try? FileManager.default.setAttributes(Self.folderAttributes, ofItemAtPath: url.path)
     }
 
-    static func protect(_ url: URL) {
-        guard protection(of: url) != protection else { return }
-        try? FileManager.default.setAttributes([.protectionKey: protection], ofItemAtPath: url.path)
-    }
-
-    /// The protection a file or folder has, when the platform reports one
-    /// (a simulator may not).
-    static func protection(of url: URL) -> FileProtectionType? {
+    func protection(of url: URL) -> FileProtectionType? {
         let value = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.protectionKey]
         if let type = value as? FileProtectionType { return type }
         if let raw = value as? String { return FileProtectionType(rawValue: raw) }
@@ -85,14 +100,29 @@ actor ServerSnapshotCache {
 
     let capBytes: Int
     private let root: URL
+    private let files: any SavedFileStore
     private let fileManager = FileManager.default
     /// What was last written per server.
     private var lastDigests: [String: SHA256Digest] = [:]
 
-    init(root: URL? = nil, capBytes: Int = 2 * 1024 * 1024) {
+    init(root: URL? = nil, capBytes: Int = 2 * 1024 * 1024, files: any SavedFileStore = ProtectedFiles()) {
         self.root = root ?? TranscriptCache.defaultRoot
         self.capBytes = capBytes
+        self.files = files
     }
+
+    /// The transcript cache's coding, with sorted keys: the same lists
+    /// always encode to the same bytes (a keyed container's order otherwise
+    /// varies between encodes), so unchanged lists are recognised.
+    private static let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(TranscriptTime.string(date: date))
+        }
+        e.outputFormatting = [.sortedKeys]
+        return e
+    }()
 
     func file(serverKey: String) -> URL {
         root.appendingPathComponent(serverKey, isDirectory: true).appendingPathComponent(Self.fileName)
@@ -118,7 +148,7 @@ actor ServerSnapshotCache {
     /// they are on disk.
     @discardableResult
     func save(_ snapshot: SavedServerSnapshot, serverKey: String, at date: Date = Date()) -> Bool {
-        guard var data = try? TranscriptCache.encoder.encode(snapshot) else { return false }
+        guard var data = try? Self.encoder.encode(snapshot) else { return false }
         if data.count > capBytes {
             guard let smaller = trimmed(snapshot) else { return false }
             data = smaller
@@ -127,7 +157,7 @@ actor ServerSnapshotCache {
         let digest = SHA256.hash(data: data)
         if lastDigests[serverKey] != digest || !fileManager.fileExists(atPath: url.path) {
             do {
-                try SavedFiles.write(data, to: url, root: root)
+                try files.write(data, to: url)
             } catch {
                 return false
             }
@@ -153,7 +183,7 @@ actor ServerSnapshotCache {
             kept = Array(kept.prefix(kept.count * 3 / 4))
             var smaller = snapshot
             smaller.conversations = kept
-            if let data = try? TranscriptCache.encoder.encode(smaller), data.count <= capBytes { return data }
+            if let data = try? Self.encoder.encode(smaller), data.count <= capBytes { return data }
         }
         return nil
     }

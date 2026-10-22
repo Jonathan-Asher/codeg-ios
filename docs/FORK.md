@@ -1415,10 +1415,13 @@ codeg web's `src/lib/connection-display.ts` and
 
 #### File protection
 
-`SavedFiles` in `ServerSnapshotCache.swift`. The lists and the transcripts
-are written with `.completeFileProtection`, and their folders are made with
-`FileProtectionType.complete`: iOS keeps them unreadable from about 10 s
-after the phone locks until it is unlocked. What an earlier version saved
+`ProtectedFiles` in `ServerSnapshotCache.swift`. The lists and the
+transcripts are written with `.completeFileProtection`, and their folders
+are made with `FileProtectionType.complete`: iOS keeps them unreadable from
+about 10 s after the phone locks until it is unlocked. A simulator doesn't
+apply protection, so CI checks that every saved file goes through this
+store (a recording `SavedFileStore`); the check of the protection itself
+runs on a device. What an earlier version saved
 gets the protection on the first read or write of each launch (a locked
 phone refuses; the next launch tries again). Nothing reads these files
 while the phone is locked: the app has no background tasks, and read-aloud
@@ -1497,8 +1500,8 @@ stops the tries; coming back reconnects as before.
 #### Tests
 
 `OfflineListsTests` (saving, unchanged lists, the cap, eviction, removal
-with the server, protection of files and folders and of what an earlier
-version saved, Activity and Chats opening offline and refreshing when the
+with the server, protection asked for every saved file and folder and for
+what an earlier version saved, Activity and Chats opening offline and refreshing when the
 network is back), `ConnectivityTests` (the monitor with path reports fed by
 hand, waiting for the network, the capsule's states),
 `StreamLivenessTests` (the rules, then `EventStream` on a scripted socket

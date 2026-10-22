@@ -84,7 +84,7 @@ final class OfflineListsTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let probe = dir.appendingPathComponent("probe")
         try Data("x".utf8).write(to: probe, options: .completeFileProtection)
-        return SavedFiles.protection(of: probe) == .complete
+        return ProtectedFiles().protection(of: probe) == .complete
     }
 
     // MARK: - The saved lists
@@ -172,6 +172,78 @@ final class OfflineListsTests: XCTestCase {
 
     // MARK: - File protection
 
+    /// Records what the caches ask of the file store; the writes go through
+    /// the app's own (a simulator doesn't apply protection, so the request
+    /// is what can be checked there).
+    private final class RecordingFiles: SavedFileStore, @unchecked Sendable {
+        private let lock = NSLock()
+        private let base = ProtectedFiles()
+        private var writtenPaths: Set<String> = []
+        private var protectedPaths: Set<String> = []
+
+        var written: Set<String> { lock.withLock { writtenPaths } }
+        var protected: Set<String> { lock.withLock { protectedPaths } }
+
+        func write(_ data: Data, to url: URL) throws {
+            try base.write(data, to: url)
+            let path = OfflineListsTests.path(url)
+            lock.withLock { _ = writtenPaths.insert(path) }
+        }
+
+        func protect(_ url: URL) {
+            base.protect(url)
+            let path = OfflineListsTests.path(url)
+            lock.withLock { _ = protectedPaths.insert(path) }
+        }
+
+        func protection(of url: URL) -> FileProtectionType? { base.protection(of: url) }
+    }
+
+    nonisolated private static func path(_ url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private func regularFiles(under dir: URL) throws -> [URL] {
+        try FileManager.default.subpathsOfDirectory(atPath: dir.path).map { dir.appendingPathComponent($0) }
+            .filter { url in
+                var isDirectory: ObjCBool = false
+                return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && !isDirectory.boolValue
+            }
+    }
+
+    func testEverySavedFileAsksForCompleteProtection() async throws {
+        XCTAssertTrue(ProtectedFiles.writeOptions.contains(.completeFileProtection))
+        XCTAssertTrue(ProtectedFiles.writeOptions.contains(.atomic))
+        XCTAssertEqual(ProtectedFiles.folderAttributes[.protectionKey] as? FileProtectionType, .complete)
+
+        let files = RecordingFiles()
+        let lists = ServerSnapshotCache(root: root, files: files)
+        let transcripts = TranscriptCache(root: root, files: files)
+        await lists.save(try snapshot([1]), serverKey: "box")
+        await transcripts.save(try transcript(5), serverKey: "box")
+        await transcripts.save(try transcript(6), serverKey: "other-box")
+
+        let saved = try regularFiles(under: root)
+        XCTAssertEqual(saved.count, 3)
+        for url in saved {
+            XCTAssertTrue(files.written.contains(Self.path(url)), "\(url.lastPathComponent) went through the protected store")
+        }
+    }
+
+    func testWhatAnEarlierVersionSavedIsProtectedOnFirstUse() async throws {
+        let folder = root.appendingPathComponent("box", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let old = folder.appendingPathComponent("5.json")
+        try Data("{}".utf8).write(to: old, options: .noFileProtection)
+
+        let files = RecordingFiles()
+        let transcripts = TranscriptCache(root: root, files: files)
+        _ = await transcripts.load(serverKey: "box", conversationID: 6)
+        XCTAssertTrue(files.protected.isSuperset(of: [Self.path(root), Self.path(folder), Self.path(old)]))
+        let present = FileManager.default.fileExists(atPath: old.path)
+        XCTAssertTrue(present, "protecting never removes")
+    }
+
     func testEverythingSavedIsUnreadableWhileThePhoneIsLocked() async throws {
         guard try platformAppliesProtection() else {
             throw XCTSkip("This device doesn't apply file protection")
@@ -184,7 +256,7 @@ final class OfflineListsTests: XCTestCase {
         let folder = root.appendingPathComponent("box", isDirectory: true)
         let listsFile = await lists.file(serverKey: "box")
         for url in [root!, folder, listsFile, folder.appendingPathComponent("5.json")] {
-            XCTAssertEqual(SavedFiles.protection(of: url), .complete, url.lastPathComponent)
+            XCTAssertEqual(ProtectedFiles().protection(of: url), .complete, url.lastPathComponent)
         }
     }
 
@@ -197,13 +269,13 @@ final class OfflineListsTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let old = folder.appendingPathComponent("5.json")
         try Data("{}".utf8).write(to: old, options: .noFileProtection)
-        XCTAssertNotEqual(SavedFiles.protection(of: old), .complete)
+        XCTAssertNotEqual(ProtectedFiles().protection(of: old), .complete)
 
         // The first read of this launch protects what is there.
         let transcripts = TranscriptCache(root: root)
         _ = await transcripts.load(serverKey: "box", conversationID: 6)
-        XCTAssertEqual(SavedFiles.protection(of: old), .complete)
-        XCTAssertEqual(SavedFiles.protection(of: folder), .complete)
+        XCTAssertEqual(ProtectedFiles().protection(of: old), .complete)
+        XCTAssertEqual(ProtectedFiles().protection(of: folder), .complete)
     }
 
     // MARK: - Lists shown from the saved copy

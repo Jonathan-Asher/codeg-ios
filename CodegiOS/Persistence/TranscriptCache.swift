@@ -39,9 +39,9 @@ struct CachedTranscript: Codable, Sendable {
 /// The server's folder also holds its session lists (``ServerSnapshotCache``),
 /// which eviction leaves alone.
 ///
-/// Everything is written with complete file protection (``SavedFiles``): the
-/// files are attorney-client conversations, unreadable while the phone is
-/// locked.
+/// Everything is written with complete file protection (``ProtectedFiles``):
+/// the files are attorney-client conversations, unreadable while the phone
+/// is locked.
 ///
 /// Everything runs on the actor, off the main thread: decoding a cached
 /// window of a long, image-heavy session takes tens of milliseconds.
@@ -52,14 +52,16 @@ actor TranscriptCache {
     /// conversations are removed (down to 80% of it).
     let capBytes: Int
     private let root: URL
+    private let files: any SavedFileStore
     private let fileManager = FileManager.default
     /// Bytes written since the last size check; a full scan runs only once
     /// this passes a slice of the cap.
     private var writtenSinceScan = Int.max
 
-    init(root: URL? = nil, capBytes: Int = 256 * 1024 * 1024) {
+    init(root: URL? = nil, capBytes: Int = 256 * 1024 * 1024, files: any SavedFileStore = ProtectedFiles()) {
         self.root = root ?? Self.defaultRoot
         self.capBytes = capBytes
+        self.files = files
     }
 
     /// `Caches/TranscriptCache`, shared with ``ServerSnapshotCache``.
@@ -148,8 +150,7 @@ actor TranscriptCache {
         guard let data = try? Self.encoder.encode(entry) else { return }
         protectExistingFiles()
         do {
-            try SavedFiles.write(data, to: file(serverKey: serverKey, conversationID: entry.conversationID),
-                                 root: root)
+            try files.write(data, to: file(serverKey: serverKey, conversationID: entry.conversationID))
         } catch {
             return
         }
@@ -209,7 +210,7 @@ actor TranscriptCache {
     private func protectExistingFiles() {
         guard !protectionChecked else { return }
         protectionChecked = true
-        SavedFiles.protectTree(at: root)
+        files.protectTree(at: root)
     }
 
     /// Least recently used first, until the cache is at 80% of its cap.
