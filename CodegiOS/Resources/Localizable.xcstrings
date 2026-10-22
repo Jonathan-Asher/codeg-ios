@@ -1,6 +1,116 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Another fork is in progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "另一个分叉正在进行"
+          }
+        }
+      }
+    },
+    "Forking “%@”…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在分叉“%@”…"
+          }
+        }
+      }
+    },
+    "Sub-agent stopped: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "子智能体已停止：%@"
+          }
+        }
+      }
+    },
+    "Stopped: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已停止：%@"
+          }
+        }
+      }
+    },
+    "request blocked by the provider’s usage policy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请求被服务商的使用政策拦截"
+          }
+        }
+      }
+    },
+    "the provider’s rate limit was reached" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已达到服务商的速率限制"
+          }
+        }
+      }
+    },
+    "the provider is overloaded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务商当前过载"
+          }
+        }
+      }
+    },
+    "the provider rejected the request" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务商拒绝了该请求"
+          }
+        }
+      }
+    },
+    "the provider returned an error" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务商返回了错误"
+          }
+        }
+      }
+    },
+    "Learn more:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "了解更多："
+          }
+        }
+      }
+    },
+    "Details" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "详情"
+          }
+        }
+      }
+    },
     "Mark as Critical" : {
       "localizations" : {
         "zh-Hans" : {

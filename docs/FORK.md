@@ -1102,6 +1102,37 @@ queue and insert paths of `SessionDetailViewModel` (`keepUnsent`,
 - **Not covered.** A brand-new task whose conversation could not even be
   created keeps its message in the queue while the screen is open, but there
   is no conversation to store it under.
+### Fork progress and provider errors (1.3.21)
+
+`SessionActions.inFlight` (`ForkInFlight`), `SessionForkRules.whileForking`,
+the banner in `App/RootView.swift`; `Models/ProviderError.swift` and
+`Rendering/ProviderErrorNotice.swift`.
+
+- **A fork in flight.** One fork runs at a time. `start` records the session,
+  the point (a reply or the latest) and the session's title, and refuses any
+  other fork until the first opens or fails, so repeated taps on a reply, the
+  ⋯ menu or a row start nothing. The banner at the top reads "Forking
+  “<title>”…" ("Forking session…" without a title) with a spinner from the
+  tap until the fork opens, and VoiceOver announces it. The reply it was
+  taken from shows "Forking…" with a spinner; every other Fork and Fork
+  Session is greyed out with "Another fork is in progress".
+- **A provider's refusal or error.** Mirrors codeg web's
+  `src/lib/provider-errors.ts`. Claude Code reports a failed API request as
+  `API Error: <status> <the provider's message>` (or the JSON error body).
+  When that is a sub-agent's (Agent/Task) result, the card turns red and
+  shows "Sub-agent stopped: <reason>" (usage-policy block, rate limit,
+  overloaded, rejected request, other error), the provider's link, and the
+  raw text under Details; a turn error in that form shows "Stopped:
+  <reason>" the same way. Recognition is narrow: the text must be the error
+  itself (the prefix, after at most an "Error:" lead-in; a policy notice's
+  own opening; or a provider JSON error envelope) and short, so a result
+  that quotes such a message reads as before. A stopped sub-agent in a shut
+  tool group counts as failed and shows its notice under the group, as
+  codeg web does for a folded reply. Presentation only.
+
+`CodegiOSTests/SessionForkTests.swift` covers one fork at a time, the banner
+text and which buttons say "Forking…"; `CodegiOSTests/ProviderErrorTests.swift`
+the recognition, the titles and the sub-agent card.
 
 ## Session lists
 

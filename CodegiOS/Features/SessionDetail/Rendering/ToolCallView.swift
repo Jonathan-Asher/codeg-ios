@@ -14,7 +14,9 @@ struct ToolGroupCard: View {
     let streaming: Bool
     @State private var expanded = false
 
-    private var errorCount: Int { items.filter(\.isError).count }
+    /// A sub-agent the model provider stopped counts as failed, whatever its
+    /// wire status says.
+    private var errorCount: Int { items.filter { $0.isError || $0.providerError != nil }.count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -22,6 +24,14 @@ struct ToolGroupCard: View {
             if expanded {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(items) { ToolCallCard(vm: $0, nested: true) }
+                }
+            } else {
+                // An outcome, not part of the work: a stopped sub-agent stays
+                // in sight while the group is shut.
+                ForEach(items.filter { $0.providerError != nil }) { item in
+                    if let providerError = item.providerError {
+                        ProviderErrorNotice(error: providerError, scope: .subagent)
+                    }
                 }
             }
         }
@@ -107,7 +117,7 @@ struct ToolCallCard: View {
     /// visible without a tap), and for a small diff (the change is the point on
     /// mobile). Large diffs stay collapsed behind their +N/−M stat.
     private var autoExpands: Bool {
-        if vm.state == .running || vm.state == .error { return true }
+        if vm.state == .running || vm.state == .error || vm.providerError != nil { return true }
         if let files = vm.diffFiles {
             let rows = files.reduce(0) { $0 + $1.hunks.reduce(0) { $0 + $1.rows.count } }
             return rows <= 40
@@ -137,7 +147,9 @@ struct ToolCallCard: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .minimumScaleFactor(0.85)
-            ToolStateIndicator(state: vm.state)
+            // A sub-agent stopped at the provider failed, whatever the wire
+            // status says.
+            ToolStateIndicator(state: vm.providerError != nil ? .error : vm.state)
             Spacer(minLength: 4)
             diffStat
             if hasBody {
@@ -181,7 +193,11 @@ struct ToolCallCard: View {
     /// renderer, which classifies JSON / diff / Markdown / log.
     @ViewBuilder
     private var outputBody: some View {
-        if vm.bucket == .read, !vm.isError, let file = ReadOutputFormat.parse(vm.trimmedOutput) {
+        if let providerError = vm.providerError {
+            // Stopped at the model provider: a compact state with the raw
+            // message under Details, not the message as the sub-agent's reply.
+            ProviderErrorNotice(error: providerError, scope: .subagent)
+        } else if vm.bucket == .read, !vm.isError, let file = ReadOutputFormat.parse(vm.trimmedOutput) {
             FileBodyView(file: file)
         } else if vm.hasOutput {
             ToolOutputBody(output: vm.trimmedOutput, isError: vm.isError, isCommand: vm.isCommand)

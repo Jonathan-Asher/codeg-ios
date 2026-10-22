@@ -30,6 +30,15 @@ the text as the git tag message and the GitHub Release notes.
   waiting. The codeg desktop lists them in Settings › Logs › iPhone crash
   reports.
 
+- A sub-agent stopped by the model provider says so (1.3.21), as on the
+  desktop. When a sub-agent's request is refused or fails at the provider (a
+  usage-policy block, a rate limit, an overloaded provider, a rejected
+  request), its card shows "Sub-agent stopped: request blocked by the
+  provider’s usage policy" (or the reason that applies) in red, the
+  provider's link as a link, and the provider's own message under Details,
+  instead of printing that message as the sub-agent's reply. A turn that
+  stops the same way shows "Stopped: …" in the same compact form. Nothing
+  about the failure is changed or retried.
 - Edit your own messages (1.3.16), as on the desktop. Long-press a message
   you sent: Copy, and Edit Message. The editor opens with the message as you
   sent it, its pictures beside it (they are sent again with the edit), and
@@ -222,6 +231,13 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Changed
 
+- A fork shows its progress until it opens (1.3.21). From a reply's Fork,
+  the session's ⋯ menu or a list row's long press, "Forking “<session>”…"
+  stands at the top of the screen with a spinner from the tap until the
+  fork opens (VoiceOver says it too). Only the reply it was taken from says
+  "Forking…"; every other Fork and Fork Session is greyed out with "Another
+  fork is in progress" meanwhile, and one fork runs at a time, so repeated
+  taps can't start a second.
 - Older messages come in without moving the view (1.3.16). They are brought
   in a screen and a half before the top, as soon as the scroll comes to
   rest, and the server's older pages are fetched ahead while there are still

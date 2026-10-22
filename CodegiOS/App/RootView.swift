@@ -91,15 +91,16 @@ struct RootView: View {
         .sheet(isPresented: $model.serversSheetPresented) {
             ManageServersSheet(store: model.serverStore, selectedServerID: $model.selectedServerID)
         }
-        // A fork taken from a list row, while it runs (resuming the session
-        // can take a few seconds) …
+        // A fork, from a list row, the session's ⋯ menu or a reply, while it
+        // runs (resuming the session can take a few seconds), until the fork
+        // opens …
         .overlay(alignment: .top) {
-            if !model.actions.forking.isEmpty {
-                ForkProgressBanner()
+            if let fork = model.actions.inFlight {
+                ForkProgressBanner(text: fork.progressText)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .animation(.snappy(duration: 0.25), value: model.actions.forking.isEmpty)
+        .animation(.snappy(duration: 0.25), value: model.actions.inFlight == nil)
         // … and why one didn't happen (or a row's Pin or Archive).
         .alert(model.actions.alert?.title ?? "", isPresented: Binding(
             get: { model.actions.alert != nil },
@@ -584,21 +585,28 @@ private struct SettingsSheet: View {
     }
 }
 
-/// "Forking session…" at the top of the screen while a fork runs.
+/// "Forking “Title”…" with a spinner at the top of the screen while a fork
+/// runs, whichever screen it was taken from (``ForkInFlight/progressText``).
 private struct ForkProgressBanner: View {
+    let text: String
+
     var body: some View {
         HStack(spacing: 8) {
             ProgressView()
                 .controlSize(.small)
-            Text("Forking session…")
+            Text(verbatim: text)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .glassEffect(.regular, in: Capsule())
+        .padding(.horizontal, 24)
         .padding(.top, 6)
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.updatesFrequently)
     }
 }
 

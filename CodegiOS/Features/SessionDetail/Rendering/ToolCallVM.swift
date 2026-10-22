@@ -44,6 +44,9 @@ struct ToolCallVM: Identifiable {
     let companion: CompanionKind?
     let icon: String
     let diffFiles: [DiffFile]?
+    /// A sub-agent (Agent/Task) whose result is a model provider's refusal or
+    /// error: the card shows a compact stopped state instead of the text.
+    let providerError: ProviderError?
 
     init(id: String, rawName: String, kind: String, state: ToolCallState,
          input: String?, output: String?, content: String?, isError: Bool,
@@ -73,6 +76,7 @@ struct ToolCallVM: Identifiable {
         self.displayTitle = ToolDerive.title(name: resolvedName, bucket: b, input: input, parsed: parsed)
         self.icon = comp.map(ToolDerive.companionIcon) ?? ToolDerive.icon(bucket: b, name: resolvedName)
         self.diffFiles = ToolDerive.diff(bucket: b, input: input, output: output, content: content, parsed: parsed)
+        self.providerError = b == .task && (state == .done || state == .error) ? ProviderError.detect(output) : nil
     }
 
     var trimmedOutput: String { (output ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }

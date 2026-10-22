@@ -552,6 +552,79 @@ final class SessionForkTests: XCTestCase {
         XCTAssertEqual(app.paths[.activity] ?? [], [], "nothing opened")
     }
 
+    // MARK: - While a fork runs
+
+    func testWhileAForkRunsItsButtonSaysForkingAndTheOthersWait() {
+        XCTAssertEqual(SessionForkRules.whileForking(.available, theForkUnderWay: nil), .available,
+                       "no fork running: nothing changes")
+        XCTAssertEqual(SessionForkRules.whileForking(.available, theForkUnderWay: true), .forking)
+        XCTAssertEqual(SessionForkRules.whileForking(.unavailable("x"), theForkUnderWay: true), .forking)
+        XCTAssertEqual(SessionForkRules.whileForking(.available, theForkUnderWay: false),
+                       .unavailable(SessionForkRules.reasonAnotherFork))
+        XCTAssertEqual(SessionForkRules.whileForking(.hidden, theForkUnderWay: false), .hidden,
+                       "a button that isn't offered stays away")
+    }
+
+    func testASecondForkCantStartWhileOneRuns() async throws {
+        ForkCapabilities.shared.reset()
+        let (app, suite) = makeApp()
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        serveFork()
+        server.on("list_all_conversations") { _ in .body("[]") }
+        server.on("list_open_folder_details") { _ in .body("[]") }
+        server.on("list_conversation_attention") { _ in .body("[]") }
+        app.selectedTab = .activity
+        let first = try summary(7)
+        let second = try summary(8)
+
+        app.actions.fork(first)
+        // The banner names the session being forked, from the tap on.
+        XCTAssertEqual(app.actions.inFlight?.conversationID, 7)
+        XCTAssertEqual(app.actions.inFlight?.progressText, "Forking “Topic”…")
+        // A repeated tap, or a tap on another row, starts nothing.
+        app.actions.fork(first)
+        app.actions.fork(second)
+        XCTAssertEqual(app.actions.forkAvailability(for: first), .forking)
+        XCTAssertEqual(app.actions.forkAvailability(for: second),
+                       .unavailable(SessionForkRules.reasonAnotherFork))
+
+        let settled = await eventually { app.actions.inFlight == nil }
+        XCTAssertTrue(settled)
+        XCTAssertEqual(forkCalls("acp_fork").count, 1, "one fork, however many taps")
+        XCTAssertEqual(app.actions.forkAvailability(for: second), .available)
+    }
+
+    func testOnlyTheReplyBeingForkedSaysForking() async {
+        let (app, suite) = makeApp()
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        serveFork()
+        server.on("list_all_conversations") { _ in .body("[]") }
+        server.on("list_open_folder_details") { _ in .body("[]") }
+        server.on("list_conversation_attention") { _ in .body("[]") }
+        let detail = detailJSON(turns: [])
+        server.on("get_folder_conversation") { _ in .body(detail) }
+        let actions = app.actions
+        actions.start(target, at: .reply("turn-2"), origin: .session(7), title: "Topic",
+                      client: server.client, onError: { _ in })
+        XCTAssertEqual(actions.replyAvailability(.available, conversationID: 7, turnID: "turn-2"), .forking)
+        XCTAssertEqual(actions.replyAvailability(.available, conversationID: 7, turnID: "turn-4"),
+                       .unavailable(SessionForkRules.reasonAnotherFork))
+        XCTAssertEqual(actions.replyAvailability(.hidden, conversationID: 7, turnID: "turn-0"), .hidden)
+        XCTAssertEqual(actions.sessionAvailability(.available, conversationID: 7), .forking,
+                       "the ⋯ menu's Fork Session on the session being forked")
+        XCTAssertEqual(actions.sessionAvailability(.available, conversationID: 8),
+                       .unavailable(SessionForkRules.reasonAnotherFork))
+        let settled = await eventually { actions.inFlight == nil }
+        XCTAssertTrue(settled)
+    }
+
+    func testTheBannerFallsBackWhenTheSessionHasNoTitle() {
+        XCTAssertEqual(ForkInFlight(conversationID: 7, point: .latest, title: nil).progressText,
+                       "Forking session…")
+        XCTAssertEqual(ForkInFlight(conversationID: 7, point: .latest, title: "  ").progressText,
+                       "Forking session…")
+    }
+
     // MARK: - The session after an in-place fork
 
     func testAnInPlaceForkReloadsTheSessionAsTheFork() async throws {

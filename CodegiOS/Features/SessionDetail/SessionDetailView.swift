@@ -304,25 +304,23 @@ struct SessionDetailView: View {
 
     // MARK: - Fork
 
-    private var isForking: Bool {
-        guard let actions, let id = model.conversationID else { return false }
-        return actions.isForking(id)
-    }
-
-    /// "Fork Session" in the ⋯ menu.
+    /// "Fork Session" in the ⋯ menu: "Forking…" while this session is being
+    /// forked, greyed out while another fork runs.
     private var sessionForkAvailability: ForkAvailability {
-        guard actions != nil else { return .hidden }
-        return model.sessionForkAvailability(forking: isForking)
+        guard let actions else { return .hidden }
+        return actions.sessionAvailability(model.sessionForkAvailability(forking: false),
+                                           conversationID: model.conversationID)
     }
 
-    /// "Fork from here" on the replies of this session.
+    /// "Fork from here" on the replies of this session: the reply being
+    /// forked shows "Forking…", the others are greyed out until it lands.
     private var replyForkAction: ReplyForkAction? {
         guard let actions, model.canManageConversation else { return nil }
         let model = self.model
         return ReplyForkAction(
             availability: { turnID in
-                let forking = model.conversationID.map { actions.isForking($0) } ?? false
-                return model.replyForkAvailability(turnID: turnID, forking: forking)
+                actions.replyAvailability(model.replyForkAvailability(turnID: turnID, forking: false),
+                                          conversationID: model.conversationID, turnID: turnID)
             },
             perform: { turnID in startFork(at: .reply(turnID)) },
             explain: { reason in model.notice = reason }
@@ -336,7 +334,8 @@ struct SessionDetailView: View {
         guard let actions, let target = model.forkTarget else { return }
         let model = self.model
         actions.start(
-            target, at: point, origin: .session(target.conversationID), client: client,
+            target, at: point, origin: .session(target.conversationID), title: model.summary?.title,
+            client: client,
             resolveConnection: { try await model.resolveConnectionForOptions() },
             onConnection: { model.adoptForkConnection($0) },
             onError: { model.notice = $0 }

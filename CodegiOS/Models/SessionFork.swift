@@ -151,6 +151,17 @@ enum SessionForkRules {
     static let reasonNotReady = String(localized: "Can’t fork from this reply just yet — try again in a moment")
     static let reasonInFlight = String(localized: "This reply is still running. Fork from an earlier reply, or from this one once it finishes")
     static let reasonServerTooOld = String(localized: "Needs a newer codeg server")
+    static let reasonAnotherFork = String(localized: "Another fork is in progress")
+
+    /// A fork button's availability while a fork may be under way. Forks run
+    /// one at a time (``SessionActions``): the button the fork was taken from
+    /// shows "Forking…", every other offered one is greyed out with why, and a
+    /// hidden one stays hidden. `theForkUnderWay` is nil while no fork runs,
+    /// true for the button that started the one that does.
+    static func whileForking(_ availability: ForkAvailability, theForkUnderWay: Bool?) -> ForkAvailability {
+        guard let theForkUnderWay, availability != .hidden else { return availability }
+        return theForkUnderWay ? .forking : .unavailable(reasonAnotherFork)
+    }
 
     static func reasonAgentCannotFork(_ agent: AgentType) -> String {
         String(localized: "\(agent.displayName) can’t fork sessions")

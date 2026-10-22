@@ -534,6 +534,16 @@ struct InlineTurnError: View {
     let message: String
 
     var body: some View {
+        // The turn stopped at the model provider (a usage-policy block, a rate
+        // limit, …): the same compact state as a sub-agent's card.
+        if let providerError = ProviderError.detect(message) {
+            ProviderErrorNotice(error: providerError, scope: .turn)
+        } else {
+            plain
+        }
+    }
+
+    private var plain: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 11, weight: .semibold))

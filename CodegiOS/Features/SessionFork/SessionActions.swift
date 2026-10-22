@@ -21,8 +21,11 @@ final class SessionActions {
     @ObservationIgnored weak var app: AppModel?
     let capabilities: ForkCapabilities
 
-    /// Conversations a fork is being taken from.
-    private(set) var forking: Set<Int> = []
+    /// The fork under way, if any. Forks run one at a time: while one runs,
+    /// every fork button is greyed out and ``start`` takes no other, so a
+    /// repeated tap can't start a second. The app's progress banner says
+    /// which session is being forked until the fork opens.
+    private(set) var inFlight: ForkInFlight?
     /// A list row's action that failed, for the alert.
     var alert: SessionActionAlert?
 
@@ -30,21 +33,43 @@ final class SessionActions {
         self.capabilities = capabilities
     }
 
-    func isForking(_ conversationID: Int) -> Bool { forking.contains(conversationID) }
+    /// Conversations a fork is being taken from: the one in flight, if any.
+    var forking: Set<Int> { inFlight.map { Set([$0.conversationID]) } ?? [] }
+
+    func isForking(_ conversationID: Int) -> Bool { inFlight?.conversationID == conversationID }
 
     // MARK: - Availability
 
     /// "Fork Session" on a list row: greyed out, with the reason, when the
-    /// server is too old, the agent said it can't fork, or a turn runs and the
-    /// agent only forks between turns.
+    /// server is too old, the agent said it can't fork, a turn runs and the
+    /// agent only forks between turns, or another fork is under way.
     func forkAvailability(for summary: ConversationSummary) -> ForkAvailability {
         guard let client = app?.selectedClient() else { return .hidden }
-        return SessionForkRules.listAvailability(
+        let availability = SessionForkRules.listAvailability(
             endpoints: capabilities.endpoints(for: client),
             agent: summary.agentType,
             agentForks: capabilities.agentForks(summary.agentType, client: client),
             turnRunning: SessionForkRules.turnRunning(summary),
-            forking: forking.contains(summary.id)
+            forking: false
+        )
+        return sessionAvailability(availability, conversationID: summary.id)
+    }
+
+    /// A session's "Fork Session" while a fork may be under way: "Forking…"
+    /// on the session being forked, greyed out on every other.
+    func sessionAvailability(_ availability: ForkAvailability, conversationID: Int?) -> ForkAvailability {
+        SessionForkRules.whileForking(
+            availability,
+            theForkUnderWay: inFlight.map { $0.conversationID == conversationID }
+        )
+    }
+
+    /// A reply's "Fork from here" while a fork may be under way: "Forking…"
+    /// on the reply it was taken from, greyed out on every other.
+    func replyAvailability(_ availability: ForkAvailability, conversationID: Int?, turnID: String) -> ForkAvailability {
+        SessionForkRules.whileForking(
+            availability,
+            theForkUnderWay: inFlight.map { $0.conversationID == conversationID && $0.point == .reply(turnID) }
         )
     }
 
@@ -57,26 +82,32 @@ final class SessionActions {
         guard let app, let client = app.selectedClient() else { return }
         let folder = app.activity.folders.first { $0.id == summary.folderId }
         let target = ForkTarget(summary: summary, workingDir: folder?.path)
-        start(target, at: .latest, origin: .list, client: client, onError: { [weak self] message in
+        start(target, at: .latest, origin: .list, title: summary.title, client: client,
+              onError: { [weak self] message in
             self?.alert = SessionActionAlert(title: String(localized: "Couldn’t Fork the Session"), message: message)
         })
     }
 
     /// Fork `target` at `point` and open the fork. `onError` says why it
     /// didn't happen; the session screen shows it in its notice line.
+    /// `title` names the session in the progress banner. Does nothing while
+    /// another fork is under way.
     func start(
         _ target: ForkTarget,
         at point: ForkPoint,
         origin: ForkOrigin,
+        title: String? = nil,
         client: CodegClient,
         resolveConnection: (() async throws -> String)? = nil,
         onConnection: ((String) -> Void)? = nil,
         onError: @escaping (String) -> Void
     ) {
-        guard !forking.contains(target.conversationID) else { return }
-        forking.insert(target.conversationID)
+        guard inFlight == nil else { return }
+        let fork = ForkInFlight(conversationID: target.conversationID, point: point, title: title)
+        inFlight = fork
+        AccessibilityNotification.Announcement(fork.progressText).post()
         Task {
-            defer { forking.remove(target.conversationID) }
+            defer { inFlight = nil }
             var connection: String?
             do {
                 let outcome = try await SessionForker(client: client, capabilities: capabilities).fork(
@@ -192,6 +223,22 @@ final class SessionActions {
                                            message: Self.describe(error))
             }
         }
+    }
+}
+
+/// A fork under way: the session it is taken from, where, and the session's
+/// title for the progress banner.
+struct ForkInFlight: Equatable, Sendable {
+    let conversationID: Int
+    let point: ForkPoint
+    let title: String?
+
+    /// What the progress banner (and VoiceOver) says while it runs.
+    var progressText: String {
+        let name = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty
+            ? String(localized: "Forking session…")
+            : String(localized: "Forking “\(name)”…")
     }
 }
 
