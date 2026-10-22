@@ -97,6 +97,23 @@ final class ActivityModel {
     /// prefetcher looks for sessions that just finished a turn).
     @ObservationIgnored var onRefreshed: (@MainActor () -> Void)?
 
+    // MARK: - Offline
+
+    /// The saved lists (``ServerSnapshotCache``): shown at once when nothing
+    /// has loaded yet, and written after every load. Nil: nothing is saved.
+    @ObservationIgnored var snapshotCache: ServerSnapshotCache?
+    /// Whether the phone has a network. Nil counts as always online.
+    @ObservationIgnored var connectivity: ConnectivityMonitor?
+    /// The app's link state, fed by every refresh. Nil: failures show as the
+    /// error banner, as before.
+    @ObservationIgnored var linkStatus: LinkStatus?
+    /// The lists shown are the saved copy from this date: nothing has come
+    /// from the server since the app opened.
+    private(set) var savedCopyDate: Date?
+
+    /// What a screen with nothing to show says while the phone has no network.
+    static let offlineMessage = String(localized: "You're offline. The sessions show here once the phone is back online.")
+
     /// The folder set the display + grouping derive from: the open set normally,
     /// but the FULL set as a fallback when the open-folders endpoint failed while
     /// the full one succeeded — so the Folders tab / grouping degrade to showing
@@ -176,6 +193,7 @@ final class ActivityModel {
         isRefreshing = false
         error = nil
         lastRefreshed = nil
+        savedCopyDate = nil
         loadedEndpoint = nil
         consecutiveFailures = 0
         earlierShown = 0
@@ -206,12 +224,25 @@ final class ActivityModel {
         }
         fetchGeneration += 1
         let token = fetchGeneration
+        if !hasLoaded {
+            await showSavedLists(client: client, token: token)
+            guard token == fetchGeneration else { return }
+        }
+        // Without a network a request would only wait for one; the pulse
+        // goes again when it is back (`autoRefresh`).
+        if let connectivity, !connectivity.isOnline {
+            if !hasLoaded { error = Self.offlineMessage }
+            return
+        }
         isRefreshing = true
+        linkStatus?.pulseStarted()
         defer { if token == fetchGeneration { isRefreshing = false } }
 
         let result = await client.loadServerSnapshot()
-        guard token == fetchGeneration else { return }
-        if result.cancelled { return }
+        guard token == fetchGeneration, !result.cancelled else {
+            linkStatus?.pulseEnded()
+            return
+        }
 
         // Partial success: apply whichever endpoint returned, keep the prior value
         // for one that failed (orphaned rows fall into the "Other" safety net).
@@ -225,17 +256,58 @@ final class ActivityModel {
             hasLoaded = true
             error = nil
             lastRefreshed = Date()
+            savedCopyDate = nil
             consecutiveFailures = 0
-            if result.conversations != nil { onRefreshed?() }
+            linkStatus?.pulseSucceeded()
+            if result.conversations != nil {
+                saveLists(client: client, attention: result.attention)
+                onRefreshed?()
+            }
         } else {
             // Both failed after retries. Debounce so a lone blip in the periodic
             // pulse stays silent; surface it once it persists (or on first load,
-            // where there's nothing on screen yet).
+            // where there's nothing on screen yet). A server that can't be
+            // reached is the capsule's to say (``LinkStatus``), over the lists.
             consecutiveFailures += 1
-            if !hasLoaded || consecutiveFailures >= Self.failuresBeforeAlerting {
+            linkStatus?.pulseFailed(unreachable: result.unreachable)
+            let capsuleSaysIt = result.unreachable && linkStatus != nil
+            if !hasLoaded || (consecutiveFailures >= Self.failuresBeforeAlerting && !capsuleSaysIt) {
                 error = result.message
             }
         }
+    }
+
+    /// Nothing loaded yet: show the saved lists at once, with their date,
+    /// while the server is asked.
+    private func showSavedLists(client: CodegClient, token: Int) async {
+        guard let snapshotCache,
+              let saved = await snapshotCache.load(serverKey: TranscriptCache.serverKey(for: client)),
+              token == fetchGeneration, !hasLoaded
+        else { return }
+        folders = saved.folders
+        if let open = saved.openFolders {
+            openFolders = open
+            openFoldersLoaded = true
+        }
+        conversations = saved.conversations
+        groups = saved.groups
+        AttentionStore.shared.update(saved.attention)
+        hasLoaded = true
+        error = nil
+        lastRefreshed = saved.savedAt
+        savedCopyDate = saved.savedAt
+        linkStatus?.showingSavedLists(savedAt: saved.savedAt)
+    }
+
+    /// Keep what the server just gave for the next start without a network.
+    private func saveLists(client: CodegClient, attention: [Int: String]?) {
+        guard let snapshotCache else { return }
+        let snapshot = SavedServerSnapshot(
+            folders: folders, openFolders: openFoldersLoaded ? openFolders : nil,
+            conversations: conversations, groups: groups, attention: attention
+        )
+        let key = TranscriptCache.serverKey(for: client)
+        Task { await snapshotCache.save(snapshot, serverKey: key) }
     }
 
     // MARK: - Archive
@@ -291,9 +363,14 @@ final class ActivityModel {
 
     /// Long-running refresh loop — run from a SwiftUI `.task(id:)` so it is
     /// cancelled and restarted with the scene phase and server identity.
+    /// Without a network it waits for one and refreshes the moment it is back.
     func autoRefresh(client: CodegClient?, interval: Duration = .seconds(25)) async {
         while !Task.isCancelled {
             await refresh(client: client)
+            if let connectivity, !connectivity.isOnline {
+                await connectivity.waitUntilOnline()
+                continue
+            }
             do {
                 try await Task.sleep(for: interval)
             } catch {

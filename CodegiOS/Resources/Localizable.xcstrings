@@ -1,6 +1,66 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Reconnecting…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在重新连接…"
+          }
+        }
+      }
+    },
+    "Updating…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在更新…"
+          }
+        }
+      }
+    },
+    "Back online" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已恢复连接"
+          }
+        }
+      }
+    },
+    "Offline · updated %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "离线 · 更新于 %@"
+          }
+        }
+      }
+    },
+    "Last updated %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最后更新于 %@"
+          }
+        }
+      }
+    },
+    "You're offline. The sessions show here once the phone is back online." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前处于离线状态。手机恢复联网后，会话会显示在这里。"
+          }
+        }
+      }
+    },
     "Another fork is in progress" : {
       "localizations" : {
         "zh-Hans" : {

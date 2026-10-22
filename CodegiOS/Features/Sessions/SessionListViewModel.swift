@@ -57,6 +57,39 @@ final class SessionListViewModel {
         self.client = client
     }
 
+    // MARK: - Offline
+
+    /// The saved lists (``ServerSnapshotCache``): shown at once when nothing
+    /// has loaded yet, and written after every load. Nil: nothing is saved.
+    @ObservationIgnored private(set) var snapshotCache: ServerSnapshotCache?
+    /// Whether the phone has a network. Nil counts as always online.
+    @ObservationIgnored private(set) var connectivity: ConnectivityMonitor?
+    /// The app's link state. Nil: failures show as the error banner, as before.
+    @ObservationIgnored private(set) var linkStatus: LinkStatus?
+    @ObservationIgnored private var connectivityObservation: ConnectivityObservation?
+
+    /// The lists shown are the saved copy from this date: nothing has come
+    /// from the server since the app opened.
+    private(set) var savedCopyDate: Date?
+    /// When the lists shown came from the server (the saved copy's date
+    /// until a load succeeds).
+    private(set) var lastLoadedAt: Date?
+
+    /// Use the app's saved lists, network monitor and link state. A list that
+    /// shows its saved copy (or nothing) loads when the network comes back.
+    func useServices(snapshotCache: ServerSnapshotCache?, connectivity: ConnectivityMonitor?,
+                     linkStatus: LinkStatus?) {
+        self.snapshotCache = snapshotCache
+        self.connectivity = connectivity
+        self.linkStatus = linkStatus
+        connectivityObservation = connectivity?.observe { [weak self] event in
+            guard event == .cameOnline, let self, self.savedCopyDate != nil || !self.hasLoaded else { return }
+            Task {
+                if self.hasLoaded { await self.refresh() } else { await self.load() }
+            }
+        }
+    }
+
     /// `true` once a successful load has populated `conversations`/`folders`.
     /// Used to decide between the full-screen loader and inline refresh spinner.
     private(set) var hasLoaded = false
@@ -241,6 +274,18 @@ final class SessionListViewModel {
             openFoldersLoaded = false
             groups = []
             conversations = []
+            savedCopyDate = nil
+            lastLoadedAt = nil
+        }
+        if !hasLoaded {
+            await showSavedLists(token: token)
+            guard token == fetchGeneration else { return }
+        }
+        // Without a network a request would only wait for one; the list
+        // loads when it is back (`useServices`).
+        if let connectivity, !connectivity.isOnline {
+            if !hasLoaded { error = ActivityModel.offlineMessage }
+            return
         }
         if isInitial { isLoading = true } else { isRefreshing = true }
         error = nil
@@ -274,15 +319,55 @@ final class SessionListViewModel {
             hasLoaded = true
             consecutiveFailures = 0
             error = nil
+            savedCopyDate = nil
+            lastLoadedAt = Date()
+            linkStatus?.pulseSucceeded()
+            if result.conversations != nil { saveLists(attention: result.attention) }
         } else {
             // Both endpoints failed after retries. Debounce the banner: keep the
             // stale rows visible on the first miss and surface it only once the
             // outage persists — unless nothing has loaded yet (initial load), where
             // the error must show so the user isn't left staring at a blank screen.
+            // A server that can't be reached is the capsule's to say, over the rows.
             consecutiveFailures += 1
-            if !hasLoaded || consecutiveFailures >= Self.failuresBeforeAlerting {
+            linkStatus?.pulseFailed(unreachable: result.unreachable)
+            let capsuleSaysIt = result.unreachable && linkStatus != nil
+            if !hasLoaded || (consecutiveFailures >= Self.failuresBeforeAlerting && !capsuleSaysIt) {
                 error = result.message
             }
         }
+    }
+
+    /// Nothing loaded yet: show the saved lists at once, with their date,
+    /// while the server is asked.
+    private func showSavedLists(token: Int) async {
+        guard let snapshotCache,
+              let saved = await snapshotCache.load(serverKey: TranscriptCache.serverKey(for: client)),
+              token == fetchGeneration, !hasLoaded
+        else { return }
+        folders = saved.folders
+        if let open = saved.openFolders {
+            openFolders = open
+            openFoldersLoaded = true
+        }
+        conversations = saved.conversations
+        groups = saved.groups
+        AttentionStore.shared.update(saved.attention)
+        hasLoaded = true
+        error = nil
+        savedCopyDate = saved.savedAt
+        lastLoadedAt = saved.savedAt
+        linkStatus?.showingSavedLists(savedAt: saved.savedAt)
+    }
+
+    /// Keep what the server just gave for the next start without a network.
+    private func saveLists(attention: [Int: String]?) {
+        guard let snapshotCache else { return }
+        let snapshot = SavedServerSnapshot(
+            folders: folders, openFolders: openFoldersLoaded ? openFolders : nil,
+            conversations: conversations, groups: groups, attention: attention
+        )
+        let key = TranscriptCache.serverKey(for: client)
+        Task { await snapshotCache.save(snapshot, serverKey: key) }
     }
 }

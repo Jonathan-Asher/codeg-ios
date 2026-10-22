@@ -28,6 +28,10 @@ final class AppModel {
     /// Where the reader was in each session (pruned with the transcript cache).
     @ObservationIgnored private let readingPositions: ReadingPositionStore?
 
+    /// The session lists saved for a start without a network (beside the
+    /// transcripts; none without a transcript cache).
+    @ObservationIgnored private let snapshotCache: ServerSnapshotCache?
+
     /// The Chats list's model, shared by the list and a group pushed from it.
     @ObservationIgnored private var chatsList: (server: UUID, model: SessionListViewModel)?
 
@@ -121,6 +125,7 @@ final class AppModel {
         self.sessions = sessionStore
         self.prefetcher = TranscriptPrefetcher(cache: transcriptCache)
         self.actions = SessionActions()
+        self.snapshotCache = transcriptCache == nil ? nil : .shared
         // Restore the last-used server, falling back to the first. With servers
         // demoted out of the tab bar there is no "pick a server" landing screen
         // anymore — the app must come up already pointed at a server.
@@ -131,6 +136,9 @@ final class AppModel {
         }
         actions.app = self
         let activity = self.activity
+        activity.snapshotCache = snapshotCache
+        activity.connectivity = .shared
+        activity.linkStatus = .shared
         sessionStore.summaryLookup = { id in activity.conversations.first { $0.id == id } }
         activity.onRefreshed = { [weak self] in self?.activityRefreshed() }
         store.onChange = { [weak self] in self?.pruneTranscriptCache() }
@@ -344,6 +352,7 @@ final class AppModel {
     func sessionListModel(server: ServerProfile, client: CodegClient) -> SessionListViewModel {
         if let chatsList, chatsList.server == server.id { return chatsList.model }
         let model = SessionListViewModel(client: client)
+        model.useServices(snapshotCache: snapshotCache, connectivity: .shared, linkStatus: .shared)
         chatsList = (server.id, model)
         return model
     }

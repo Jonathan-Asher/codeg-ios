@@ -24,6 +24,7 @@ struct ProjectListView: View {
             CodegBackground()
             content
         }
+        .connectionCapsule()
         .screenTitle("Folders", compact: horizontalSizeClass == .compact)
         .toolbar {
             if client != nil {

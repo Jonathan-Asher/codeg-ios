@@ -23,6 +23,7 @@ struct ActivityView: View {
             CodegBackground()
             content
         }
+        .connectionCapsule()
         .screenTitle("Activity", compact: horizontalSizeClass == .compact)
         // No explicit refresh button — pull-to-refresh and the background
         // activity pulse keep this current.

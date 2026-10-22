@@ -12,6 +12,22 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Usable through connection drops, and partly offline (1.3.23). The
+  session lists (Chats, Folders, Activity) are saved on the phone after
+  each load, so the app opens without a network with its lists and its
+  saved sessions, and the lists say how old they are ("Last updated
+  14:02"). A drop never covers the screen: a small capsule under the
+  navigation bar says "Reconnecting…", then "Offline · updated 3 min ago",
+  then "Back online". A reply streaming on screen outlives a dead zone of
+  any length: no reconnect is attempted while the phone has no network,
+  one goes the moment it is back, and when the server stays out of reach
+  the app keeps trying every 30 seconds instead of failing the reply after
+  about 24. A socket that stops answering is noticed within seconds (a
+  ping after 5 s of quiet, its pong due within 8 s, and a health check
+  that tells a slow server from a dead link), and a switch between Wi-Fi
+  and LTE checks the connection rather than dropping it. Saved
+  transcripts and lists are written with complete file protection,
+  unreadable while the phone is locked.
 - Large videos and audio files, uploaded in pieces that survive a dropped
   connection (1.3.22). A codeg server from fork.191 on takes video and audio
   attachments up to 1 GB (it says so through `upload_limits`), so a video

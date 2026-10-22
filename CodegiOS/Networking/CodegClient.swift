@@ -593,6 +593,9 @@ struct ServerSnapshotLoad {
     /// The load was cancelled (view disappeared / a newer fetch superseded it) —
     /// callers leave their state untouched, matching the old `catch CancellationError`.
     let cancelled: Bool
+    /// The first failure was the network's: the server couldn't be reached
+    /// (as opposed to a server that answered with an error).
+    var unreachable = false
 
     /// At least one endpoint returned data — the screen has something fresh to show.
     var anySucceeded: Bool { folders != nil || openFolders != nil || conversations != nil }
@@ -626,6 +629,8 @@ extension CodegClient {
 
         let firstError = folders.failureError ?? openFolders.failureError ?? conversations.failureError
         let message = firstError.map { ($0 as? LocalizedError)?.errorDescription ?? $0.localizedDescription }
+        var unreachable = false
+        if case .transport? = firstError as? APIError { unreachable = true }
         return ServerSnapshotLoad(
             attention: attention.map(ConversationAttentionEntry.byConversation),
             folders: try? folders.get(),
@@ -633,7 +638,8 @@ extension CodegClient {
             conversations: try? conversations.get(),
             groups: groups,
             message: message,
-            cancelled: false
+            cancelled: false,
+            unreachable: unreachable
         )
     }
 

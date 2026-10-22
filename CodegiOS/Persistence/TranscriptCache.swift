@@ -36,6 +36,12 @@ struct CachedTranscript: Codable, Sendable {
 /// file per conversation under a folder per server endpoint and token. The
 /// files are bounded by a size cap with least-recently-used eviction, and a
 /// server whose URL or token changes (or that is removed) loses its folder.
+/// The server's folder also holds its session lists (``ServerSnapshotCache``),
+/// which eviction leaves alone.
+///
+/// Everything is written with complete file protection (``SavedFiles``): the
+/// files are attorney-client conversations, unreadable while the phone is
+/// locked.
 ///
 /// Everything runs on the actor, off the main thread: decoding a cached
 /// window of a long, image-heavy session takes tens of milliseconds.
@@ -52,10 +58,15 @@ actor TranscriptCache {
     private var writtenSinceScan = Int.max
 
     init(root: URL? = nil, capBytes: Int = 256 * 1024 * 1024) {
+        self.root = root ?? Self.defaultRoot
+        self.capBytes = capBytes
+    }
+
+    /// `Caches/TranscriptCache`, shared with ``ServerSnapshotCache``.
+    static var defaultRoot: URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        self.root = root ?? caches.appendingPathComponent("TranscriptCache", isDirectory: true)
-        self.capBytes = capBytes
+        return caches.appendingPathComponent("TranscriptCache", isDirectory: true)
     }
 
     /// The folder name for a server endpoint and token: a hash, so neither is
@@ -73,7 +84,7 @@ actor TranscriptCache {
 
     /// No key conversion either way: the models' `init(from:)` read the
     /// camelCase keys the server decoder produces, and are written that way.
-    private static let decoder: JSONDecoder = {
+    static let decoder: JSONDecoder = {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
@@ -87,7 +98,7 @@ actor TranscriptCache {
         return d
     }()
 
-    private static let encoder: JSONEncoder = {
+    static let encoder: JSONEncoder = {
         let e = JSONEncoder()
         e.dateEncodingStrategy = .custom { date, encoder in
             var container = encoder.singleValueContainer()
@@ -113,6 +124,7 @@ actor TranscriptCache {
     /// The cached transcript, or `nil` (none, unreadable, or another format
     /// version, which is then removed). Reading it marks it recently used.
     func load(serverKey: String, conversationID: Int) -> CachedTranscript? {
+        protectExistingFiles()
         let url = file(serverKey: serverKey, conversationID: conversationID)
         guard let data = try? Data(contentsOf: url) else { return nil }
         guard let entry = try? Self.decoder.decode(CachedTranscript.self, from: data),
@@ -134,10 +146,10 @@ actor TranscriptCache {
         let serverCount = entry.turns.firstIndex(where: { $0.serverMillis == nil }) ?? entry.turns.count
         if serverCount < entry.turns.count { entry.turns = Array(entry.turns[..<serverCount]) }
         guard let data = try? Self.encoder.encode(entry) else { return }
-        let dir = folder(serverKey: serverKey)
+        protectExistingFiles()
         do {
-            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-            try data.write(to: file(serverKey: serverKey, conversationID: entry.conversationID), options: .atomic)
+            try SavedFiles.write(data, to: file(serverKey: serverKey, conversationID: entry.conversationID),
+                                 root: root)
         } catch {
             return
         }
@@ -181,11 +193,23 @@ actor TranscriptCache {
         guard let walker = fileManager.enumerator(at: root, includingPropertiesForKeys: keys) else { return [] }
         var out: [FileEntry] = []
         for case let url as URL in walker {
+            // The session lists have their own cap and are never evicted.
+            guard url.lastPathComponent != ServerSnapshotCache.fileName else { continue }
             guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
             out.append(FileEntry(url: url, size: values.fileSize ?? 0,
                                  used: values.contentModificationDate ?? .distantPast))
         }
         return out
+    }
+
+    /// Files saved by a version without file protection get it, once per
+    /// launch (a locked phone refuses; the next launch tries again).
+    private var protectionChecked = false
+
+    private func protectExistingFiles() {
+        guard !protectionChecked else { return }
+        protectionChecked = true
+        SavedFiles.protectTree(at: root)
     }
 
     /// Least recently used first, until the cache is at 80% of its cap.

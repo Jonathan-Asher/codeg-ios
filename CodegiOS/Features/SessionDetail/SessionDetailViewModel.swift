@@ -407,11 +407,11 @@ final class SessionDetailViewModel {
     /// screen, so it doesn't push about it (see `SessionPresenceReporter`).
     private let presenceReporter: SessionPresenceReporter
     @ObservationIgnored private var isOnScreen = false
-    /// Consecutive reconnect attempts with no frames since the last good one.
-    /// Reset whenever the server confirms a fresh attach (a snapshot/replay
-    /// frame). Past `maxStreamReconnects`, recovery gives up and reconciles.
+    /// Consecutive reconnect attempts made with a network and no frames since
+    /// the last good one. Reset whenever the server confirms a fresh attach (a
+    /// snapshot/replay frame). Past ``StreamReconnect/budget``, recovery asks
+    /// the server once and slows to a try every 30 s.
     private var streamReconnects = 0
-    private static let maxStreamReconnects = 6
     /// Sends resolving their connection, attaching their stream or prompting.
     private var sendsInProgress = 0
     /// The prompt is on its way to the server. A reconnect snapshot taken now
@@ -430,13 +430,32 @@ final class SessionDetailViewModel {
     /// Cold reattach attempts lost to a dropped socket since the last snapshot.
     private var reattachDrops = 0
     private static let maxReattachDrops = 3
+    /// Whether the phone has a network: a dropped socket makes no attempt
+    /// without one, and goes at once when it is back (`reconnectStream`).
+    @ObservationIgnored private let connectivity: ConnectivityMonitor
+    @ObservationIgnored private var connectivityObservation: ConnectivityObservation?
+    /// The app's link state, told while this screen's socket reconnects.
+    @ObservationIgnored private let linkStatus: LinkStatus?
+    /// The reconnect a dropped socket is due, while it waits for the network
+    /// or its backoff: the network coming back sends it at once.
+    @ObservationIgnored private var pendingReconnect: (live: LiveTurn, conn: String, reattach: Bool)?
+    /// The reconnect backoff and the slow retry after it (shorter in tests).
+    @ObservationIgnored var reconnectTiming = StreamReconnect.Timing.standard
+    /// When the transcript on screen was last current with the server: the
+    /// saved copy's date, then every load and frame. The offline capsule's age.
+    @ObservationIgnored private(set) var lastSyncedAt: Date?
+    static let lostConnectionMessage = "Lost the connection. Your reply may still be running — reopen the session to check."
 
     private init(client: CodegClient, mode: Mode,
                  makeEventStream: (@MainActor (CodegClient) -> any SessionEventStream)? = nil,
                  transcriptCache: TranscriptCache? = nil,
-                 readingPositions: ReadingPositionStore? = nil) {
+                 readingPositions: ReadingPositionStore? = nil,
+                 connectivity: ConnectivityMonitor? = nil,
+                 linkStatus: LinkStatus? = nil) {
         self.client = client
         self.mode = mode
+        self.connectivity = connectivity ?? .shared
+        self.linkStatus = connectivity == nil ? .shared : linkStatus
         self.transcriptCache = transcriptCache
         self.readingPositions = readingPositions ?? .shared
         self.cacheServerKey = TranscriptCache.serverKey(for: client)
@@ -500,7 +519,9 @@ final class SessionDetailViewModel {
             guard let self, let id = self.conversationID else { return [] }
             return try await self.client.sessionSnapshot(conversationId: id)?.availableCommands ?? []
         }
-
+        connectivityObservation = self.connectivity.observe { [weak self] event in
+            self?.connectivityChanged(event)
+        }
     }
 
     convenience init(client: CodegClient, conversationID: Int,
@@ -511,14 +532,16 @@ final class SessionDetailViewModel {
     }
 
     /// An existing conversation whose event sockets come from `makeEventStream`
-    /// (the unit tests' scripted sockets).
+    /// (the unit tests' scripted sockets), with their own network monitor.
     convenience init(client: CodegClient, conversationID: Int,
                      makeEventStream: @escaping @MainActor (CodegClient) -> any SessionEventStream,
                      transcriptCache: TranscriptCache? = nil,
-                     readingPositions: ReadingPositionStore? = nil) {
+                     readingPositions: ReadingPositionStore? = nil,
+                     connectivity: ConnectivityMonitor? = nil,
+                     linkStatus: LinkStatus? = nil) {
         self.init(client: client, mode: .existing(conversationID: conversationID),
                   makeEventStream: makeEventStream, transcriptCache: transcriptCache,
-                  readingPositions: readingPositions)
+                  readingPositions: readingPositions, connectivity: connectivity, linkStatus: linkStatus)
     }
 
     /// A brand-new task: `load()` immediately fires the first prompt composed
@@ -641,6 +664,7 @@ final class SessionDetailViewModel {
             currentBranch = detail.summary.gitBranch ?? folder?.gitBranch
             insertModel.agentType = detail.summary.agentType
             phase = .loaded
+            lastSyncedAt = Date()
             if homePath == nil { Task { await loadHomePath() } }
             scheduleCacheSave()
             if stickToBottom { requestStickToBottom() }
@@ -734,6 +758,7 @@ final class SessionDetailViewModel {
 
     /// Show a cached transcript: the turns, identity and stats it was saved with.
     private func applyCached(_ entry: CachedTranscript) {
+        lastSyncedAt = entry.savedAt
         var cachedSummary = entry.summary
         cachedSummary.selectorState = entry.selectorState
         summary = cachedSummary
@@ -1685,6 +1710,7 @@ final class SessionDetailViewModel {
         for await frame in stream.frames {
             if Task.isCancelled { return }
             let isCurrent = generation == streamGeneration
+            if isCurrent { noteFrame(frame, on: stream) }
             switch frame {
             case .ready:
                 // Send attach, but do NOT release openStream yet: wait for the
@@ -1942,6 +1968,7 @@ final class SessionDetailViewModel {
             if Task.isCancelled { return }
             // A send (or another reattach) superseded us — let go; the new stream owns the turn.
             guard generation == streamGeneration else { return }
+            noteFrame(frame, on: stream)
             switch frame {
             case .ready:
                 stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
@@ -2466,33 +2493,53 @@ final class SessionDetailViewModel {
     /// to the SAME server-side ACP connection — which outlives the WebSocket.
     /// Mirrors the web client, whose socket auto-reconnects and re-subscribes its
     /// live streams, so a transient network blip or a server socket recycle no
-    /// longer surfaces an error. Backs off between attempts; after
-    /// `maxStreamReconnects` consecutive failures with no frames it gives up and
-    /// reconciles against the server instead of looping forever.
+    /// longer surfaces an error. Backs off between attempts.
     ///
     /// `reattach` selects the consumer: the send path (`consume`, feeding the
     /// existing `live`) versus the cross-client reattach path (`consumeReattach`,
     /// which rebuilds `live` from the fresh snapshot).
-    private func reconnectStream(into live: LiveTurn, connectionID conn: String, reason: String?, reattach: Bool = false) {
+    ///
+    /// The network decides the pace (``StreamReconnect``): no attempt is made,
+    /// or counted, while the phone has none, and one goes the moment it is
+    /// back; after the budget the server is asked once whether the turn
+    /// ended, and the socket keeps trying every 30 s while the screen is
+    /// open, so a turn on screen outlives a dead zone of any length.
+    private func reconnectStream(into live: LiveTurn, connectionID conn: String, reason: String?,
+                                 reattach: Bool = false, immediately: Bool = false) {
         guard liveTurn === live, isTurnActive else { return }
-        streamReconnects += 1
-        guard streamReconnects <= Self.maxStreamReconnects else {
-            Task { [weak self] in await self?.reconcileOrFail(live: live, reason: reason) }
-            return
-        }
-        let attempt = streamReconnects
         closeStream()              // drop the dead socket (also bumps the generation)
         streamGeneration &+= 1
         let generation = streamGeneration
         // A quiet "connecting" indicator, not a hard error.
         if case .running = sendState {} else { sendState = .connecting }
+        linkStatus?.setStream(ObjectIdentifier(self), down: true)
+        pendingReconnect = (live, conn, reattach)
+        // No network: `connectivityChanged` sends this one when it is back.
+        guard connectivity.isOnline else { return }
+        streamReconnects += 1
+        let step = StreamReconnect.step(attempt: streamReconnects, immediately: immediately, timing: reconnectTiming)
         reconnectTask = Task { [weak self] in
-            // Exponential backoff capped at 8s: 0.5, 1, 2, 4, 8, 8 …
-            let delay = min(8.0, 0.5 * pow(2.0, Double(attempt - 1)))
-            try? await Task.sleep(for: .seconds(delay))
+            var delay = Duration.zero
+            switch step {
+            case .wait(let wait):
+                delay = wait
+            case .checkServerThenWait(let wait):
+                // The reply may have landed while the socket was down, or the
+                // server may have let the connection go.
+                guard let model = self else { return }
+                if await model.settleAfterLongOutage(live: live, connectionID: conn) { return }
+                delay = wait
+            }
+            if delay > .zero { try? await Task.sleep(for: delay) }
             guard let self, !Task.isCancelled,
                   self.liveTurn === live, self.isTurnActive,
                   generation == self.streamGeneration else { return }
+            // The network went while this waited: no attempt until it is back.
+            guard self.connectivity.isOnline else {
+                self.streamReconnects -= 1
+                return
+            }
+            self.pendingReconnect = nil
             let newStream = self.makeEventStream()
             self.stream = newStream
             newStream.start()
@@ -2564,32 +2611,102 @@ final class SessionDetailViewModel {
     private func reconcileOrFail(live: LiveTurn, reason: String?) async {
         guard liveTurn === live, isTurnActive else { return }
         streamReconnects = 0
-        if let id = conversationID,
-           let outcome = try? await fetchTranscript(id: id, overlap: TranscriptSync.liveOverlap),
-           liveTurn === live, isTurnActive {
-            let detail = outcome.detail
-            summary = detail.summary
-            sessionStats = detail.sessionStats ?? sessionStats
-            // Adopt only a transcript that genuinely advanced past our pre-turn
-            // baseline AND ends with a real reply — never a stale read.
-            if outcome.window.end > heldEnd, Self.transcriptHasReply(outcome.window.turns) {
-                isTurnActive = false
-                clearInteractivePrompts()
-                adoptWindow(outcome, allowShrink: false)
-                pendingUserTurns.removeAll()
-                liveTurn = nil
-                sendState = .idle
-                retireSettledNotes()
-                awaitingBackground = false
-                backgroundOutstanding = 0
-                closeStream()
-                requestScrollToBottom()
-                // The turn is over: what waited for its end goes now.
-                sendNextQueued()
-                return
-            }
+        if await adoptReplyIfLanded(live: live) == true { return }
+        failLive(live, message: Self.lostConnectionMessage)
+    }
+
+    /// Fetch the transcript and adopt it when the turn's reply has landed:
+    /// `true` adopted, `false` the server answered without it, `nil` the
+    /// server couldn't be reached (or this screen moved on meanwhile).
+    private func adoptReplyIfLanded(live: LiveTurn) async -> Bool? {
+        guard let id = conversationID,
+              let outcome = try? await fetchTranscript(id: id, overlap: TranscriptSync.liveOverlap),
+              liveTurn === live, isTurnActive
+        else { return nil }
+        let detail = outcome.detail
+        summary = detail.summary
+        sessionStats = detail.sessionStats ?? sessionStats
+        // Adopt only a transcript that genuinely advanced past our pre-turn
+        // baseline AND ends with a real reply — never a stale read.
+        guard outcome.window.end > heldEnd, Self.transcriptHasReply(outcome.window.turns) else { return false }
+        isTurnActive = false
+        clearInteractivePrompts()
+        adoptWindow(outcome, allowShrink: false)
+        pendingUserTurns.removeAll()
+        liveTurn = nil
+        sendState = .idle
+        retireSettledNotes()
+        awaitingBackground = false
+        backgroundOutstanding = 0
+        closeStream()
+        requestScrollToBottom()
+        // The turn is over: what waited for its end goes now.
+        sendNextQueued()
+        return true
+    }
+
+    /// The socket hasn't come back within its budget. The turn may have ended
+    /// meanwhile: its reply is adopted if the transcript has it, and a turn
+    /// the server says ended is settled. A server that says the connection is
+    /// down or gone fails the turn, as before. One that can't be reached, or
+    /// still runs the turn, keeps it on screen while the socket goes on
+    /// trying. Returns whether the turn is settled (or this screen moved on).
+    private func settleAfterLongOutage(live: LiveTurn, connectionID conn: String) async -> Bool {
+        guard let landed = await adoptReplyIfLanded(live: live) else {
+            return Task.isCancelled || !(liveTurn === live && isTurnActive)
         }
-        failLive(live, message: "Lost the connection. Your reply may still be running — reopen the session to check.")
+        if landed { return true }
+        let phase: LiveSessionSnapshot.TurnPhase?
+        do {
+            phase = try await client.liveSessionSnapshot(connectionId: conn)?.turnPhase
+        } catch {
+            return Task.isCancelled || !(liveTurn === live && isTurnActive)
+        }
+        guard !Task.isCancelled, liveTurn === live, isTurnActive else { return true }
+        switch phase {
+        case .running?, .starting?:
+            return false
+        case .ended?:
+            finalize(live: live, stopReason: "end_turn")
+            return true
+        case .connectionDown?, nil:
+            failLive(live, message: Self.lostConnectionMessage)
+            return true
+        }
+    }
+
+    /// A frame of the current socket: the transcript is current, and a
+    /// confirmed attach means the socket is back.
+    private func noteFrame(_ frame: EventStream.Frame, on stream: any SessionEventStream) {
+        switch frame {
+        case .closed, .detached:
+            return
+        case .snapshot, .replay:
+            stream.setStreaming(true)
+            linkStatus?.setStream(ObjectIdentifier(self), down: false)
+        default:
+            break
+        }
+        lastSyncedAt = Date()
+    }
+
+    /// The network changed: a socket waiting for it goes at once, and an
+    /// open one is checked within a few seconds (a tunnelled connection often
+    /// survives a switch from Wi-Fi to LTE, so it isn't dropped outright).
+    private func connectivityChanged(_ event: ConnectivityMonitor.Event) {
+        switch event {
+        case .cameOnline:
+            if let pending = pendingReconnect {
+                reconnectStream(into: pending.live, connectionID: pending.conn, reason: nil,
+                                reattach: pending.reattach, immediately: true)
+            } else {
+                stream?.checkLink()
+            }
+        case .pathChanged:
+            stream?.checkLink()
+        case .wentOffline:
+            break
+        }
     }
 
     // MARK: - Interactive prompts (permission / question / plan)
@@ -3245,6 +3362,8 @@ final class SessionDetailViewModel {
         // Drop any pending silent reconnect — a deliberate close ends recovery.
         reconnectTask?.cancel()
         reconnectTask = nil
+        pendingReconnect = nil
+        linkStatus?.setStream(ObjectIdentifier(self), down: false)
         stream?.detach(subscriptionId: subscriptionID)
         stream?.close()
         stream = nil

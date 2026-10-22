@@ -105,6 +105,7 @@ struct SessionListView: View {
             CodegBackground()
             content
         }
+        .connectionCapsule()
         // With the leading switcher the title is rendered by the menu itself, so
         // suppress the system (centered) title to avoid a duplicate; on iPad the
         // plain server name is the column title.
@@ -182,6 +183,11 @@ struct SessionListView: View {
 
         return ScrollView {
             LazyVStack(spacing: 12) {
+                // The saved copy, or a list the server can't refresh: how old it is.
+                if let date = viewModel.lastLoadedAt,
+                   viewModel.savedCopyDate != nil || LinkStatus.shared.display == .offline {
+                    LastUpdatedLine(date: date)
+                }
                 // A failed refresh over a list that still has rows: surface the
                 // error inline above the cards rather than swallowing it.
                 if let error = viewModel.error, !viewModel.conversations.isEmpty {
@@ -385,5 +391,26 @@ struct SessionListView: View {
         }
         .accessibilityLabel("Server: \(server.name)")
         .accessibilityHint("Switch server")
+    }
+}
+
+/// "Last updated 14:02" (with the day when it isn't today) above a list shown
+/// from its saved copy or while the server can't be reached.
+struct LastUpdatedLine: View {
+    let date: Date
+
+    var body: some View {
+        Text("Last updated \(Self.text(for: date))")
+            .font(.caption2)
+            .foregroundStyle(Theme.textTertiary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 2)
+    }
+
+    static func text(for date: Date, now: Date = Date()) -> String {
+        if Calendar.current.isDate(date, inSameDayAs: now) {
+            return date.formatted(date: .omitted, time: .shortened)
+        }
+        return date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
     }
 }

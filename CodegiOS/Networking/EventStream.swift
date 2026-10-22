@@ -80,12 +80,91 @@ enum WSServerMessage: Decodable, Sendable {
     }
 }
 
+// MARK: - The socket under an EventStream
+
+/// The WebSocket an ``EventStream`` runs over: `URLSessionWebSocketTask` in the
+/// app, a scripted one in the unit tests.
+protocol EventSocket: AnyObject {
+    func resume()
+    func send(text: String)
+    func receive(_ completion: @escaping @Sendable (Result<URLSessionWebSocketTask.Message, Error>) -> Void)
+    func sendPing(_ pongReceived: @escaping @Sendable (Error?) -> Void)
+    func cancel()
+}
+
+/// The app's socket.
+final class URLSessionEventSocket: EventSocket {
+    let task: URLSessionWebSocketTask
+
+    init(task: URLSessionWebSocketTask) {
+        self.task = task
+    }
+
+    func resume() { task.resume() }
+
+    func send(text: String) {
+        task.send(.string(text)) { _ in }
+    }
+
+    func receive(_ completion: @escaping @Sendable (Result<URLSessionWebSocketTask.Message, Error>) -> Void) {
+        task.receive { result in completion(result) }
+    }
+
+    func sendPing(_ pongReceived: @escaping @Sendable (Error?) -> Void) {
+        task.sendPing { error in pongReceived(error) }
+    }
+
+    func cancel() {
+        task.cancel(with: .goingAway, reason: nil)
+    }
+}
+
+// MARK: - Time for the liveness checks
+
+/// A timer from a ``LivenessClock``.
+protocol LivenessTimer: AnyObject {
+    func cancel()
+}
+
+/// Time and timers for the event socket's liveness checks; the unit tests
+/// drive a manual one.
+protocol LivenessClock: AnyObject {
+    /// Seconds on a monotonic clock.
+    var now: TimeInterval { get }
+    /// Run `work` once after `delay` seconds, unless cancelled first.
+    func schedule(after delay: TimeInterval, _ work: @escaping @Sendable () -> Void) -> any LivenessTimer
+}
+
+/// The app's clock: uptime, and timers on a utility queue.
+final class SystemLivenessClock: LivenessClock, @unchecked Sendable {
+    static let shared = SystemLivenessClock()
+
+    var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    func schedule(after delay: TimeInterval, _ work: @escaping @Sendable () -> Void) -> any LivenessTimer {
+        let item = DispatchWorkItem(block: work)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + max(0, delay), execute: item)
+        return DispatchLivenessTimer(item: item)
+    }
+}
+
+private final class DispatchLivenessTimer: LivenessTimer, @unchecked Sendable {
+    let item: DispatchWorkItem
+    init(item: DispatchWorkItem) { self.item = item }
+    func cancel() { item.cancel() }
+}
+
 // MARK: - EventStream
 
 /// A live WebSocket connection to `/ws/events`. Emits decoded frames on
 /// `frames`. Lifecycle: `start()` → await `.ready` → `attach(...)` → consume
 /// `.event` frames → `close()`. Reconnection is the caller's responsibility
 /// (Phase 1 reconnects by creating a fresh stream).
+///
+/// The stream notices a dead socket by itself (see ``StreamLiveness``): no
+/// ready frame within 10 s of opening, or no pong to a ping within the
+/// deadline and no answer to a health request either, ends it with a
+/// `.closed` frame, as a socket error does.
 final class EventStream: @unchecked Sendable {
     enum Frame: Sendable {
         case ready
@@ -101,14 +180,26 @@ final class EventStream: @unchecked Sendable {
         case frameCut
     }
 
+    /// Why a socket the server stopped answering was closed.
+    static let noAnswerReason = "The server stopped answering."
+
+    /// How the stream checks whether the server is there when a pong is late:
+    /// a health request over HTTP.
+    typealias Probe = @Sendable () async -> StreamLiveness.ProbeOutcome
+
     let frames: AsyncStream<Frame>
     private let continuation: AsyncStream<Frame>.Continuation
     private let url: URL
     private let token: String
-    private let session: URLSession
+    private let makeSocket: (URL, [String]) -> any EventSocket
+    private let clock: any LivenessClock
+    private let probe: Probe
     private let lock = NSLock()
-    private var task: URLSessionWebSocketTask?
+    private var socket: (any EventSocket)?
     private var isClosed = false
+    /// Guarded by `lock`.
+    private var liveness: StreamLiveness
+    private var checkTimer: (any LivenessTimer)?
 
     /// Dedicated session for the long-lived event socket. `URLSession.shared`'s
     /// default `timeoutIntervalForRequest` (60s) is an *inactivity* timeout that,
@@ -116,9 +207,9 @@ final class EventStream: @unchecked Sendable {
     /// pause for a permission prompt — and tears down a perfectly healthy stream,
     /// surfacing a spurious error even though the server is fine. A live agent
     /// owns the pacing, so the socket must be allowed to sit idle indefinitely;
-    /// genuine death is instead detected by the keepalive ping below. (The
-    /// browser WebSocket the web client uses has no such idle timeout — this
-    /// brings parity.)
+    /// genuine death is instead detected by the liveness checks (pings with a
+    /// pong deadline). (The browser WebSocket the web client uses has no such
+    /// idle timeout — this brings parity.)
     static let streamSession: URLSession = {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 604_800   // 7 days — effectively no idle timeout
@@ -127,10 +218,16 @@ final class EventStream: @unchecked Sendable {
         return URLSession(configuration: cfg)
     }()
 
-    /// Seconds between keepalive pings. With the idle timeout disabled, these are
-    /// how a genuinely dead connection is detected: the pong handler errors when
-    /// the socket is gone, and we surface that as a `.closed` frame.
-    private static let pingInterval: TimeInterval = 20
+    /// For the health probe of a late pong: fails at once without a network
+    /// instead of waiting for one. The liveness check gives the probe up after
+    /// its own timeout regardless.
+    static let probeSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = StreamLiveness.probeCeiling
+        cfg.timeoutIntervalForResource = StreamLiveness.probeCeiling
+        cfg.waitsForConnectivity = false
+        return URLSession(configuration: cfg)
+    }()
 
     /// The largest frame a socket accepts, in bytes. `URLSessionWebSocketTask`
     /// defaults to 1 MiB, and codeg sends bigger frames: a `background_activity`
@@ -148,13 +245,46 @@ final class EventStream: @unchecked Sendable {
         return task
     }
 
-    init(baseURL: URL, token: String, session: URLSession = EventStream.streamSession) {
+    convenience init(baseURL: URL, token: String, session: URLSession = EventStream.streamSession) {
+        self.init(
+            baseURL: baseURL, token: token,
+            makeSocket: { url, protocols in
+                URLSessionEventSocket(task: EventStream.makeTask(session: session, url: url, protocols: protocols))
+            },
+            clock: SystemLivenessClock.shared,
+            probe: EventStream.healthProbe(baseURL: baseURL, token: token)
+        )
+    }
+
+    /// A stream over sockets from `makeSocket`, timed by `clock`, asking
+    /// `probe` when a pong is late (the unit tests' scripted socket and clock).
+    init(baseURL: URL, token: String,
+         makeSocket: @escaping (URL, [String]) -> any EventSocket,
+         clock: any LivenessClock, probe: @escaping Probe) {
         self.token = token
-        self.session = session
         self.url = EventStream.websocketURL(from: baseURL)
+        self.makeSocket = makeSocket
+        self.clock = clock
+        self.probe = probe
+        self.liveness = StreamLiveness(now: clock.now)
         var captured: AsyncStream<Frame>.Continuation!
         self.frames = AsyncStream(bufferingPolicy: .unbounded) { captured = $0 }
         self.continuation = captured
+    }
+
+    /// `POST /api/health` without waiting for a network.
+    static func healthProbe(baseURL: URL, token: String) -> Probe {
+        {
+            let client = CodegClient(baseURL: baseURL, token: token, session: EventStream.probeSession)
+            do {
+                _ = try await client.send("health", body: EmptyBody())
+                return .alive
+            } catch APIError.unauthorized {
+                return .unauthorized
+            } catch {
+                return .unreachable
+            }
+        }
     }
 
     /// Extra subprotocol that declares this socket an iOS client (codeg fork
@@ -174,14 +304,14 @@ final class EventStream: @unchecked Sendable {
     }
 
     func start() {
-        let protocols = Self.protocols(token: token)
-        let newTask = Self.makeTask(session: session, url: url, protocols: protocols)
-        lock.lock(); task = newTask; lock.unlock()
-        newTask.resume()
+        let newSocket = makeSocket(url, Self.protocols(token: token))
+        lock.lock()
+        socket = newSocket
+        liveness.reset(now: clock.now)
+        lock.unlock()
+        newSocket.resume()
         receiveLoop()
-        // Begin the keepalive after one interval so the handshake completes first
-        // (a ping fired before the socket connects would error and falsely close).
-        scheduleNextPing()
+        scheduleCheck()
     }
 
     func attach(subscriptionId: String, connectionId: String, sinceSeq: UInt64? = nil) {
@@ -197,14 +327,37 @@ final class EventStream: @unchecked Sendable {
         send(.presence(visible: visible, focused: focused, idleSecs: idleSecs, conversationIds: conversationIds))
     }
 
+    /// A turn streams on screen: ping after 5 s of quiet instead of 20 s.
+    func setStreaming(_ streaming: Bool) {
+        lock.lock()
+        liveness.streaming = streaming
+        lock.unlock()
+        scheduleCheck()
+    }
+
+    /// The phone's network changed (Wi-Fi to LTE) or came back: the socket
+    /// must answer within 4 s, or it is replaced. Not dropped outright: a
+    /// tunnelled connection often survives the switch.
+    func checkLink() {
+        lock.lock()
+        guard !isClosed else { lock.unlock(); return }
+        let mustPing = liveness.onWake(now: clock.now)
+        let current = socket
+        lock.unlock()
+        if mustPing { sendPing(current) }
+        scheduleCheck()
+    }
+
     func close() {
         lock.lock()
         let alreadyClosed = isClosed
         isClosed = true
-        let t = task
+        let current = socket
+        checkTimer?.cancel()
+        checkTimer = nil
         lock.unlock()
         guard !alreadyClosed else { return }
-        t?.cancel(with: .goingAway, reason: nil)
+        current?.cancel()
         continuation.finish()
     }
 
@@ -213,20 +366,23 @@ final class EventStream: @unchecked Sendable {
     private func send(_ message: WSClientMessage) {
         guard let data = try? CodegJSON.encoder.encode(message),
               let text = String(data: data, encoding: .utf8) else { return }
-        lock.lock(); let t = task; lock.unlock()
-        t?.send(.string(text)) { _ in }
+        lock.lock(); let current = socket; lock.unlock()
+        current?.send(text: text)
     }
 
     private func receiveLoop() {
-        lock.lock(); let t = task; lock.unlock()
-        t?.receive { [weak self] result in
+        lock.lock(); let current = socket; lock.unlock()
+        current?.receive { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
                 self.finish(reason: error.localizedDescription)
             case .success(let message):
+                self.lock.lock()
+                let closed = self.isClosed
+                if !closed { self.liveness.onInbound(now: self.clock.now, isPong: false) }
+                self.lock.unlock()
                 self.handle(message)
-                self.lock.lock(); let closed = self.isClosed; self.lock.unlock()
                 if !closed { self.receiveLoop() }
             }
         }
@@ -236,35 +392,92 @@ final class EventStream: @unchecked Sendable {
         lock.lock()
         let already = isClosed
         isClosed = true
+        checkTimer?.cancel()
+        checkTimer = nil
         lock.unlock()
         guard !already else { return }
         continuation.yield(.closed(reason: reason))
         continuation.finish()
     }
 
-    // MARK: - Keepalive
+    /// The socket is dead: report it, then let it go.
+    private func die(reason: String) {
+        lock.lock(); let current = socket; lock.unlock()
+        finish(reason: reason)
+        current?.cancel()
+    }
 
-    /// Schedule the next keepalive ping after `pingInterval`, unless closed.
-    private func scheduleNextPing() {
-        lock.lock(); let closed = isClosed; lock.unlock()
-        guard !closed else { return }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + EventStream.pingInterval) { [weak self] in
-            self?.sendKeepalivePing()
+    // MARK: - Liveness
+
+    /// Arm the check timer for when ``StreamLiveness`` next needs a look.
+    /// Frames arriving in between need no new timer: a check that comes too
+    /// early only waits again.
+    private func scheduleCheck() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isClosed else { return }
+        checkTimer?.cancel()
+        let delay = liveness.nextCheckAt() - clock.now
+        checkTimer = clock.schedule(after: max(0, delay)) { [weak self] in self?.runCheck() }
+    }
+
+    private func runCheck() {
+        lock.lock()
+        guard !isClosed else { lock.unlock(); return }
+        let now = clock.now
+        let action = liveness.onCheck(now: now)
+        let current = socket
+        lock.unlock()
+        switch action {
+        case .wait:
+            scheduleCheck()
+        case .ping:
+            sendPing(current)
+            scheduleCheck()
+        case .probe:
+            runProbe(startedAt: now)
+            scheduleCheck()
+        case .dead:
+            die(reason: Self.noAnswerReason)
         }
     }
 
-    /// Send a WebSocket ping and reschedule on success. On failure the socket is
-    /// genuinely gone, so finish the stream. A quiet-but-healthy turn never trips
-    /// this — the server (axum) always returns the pong, resetting the cycle.
-    private func sendKeepalivePing() {
-        lock.lock(); let closed = isClosed; let t = task; lock.unlock()
-        guard !closed, let t else { return }
-        t.sendPing { [weak self] error in
+    /// Send a WebSocket ping. Its pong settles the check; an error means the
+    /// socket is gone.
+    private func sendPing(_ target: (any EventSocket)?) {
+        target?.sendPing { [weak self] error in
             guard let self else { return }
             if let error {
-                self.finish(reason: error.localizedDescription)
-            } else {
-                self.scheduleNextPing()
+                self.die(reason: error.localizedDescription)
+                return
+            }
+            self.lock.lock()
+            if !self.isClosed { self.liveness.onInbound(now: self.clock.now, isPong: true) }
+            self.lock.unlock()
+        }
+    }
+
+    /// A pong is overdue: ask the server over HTTP whether it is there.
+    private func runProbe(startedAt: TimeInterval) {
+        let probe = self.probe
+        Task { [weak self] in
+            let outcome = await probe()
+            guard let self else { return }
+            self.lock.lock()
+            guard !self.isClosed else { self.lock.unlock(); return }
+            let now = self.clock.now
+            let verdict = self.liveness.onProbeResult(now: now, outcome: outcome, elapsed: now - startedAt)
+            let current = self.socket
+            self.lock.unlock()
+            switch verdict {
+            case .extend:
+                // A write is what makes a dead connection fail fast.
+                self.sendPing(current)
+                self.scheduleCheck()
+            case .dead:
+                self.die(reason: EventStream.noAnswerReason)
+            case .ignored:
+                break
             }
         }
     }

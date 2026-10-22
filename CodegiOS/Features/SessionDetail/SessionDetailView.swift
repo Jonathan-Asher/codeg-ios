@@ -153,11 +153,17 @@ struct SessionDetailView: View {
         }
     }
 
-    private var screen: some View {
+    /// The transcript over the background, with the link's capsule on top.
+    private var backdrop: some View {
         ZStack {
             CodegBackground()
             content
         }
+        .connectionCapsule(updatedAt: model.lastSyncedAt)
+    }
+
+    private var screen: some View {
+        backdrop
         .navigationTitle(navTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }

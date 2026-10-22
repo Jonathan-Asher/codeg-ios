@@ -1373,6 +1373,149 @@ wordings; `DictationRefineTests` the kept answer and its decoding;
 forker; `LimitPauseTests` the pool pause, the stop, the two actions on the
 wire, `pool_wait` and a prompt the pool held back.
 
+### Through connection drops and offline (1.3.23)
+
+Phase 1 of the offline plan on the phone (items 1.5 and 1.6), next to the
+desktop and web half on `fork/solution-plan` (the status pill, the resync
+coordinator, adaptive pong deadlines). The wording and the timings follow
+codeg web's `src/lib/connection-display.ts` and
+`src/lib/transport/liveness.ts`.
+
+#### Lists saved for a start without a network
+
+`Persistence/ServerSnapshotCache.swift`.
+
+- **What.** After every load that brought the conversation list,
+  `ActivityModel` and `SessionListViewModel` save the lists
+  `ServerSnapshotLoad` gave: all folders, the open folders, the
+  conversation summaries, the folder groups and the attention snapshot.
+  One file per server, `lists.json`, in the server's folder of the
+  transcript cache (`Caches/TranscriptCache/<serverKey>/`), so removing a
+  server or changing its URL or token removes its lists with its
+  transcripts. The transcript cache's eviction leaves the file alone.
+- **When it shows.** A list with nothing loaded yet shows the saved copy at
+  once, then asks the server. The copy's date is the file's modification
+  date: Activity's "Updated …" line shows it, Chats shows "Last updated
+  14:02" (with the day when it isn't today) while it shows the saved copy
+  or the link is offline, and the capsule says "Offline · updated 3 min
+  ago".
+- **Writes.** The 25-second pulse brings the lists again and again; when
+  they didn't change (a SHA-256 of the encoded lists) only the file's date
+  moves. Capped at 2 MB: larger lists are saved without their least
+  recently updated sessions, pinned ones last.
+- **No network.** While the phone has none (`ConnectivityMonitor`), the
+  pulse and Chats don't ask the server, since a request would only wait
+  for connectivity. The pulse waits for the network and refreshes the
+  moment it is back; Chats reloads then if it shows its saved copy. With
+  nothing saved the screen says "You're offline. The sessions show here
+  once the phone is back online."
+- **Saved sessions.** Transcripts were already kept (`TranscriptCache`,
+  1.3.6), so a saved session opens offline as before; the capsule's age
+  there is when the screen last heard from the server.
+
+#### File protection
+
+`SavedFiles` in `ServerSnapshotCache.swift`. The lists and the transcripts
+are written with `.completeFileProtection`, and their folders are made with
+`FileProtectionType.complete`: iOS keeps them unreadable from about 10 s
+after the phone locks until it is unlocked. What an earlier version saved
+gets the protection on the first read or write of each launch (a locked
+phone refuses; the next launch tries again). Nothing reads these files
+while the phone is locked: the app has no background tasks, and read-aloud
+speaks from memory. A read that fails while locked is a miss, never a
+deletion. `MediaDiskCache` and the outbox keep the default protection:
+session audio may play from the media cache with the screen locked, and
+the outbox must stay writable when a send fails in the background.
+
+#### The connection capsule
+
+`App/LinkStatus.swift` and `DesignSystem/ConnectionCapsule.swift`, on
+Chats, Folders, Activity and the session screen.
+
+- **States.** "Reconnecting…" after 1 s of the server out of reach with
+  the app in front; "Offline · updated 3 min ago" after 10 s, or after 1 s
+  without any network; "Updating…" while the first refresh after an outage
+  runs; "Back online" for 2 s. Down time counts only while the app is in
+  front. Unlike the web, no network also waits that first second, since a
+  switch from Wi-Fi to LTE can report none for a moment.
+- **Inputs.** The network path, the list pulse (a refresh that couldn't
+  reach the server; a server that answered with an error is up, and its
+  error keeps the banner), and the session screens' sockets while they
+  reconnect.
+- **Never in the way.** A capsule over the top of the content, under the
+  navigation bar, that takes no taps. A list that can't be refreshed keeps
+  its rows; the refresh-error banner is for the other errors.
+
+#### Network monitor
+
+`Networking/ConnectivityMonitor.swift`: `NWPathMonitor` reduced to online
+or offline and the kinds of interface in use. `.requiresConnection` counts
+as online, and so does the unknown state before the first report, so
+nothing is held back at launch. Its events: went offline, came online, and
+path changed (still online, over another kind of interface).
+
+#### The event socket's pong deadline
+
+`Networking/StreamLiveness.swift` (pure), driven by `EventStream`:
+
+- a ping after 5 s of quiet while a turn streams on screen, 20 s
+  otherwise;
+- the pong is due within `clamp(3 × p95, 8 s, 30 s)`, the p95 over recent
+  pong delays and probe durations; any frame settles a ping;
+- a late pong triggers `POST /api/health` on a session that doesn't wait
+  for connectivity: an answer keeps the socket and extends the deadline
+  (twice at most), no answer ends the stream with `.closed`;
+- a new socket must hear its ready frame within 10 s, behind the same
+  probe, since a connect to a tailnet address whose machine is off can
+  hang;
+- a network change, or the network back, checks the open socket with a
+  4 s deadline instead of dropping it: the Tailscale-tunnelled connection
+  often survives a switch.
+
+Before 1.3.23 the ping had no deadline, so a half-open socket lived until
+TCP gave up.
+
+#### A running turn through a dead zone
+
+`StreamReconnect` in `StreamRecovery.swift`, and `reconnectStream` in
+`SessionDetailViewModel`:
+
+- no reconnect is attempted, or counted, while the phone has no network;
+  the network coming back sends one at once;
+- with a network: 0.5, 1, 2, 4, 8, 8 s, as before;
+- then the server is asked once: a reply that landed meanwhile is adopted,
+  a turn the server says ended is settled, and a connection the server let
+  go fails the turn as before ("Lost the connection…");
+- a server that can't be reached, or that still runs the turn, keeps the
+  turn on screen, and the socket tries again every 30 s while the screen is
+  open. 1.3.22 failed the turn after about 24 s.
+
+The screen shows the turn as Working throughout, and the capsule shows the
+link is down. Leaving the screen, or the app going to the background,
+stops the tries; coming back reconnects as before.
+
+#### Tests
+
+`OfflineListsTests` (saving, unchanged lists, the cap, eviction, removal
+with the server, protection of files and folders and of what an earlier
+version saved, Activity and Chats opening offline and refreshing when the
+network is back), `ConnectivityTests` (the monitor with path reports fed by
+hand, waiting for the network, the capsule's states),
+`StreamLivenessTests` (the rules, then `EventStream` on a scripted socket
+and a manual clock: a missed pong and failed probe, a slow server kept, a
+frame as an answer, a socket that never opens, a network change, a failed
+ping) and `OfflineRecoveryTests` (the pace, a dead zone without a network,
+a server that stays away, a connection the server let go).
+
+#### Left for later phases
+
+- Resuming a stream from `sinceSeq` with a replay (Phase 2): a reconnect
+  is still a full attach snapshot.
+- ETags in the pulse (Phase 2).
+- The server-identity check and the wipe rules: sign-out, a 401, 14 days
+  without reaching the server (Phase 3).
+- Searching saved copies offline (Phase 4).
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one
@@ -2500,8 +2643,11 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   offset, a superseded piece, a lost upload started over, giving up and Try
   Again, removing, pausing in the background, Original and Compressed,
   audio), the video policy on real movies, `stat_paths` batching, roots
-  and fallback, and the usage-limit pause, stop and account pool states) on
-  an
+  and fallback, the usage-limit pause, stop and account pool states; the
+  lists saved for a start without a network and the protection of saved
+  files, the network monitor and the connection capsule, the event
+  socket's pong deadline against a scripted socket and clock, and a
+  running turn through a dead zone) on an
   iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
   `build`. It uploads the session list screenshots as the
   `session-list-screenshots` artifact (with `transcript-scroll.txt`, the

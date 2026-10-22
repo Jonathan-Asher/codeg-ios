@@ -117,6 +117,10 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { PushRegistration.shared.refreshOnForeground() }
         }
+        // Down time only counts toward "Offline" while the app is in front.
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            LinkStatus.shared.setVisible(phase == .active)
+        }
     }
 
     private func openPendingPush() {

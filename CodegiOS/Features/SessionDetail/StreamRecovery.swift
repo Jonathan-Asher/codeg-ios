@@ -10,6 +10,17 @@ protocol SessionEventStream: AnyObject, Sendable {
     func attach(subscriptionId: String, connectionId: String, sinceSeq: UInt64?)
     func detach(subscriptionId: String)
     func close()
+    /// A turn streams on screen: the socket is checked sooner when it goes
+    /// quiet (see ``StreamLiveness``).
+    func setStreaming(_ streaming: Bool)
+    /// The phone's network changed or came back: check the socket within a
+    /// few seconds rather than drop it.
+    func checkLink()
+}
+
+extension SessionEventStream {
+    func setStreaming(_ streaming: Bool) {}
+    func checkLink() {}
 }
 
 extension EventStream: SessionEventStream {}
@@ -54,6 +65,50 @@ enum StreamHandshake {
             guard attempt < maxAttempts else { return .promptWithoutStream }
             return .retry(after: .milliseconds(500 * (1 << max(0, attempt - 1))))
         }
+    }
+}
+
+// MARK: - Reconnecting the socket of a turn on screen
+
+/// When a dropped event socket of a turn on screen tries again (§5.1 of the
+/// offline plan):
+/// - never while the phone has no network, and at once when it is back;
+/// - otherwise after a backoff, 0.5 s doubling to 8 s, for six attempts;
+/// - then the server is asked once whether the turn ended (its reply is
+///   adopted, or a connection the server let go fails the turn), and the
+///   socket keeps trying every 30 s while the screen is open, instead of
+///   failing the turn after about 24 s as before 1.3.23.
+/// Only attempts made with a network count, so a dead zone of any length
+/// leaves the turn running on screen.
+enum StreamReconnect {
+    struct Timing: Equatable, Sendable {
+        var base: Duration
+        var cap: Duration
+        var slow: Duration
+
+        static let standard = Timing(base: .milliseconds(500), cap: .seconds(8), slow: .seconds(30))
+    }
+
+    /// Attempts with a network before the server is asked.
+    static let budget = 6
+
+    enum Step: Equatable {
+        /// Wait this long, then open a socket.
+        case wait(Duration)
+        /// Ask the server whether the turn ended; if not, wait, then open.
+        case checkServerThenWait(Duration)
+    }
+
+    /// `attempt` counts attempts made with a network, from 1. `immediately`:
+    /// the network just came back, so no wait.
+    static func step(attempt: Int, immediately: Bool, timing: Timing = .standard) -> Step {
+        if attempt > budget {
+            let wait = immediately ? .zero : timing.slow
+            return attempt == budget + 1 ? .checkServerThenWait(wait) : .wait(wait)
+        }
+        if immediately { return .wait(.zero) }
+        let doublings = max(0, attempt - 1)
+        return .wait(min(timing.cap, timing.base * (1 << min(doublings, 16))))
     }
 }
 
