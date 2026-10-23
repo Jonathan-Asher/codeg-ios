@@ -1,6 +1,56 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "This question expired" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此问题已过期"
+          }
+        }
+      }
+    },
+    "The agent stopped waiting before it was answered." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "智能体在你回答之前已停止等待。"
+          }
+        }
+      }
+    },
+    "Paused · usage limit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已暂停 · 用量限制"
+          }
+        }
+      }
+    },
+    "Sub-agent result" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "子智能体结果"
+          }
+        }
+      }
+    },
+    "Open the sub-agent’s session" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开子智能体的会话"
+          }
+        }
+      }
+    },
     "Reconnecting…" : {
       "localizations" : {
         "zh-Hans" : {

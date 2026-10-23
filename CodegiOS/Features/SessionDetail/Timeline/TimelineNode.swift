@@ -34,6 +34,9 @@ struct TimelineNode: Identifiable {
 
     enum Content {
         case user(MessageTurn)
+        /// A sub-agent's result codeg delivered to this session as a message
+        /// (it was paused by a usage limit and continued): a compact card.
+        case delegatedResult(DelegatedResult)
         /// A message the user sent into the running turn, inside the reply
         /// where the agent took it (native steering).
         case insertedUser(MessageTurn)
@@ -74,7 +77,21 @@ struct TimelineNode: Identifiable {
         case .system: return .system
         case .assistantText, .liveText: return .assistant(agent)
         case .reasoning, .liveReasoning: return .reasoning
-        case .tool(let vm): return .tool(icon: vm.icon, state: vm.state)
+        case .tool(let vm):
+            // A question's marker follows its record, not the bare call: one
+            // left without a result after its turn ended has expired and must
+            // not pulse as if it still waited.
+            if vm.companion == .askQuestion {
+                switch AskQuestionParse.recordState(of: vm) {
+                case .inFlight: return .tool(icon: vm.icon, state: .running)
+                case .answered: return .tool(icon: vm.icon, state: .done)
+                case .error: return .tool(icon: vm.icon, state: .error)
+                case .expired: return .muted(icon: vm.icon)
+                }
+            }
+            return .tool(icon: vm.icon, state: vm.state)
+        case .delegatedResult(let result):
+            return .tool(icon: "person.2", state: result.isFailure ? .error : .done)
         case .toolGroup(let items, let streaming):
             return .toolGroup(error: items.contains(where: \.isError), streaming: streaming)
         case .delegationStatusGroup(let polls):
@@ -258,10 +275,14 @@ enum TranscriptTimeline {
         return toolIDs.isSubset(of: coverage.toolIDs) && images <= coverage.imageCount
     }
 
-    /// A user turn's node: a message card, or a divider for a bare Continue.
+    /// A user turn's node: a message card, a divider for a bare Continue, or
+    /// the card of a sub-agent result codeg delivered.
     private static func userNode(_ turn: MessageTurn, agent: AgentType) -> TimelineNode {
         if let variant = ContinuePrompt.variant(of: turn) {
             return TimelineNode(id: turn.id, content: .continuation(variant), agent: agent, startsGroup: true)
+        }
+        if let result = DelegatedResult.parse(turn) {
+            return TimelineNode(id: turn.id, content: .delegatedResult(result), agent: agent, startsGroup: true)
         }
         return TimelineNode(id: turn.id, content: .user(turn), agent: agent, startsGroup: true)
     }
@@ -318,7 +339,8 @@ enum TranscriptTimeline {
             // The first part keeps the turn's own id, so the ids of what was on
             // screen don't change when a message is sent into the turn.
             let owner = part == 0 ? live.id : "\(live.id)~\(part)"
-            out.append(contentsOf: MessageRender.adaptLive(segments: chunk, streamingID: streamingID).enumerated().map {
+            out.append(contentsOf: MessageRender.adaptLive(segments: chunk, streamingID: streamingID,
+                                                         turnRunning: live.isStreaming).enumerated().map {
                 node(for: $1, ownerID: owner, index: $0, agent: agent)
             })
             chunk = []

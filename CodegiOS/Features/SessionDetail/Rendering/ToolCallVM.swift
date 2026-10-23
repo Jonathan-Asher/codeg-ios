@@ -47,6 +47,11 @@ struct ToolCallVM: Identifiable {
     /// A sub-agent (Agent/Task) whose result is a model provider's refusal or
     /// error: the card shows a compact stopped state instead of the text.
     let providerError: ProviderError?
+    /// The call is part of the live turn while that turn still runs. A call
+    /// with no result is only waiting while this holds: a persisted call's turn
+    /// ended (a reattached live turn stands in for a running one), so a question
+    /// it left unanswered expired.
+    var inRunningTurn = false
 
     init(id: String, rawName: String, kind: String, state: ToolCallState,
          input: String?, output: String?, content: String?, isError: Bool,
@@ -181,7 +186,8 @@ enum MessageRender {
     /// The live turn's agent output as parts (messages the user sent into the
     /// turn left out; the timeline places those between the parts).
     static func adaptLive(_ turn: LiveTurn) -> [RenderPart] {
-        adaptLive(segments: turn.segments, streamingID: turn.isStreaming ? turn.segments.last?.id : nil)
+        adaptLive(segments: turn.segments, streamingID: turn.isStreaming ? turn.segments.last?.id : nil,
+                  turnRunning: turn.isStreaming)
     }
 
     /// `segments` as parts. Only the turn's *final* segment is still growing —
@@ -190,8 +196,9 @@ enum MessageRender {
     /// is a message the user sent). Earlier text/reasoning runs are frozen the
     /// moment the agent moved on to the next segment, so they render as
     /// finalized (no caret, cached). Without this, every text segment showed
-    /// its own blinking caret.
-    static func adaptLive(segments: [LiveSegment], streamingID: String?) -> [RenderPart] {
+    /// its own blinking caret. `turnRunning` says the turn is still running,
+    /// which every tool call of it carries (``ToolCallVM/inRunningTurn``).
+    static func adaptLive(segments: [LiveSegment], streamingID: String?, turnRunning: Bool = false) -> [RenderPart] {
         var parts: [RenderPart] = []
         for segment in segments {
             let isStreaming = streamingID != nil && segment.id == streamingID
@@ -213,10 +220,12 @@ enum MessageRender {
                                              running: state == .running))
                     continue
                 }
-                parts.append(.tool(ToolCallVM(
+                var vm = ToolCallVM(
                     id: call.id, rawName: call.title, kind: call.kind, state: state,
                     input: call.rawInput, output: call.rawOutput, content: call.content, isError: call.isError,
-                    meta: call.meta)))
+                    meta: call.meta)
+                vm.inRunningTurn = turnRunning
+                parts.append(.tool(vm))
                 // Same as the persisted path, so a reply shows its images while
                 // it streams and after a reattach rebuilt it from a snapshot.
                 for image in call.images { parts.append(.image(image, caption: nil)) }

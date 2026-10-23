@@ -1519,6 +1519,55 @@ a server that stays away, a connection the server let go).
   without reaching the server (Phase 3).
 - Searching saved copies offline (Phase 4).
 
+### Expired questions, paused and delivered sub-agents (1.3.24)
+
+Follows `fork/solution-plan` at 65fa63990 (the "keep a question open until
+it is answered" and "deliver a limit-paused sub-agent's result" work).
+Presentation only; no new endpoints.
+
+- **"This question expired".** codeg's `ask_user_question` now stays open
+  until it is answered, so a call that ended without an answer can no
+  longer be answered. `AskQuestionParse.recordState` ports web
+  `askQuestionRecordState` (`src/lib/ask-question.ts`): an error result is
+  `error` when codeg-mcp rejected the arguments (`ask_user_question
+  requires|supports`, `questions[n]`, `-32602`) and `expired` otherwise; a
+  result is `answered`; no result is `inFlight` only while the live turn
+  holding the call runs (`ToolCallVM.inRunningTurn`, set by
+  `MessageRender.adaptLive` from `LiveTurn.isStreaming`) and `expired`
+  after. A transcript's call with no result is never waiting: its turn
+  ended, or a reattached live turn stands in for the running one. The card
+  says "This question expired" with "The agent stopped waiting before it
+  was answered.", the questions' headers and the error's first lines, and
+  its rail marker is a quiet grey (`MarkerKind.muted`) instead of a pulse.
+  Strings: web `askQuestionResult.expired` / `expiredHint`.
+- **Paused sub-agents.** A delegation a usage limit stopped carries
+  `error_code: "paused_usage_limit"`: with `failed` in the delegate card's
+  `meta["codeg.delegation"]` (and the stored history), with `running` in a
+  `get_delegation_status` report. `DelegationModel.isPaused` turns both
+  into `paused` (`DelegationCardStatus`, `BadgeStatus`), and the badge
+  reads "Paused · usage limit" in amber with a pause glyph (web
+  `delegation.status.paused`). Paused is never sticky: the card follows the
+  latest meta and a status row its latest poll, so `completed` reads Done.
+  On the phone the delegate card's meta changes when the transcript reloads
+  (after the delivery turn, or on opening the session): the app does not
+  handle the live `delegation_completed` event.
+- **Delivered results.** When a continued sub-agent finishes, codeg sends
+  its result to the parent as a user message (`limit_delivery::
+  delivery_prompt`): a note to the agent, then `<delegation-result
+  task_id="…" agent="claude_code" status="completed" [error_code="…"]
+  child_session="42">…</delegation-result>`, ending the message.
+  `DelegatedResult.parse` reads a text-only user turn that ends with the
+  block (the first opening tag, the last closing tag, so a result quoting
+  the tag survives), and the timeline draws it as `DelegatedResultCard`
+  instead of a message: the agent, `#task`, the status badge, "Sub-agent
+  result", three lines of the result and "Open the sub-agent's session",
+  which pushes the child conversation (`SessionActions.openSession`).
+
+`CodegiOSTests/ServerStatesTests.swift` covers the record states, a
+transcript's and a live turn's unanswered question and their markers, the
+paused delegate card, delegate output and status rows turning Done, the
+badge, and reading delivered results (and what is not one).
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one

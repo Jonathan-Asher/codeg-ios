@@ -27,12 +27,17 @@ struct DelegationParsedInput {
 enum DelegationToolOutput {
     case ack(childConversationId: Int?)
     case outcome(text: String, isError: Bool, childConversationId: Int?)
+    /// A usage limit paused the sub-agent (`paused_usage_limit`): codeg
+    /// continues it by itself and delivers its result later. Not a failure.
+    case paused(text: String, childConversationId: Int?)
 }
 
 /// The status a delegation card renders. (`waiting` — child blocked on a
 /// permission decision — can't be derived on iOS, but is kept for parity.)
+/// `paused`: a usage limit paused the sub-agent, which codeg continues by
+/// itself once the limit resets.
 enum DelegationCardStatus {
-    case starting, running, waiting, ok, err
+    case starting, running, waiting, paused, ok, err
 }
 
 /// The broker-written `meta["codeg.delegation"]` on the parent `delegate_to_agent`
@@ -51,6 +56,14 @@ struct ParsedDelegationMeta {
 }
 
 enum DelegationModel {
+
+    /// The `error_code` codeg gives a delegation a usage limit paused (the
+    /// backend's `PAUSED_USAGE_LIMIT_CODE`). The delegate card's meta carries it
+    /// with `failed` and a status report with `running`; either way it is not a
+    /// failure, and a later `completed` replaces it.
+    static let pausedUsageLimitCode = "paused_usage_limit"
+
+    static func isPaused(_ errorCode: String?) -> Bool { errorCode == pausedUsageLimitCode }
 
     // MARK: delegate input
 
@@ -92,7 +105,7 @@ enum DelegationModel {
         guard let inner = outer?["codeg.delegation"]?.object else { return nil }
 
         guard let rawStatus = inner["status"]?.string else { return nil }
-        let status: DelegationCardStatus
+        var status: DelegationCardStatus
         switch rawStatus {
         case "running", "pending":   status = .running
         case "completed", "ok":      status = .ok
@@ -103,9 +116,12 @@ enum DelegationModel {
             for k in keys { if let v = inner[k], !v.isNull { return v } }
             return nil
         }
+        let errorCode = pick(["error_code", "errorCode"])?.nonEmptyString
+        // A limit-paused child is recorded as `failed` with the paused code.
+        if status != .ok, isPaused(errorCode) { status = .paused }
         return ParsedDelegationMeta(
             status: status,
-            errorCode: pick(["error_code", "errorCode"])?.nonEmptyString,
+            errorCode: errorCode,
             childConversationId: pick(["child_conversation_id", "childConversationId"])?.double.map { Int($0) },
             textPreview: pick(["text_preview", "textPreview"])?.nonEmptyString,
             durationMs: pick(["duration_ms", "durationMs"])?.double
@@ -197,6 +213,7 @@ enum DelegationModel {
         if hasError { return .err }
         switch toolOutput {
         case .ack: return .running
+        case .paused: return .paused
         case .outcome(_, let isError, _): return isError ? .err : .ok
         case nil: return state == .done ? .ok : .starting
         }
@@ -238,6 +255,11 @@ enum DelegationModel {
     /// is present.
     private static func interpretReport(_ obj: [String: Any]) -> DelegationToolOutput? {
         let cid = childConversationId(obj)
+        let paused = isPaused(obj["error_code"] as? String) || isPaused(obj["code"] as? String)
+        if paused, obj["status"] as? String != "completed", obj["kind"] as? String != "ok" {
+            return .paused(text: failureText(message: obj["message"], code: obj["error_code"] ?? obj["code"]),
+                           childConversationId: cid)
+        }
         if let status = obj["status"] as? String {
             switch status {
             case "running", "unknown":
@@ -307,8 +329,9 @@ enum TaskStatus: String { case running, completed, failed, canceled, unknown }
 
 /// Visual badge state. `checked` is the neutral, non-spinning state for a poll
 /// that RETURNED while the task was still running (a settled snapshot, not live
-/// work) — so a superseded check stops spinning.
-enum BadgeStatus { case starting, running, waiting, ok, err, checked }
+/// work) — so a superseded check stops spinning. `paused`: a usage limit paused
+/// the task, which codeg continues by itself.
+enum BadgeStatus { case starting, running, waiting, paused, ok, err, checked }
 
 struct ResolvedBadge {
     let status: BadgeStatus
@@ -404,6 +427,11 @@ extension DelegationModel {
     /// the tool-call lifecycle. A RETURNED `running` report resolves to `checked`
     /// (neutral) — the live spinner is only for a poll still in flight.
     static func deriveBadge(kind: DelegationRowKind, report: StatusReport, state: ToolCallState, hasError: Bool) -> ResolvedBadge {
+        // Paused by a usage limit (reported as `running` with the code): not a
+        // failure and not a plain check either. A later `completed` wins.
+        if isPaused(report.errorCode), report.status != .completed, report.status != .canceled {
+            return ResolvedBadge(status: .paused, errorCode: report.errorCode)
+        }
         switch report.status {
         case .completed: return ResolvedBadge(status: .ok)
         case .running:   return ResolvedBadge(status: .checked)

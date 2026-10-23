@@ -12,6 +12,18 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Expired questions, paused sub-agents and delivered sub-agent results
+  (1.3.24), matching the codeg server. A question the agent asked that
+  ended without an answer (the turn was cancelled, the agent's process went
+  away, codeg restarted) now reads "This question expired" instead of
+  "Waiting for your answer…" or an answer with no selection; a question
+  the agent sent with bad arguments still shows its error. A sub-agent a
+  usage limit stopped shows "Paused · usage limit" on its card and its
+  status checks instead of "Failed", and turns to Done once it finishes.
+  The result codeg delivers to the parent session when such a sub-agent
+  finishes shows as a compact card (the agent, its status and the start of
+  the result) instead of raw markup; tap it to open the sub-agent's
+  session.
 - Usable through connection drops, and partly offline (1.3.23). The
   session lists (Chats, Folders, Activity) are saved on the phone after
   each load, so the app opens without a network with its lists and its

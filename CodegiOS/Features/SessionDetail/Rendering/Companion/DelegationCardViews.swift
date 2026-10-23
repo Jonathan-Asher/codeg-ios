@@ -13,6 +13,14 @@ struct CompanionStatusBadge: View {
     let status: BadgeStatus
     var errorCode: String?
 
+    /// An error carrying the paused code shows as paused, as codeg web's badge
+    /// does: a usage limit paused the task, which codeg continues by itself.
+    static func shown(_ status: BadgeStatus, errorCode: String?) -> BadgeStatus {
+        status == .err && DelegationModel.isPaused(errorCode) ? .paused : status
+    }
+
+    private var displayed: BadgeStatus { Self.shown(status, errorCode: errorCode) }
+
     var body: some View {
         HStack(spacing: 4) {
             icon
@@ -24,13 +32,15 @@ struct CompanionStatusBadge: View {
     }
 
     @ViewBuilder private var icon: some View {
-        switch status {
+        switch displayed {
         case .starting:
             Image(systemName: "circle.dashed").font(.system(size: 9, weight: .bold))
         case .running:
             ProgressView().controlSize(.mini).scaleEffect(0.7).frame(width: 10, height: 10)
         case .waiting:
             Image(systemName: "exclamationmark.shield.fill").font(.system(size: 9, weight: .bold))
+        case .paused:
+            Image(systemName: "pause.circle.fill").font(.system(size: 9, weight: .bold))
         case .checked:
             Image(systemName: "clock").font(.system(size: 9, weight: .bold))
         case .ok:
@@ -41,20 +51,21 @@ struct CompanionStatusBadge: View {
     }
 
     private var tint: Color {
-        switch status {
+        switch displayed {
         case .starting, .checked: return Theme.textTertiary
         case .running: return Theme.accent
-        case .waiting: return Theme.warning
+        case .waiting, .paused: return Theme.warning
         case .ok: return DiffPalette.addText
         case .err: return Theme.danger
         }
     }
 
     private var label: LocalizedStringKey {
-        switch status {
+        switch displayed {
         case .starting: return "Starting"
         case .running:  return "Running"
         case .waiting:  return "Waiting"
+        case .paused:   return "Paused · usage limit"
         case .checked:  return "Checked"
         case .ok:       return "Done"
         case .err:      return Self.errorLabel(errorCode)
@@ -156,6 +167,7 @@ struct DelegatedSubThreadCard: View {
         case .starting: return .starting
         case .running:  return .running
         case .waiting:  return .waiting
+        case .paused:   return .paused
         case .ok:       return .ok
         case .err:      return .err
         }

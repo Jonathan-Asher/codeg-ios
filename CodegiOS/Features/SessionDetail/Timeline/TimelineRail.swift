@@ -217,6 +217,9 @@ enum MarkerKind {
     case assistant(AgentType)
     case reasoning
     case tool(icon: String, state: ToolCallState)
+    /// A settled node that neither succeeded nor failed (a question that
+    /// expired unanswered): its glyph in a quiet grey.
+    case muted(icon: String)
     case toolGroup(error: Bool, streaming: Bool)
     case image
     case system
@@ -258,6 +261,8 @@ struct NodeMarker: View {
             chip(icon: "brain", tint: Theme.textTertiary)
         case .tool(let icon, let state):
             toolMarker(icon: icon, state: state)
+        case .muted(let icon):
+            chip(icon: icon, tint: Theme.textTertiary)
         case .toolGroup(let error, let streaming):
             ZStack {
                 chip(icon: "square.stack.3d.up.fill", tint: error ? Theme.danger : Theme.accent)

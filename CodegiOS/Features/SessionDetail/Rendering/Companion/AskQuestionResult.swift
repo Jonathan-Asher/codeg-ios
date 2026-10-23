@@ -20,7 +20,54 @@ struct AskOutcome {
     let answers: [AskAnswer]
 }
 
+/// Where an ask's in-stream record stands, from what the transcript holds.
+/// Mirrors codeg web's `AskQuestionRecordState` (`ask-question.ts`).
+enum AskRecordState: Equatable {
+    /// No result yet and the turn is still running: the pinned card is (or is
+    /// about to be) waiting for an answer.
+    case inFlight
+    /// A result came back (an answer, or the user dismissed it).
+    case answered
+    /// The call ended without one: the turn was cancelled, the agent's process
+    /// went away (a codeg restart, a crash), or the agent gave up on the call.
+    /// codeg keeps a question open until it is answered, so it can no longer be.
+    case expired
+    /// The call was rejected before anyone saw it (malformed arguments), so it
+    /// never was a question that could expire.
+    case error
+}
+
 enum AskQuestionParse {
+
+    /// Classify a call's record. `errorText` is an error result's text, `answered`
+    /// says a result envelope parsed out of `output`, and `running` that the call
+    /// is still live in a running turn. Mirrors web `askQuestionRecordState`.
+    static func recordState(output: String?, errorText: String?, answered: Bool, running: Bool) -> AskRecordState {
+        let error = (errorText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !error.isEmpty {
+            return error.range(of: validationError, options: [.regularExpression, .caseInsensitive]) != nil
+                ? .error : .expired
+        }
+        if answered { return .answered }
+        if running { return .inFlight }
+        // A result that didn't parse is still a result: keep showing what it holds.
+        let hasOutput = !(output ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return hasOutput ? .answered : .expired
+    }
+
+    /// The record state of an `ask_user_question` call. An error result's text
+    /// rides in `output` with `isError` set. A call with no result is in flight
+    /// only while the live turn holding it runs: a persisted call's turn has ended.
+    static func recordState(of vm: ToolCallVM) -> AskRecordState {
+        let failed = vm.isError || vm.state == .error
+        let output = failed ? nil : vm.output
+        let running = (vm.state == .running || vm.state == .inputStreaming) && vm.inRunningTurn
+        return recordState(output: output, errorText: failed ? vm.output : nil,
+                           answered: parseOutcome(output) != nil, running: running)
+    }
+
+    /// codeg-mcp's argument validation (`parse_questions`, a -32602 reply).
+    private static let validationError = #"ask_user_question (requires|supports)|questions\[\d+\]|-32602"#
 
     /// The question set, shaped as `QuestionSpec` (synthetic ids: the persisted
     /// input carries none). Tolerant of partial input — returns `[]` rather than

@@ -17,6 +17,8 @@ struct NodeBody: View {
             UserNodeBody(turn: turn, media: node.attachedMedia)
         case .insertedUser(let turn):
             UserNodeBody(turn: turn, sentDuringTurn: true)
+        case .delegatedResult(let result):
+            DelegatedResultCard(result: result)
         case .system(let turn):
             SystemNodeBody(turn: turn)
         case .assistantText(let s):

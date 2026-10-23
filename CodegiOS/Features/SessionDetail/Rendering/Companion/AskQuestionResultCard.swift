@@ -4,7 +4,8 @@ import SwiftUI
 // transcript + the in-flight marker). Mirrors web `ask-question-result-card.tsx`:
 // the answered / declined record collapses into a capsule summarizing the picks,
 // expanding to the live `AskQuestionCard` in its read-only mode so the Q&A layout
-// matches exactly. Error / in-flight states fall back to a compact header card.
+// matches exactly. Error / in-flight / expired states fall back to a compact
+// header card.
 
 /// Pre-filled selection for a read-only `AskQuestionCard` question: the chosen
 /// option labels plus any free-text "Other" answer.
@@ -19,29 +20,53 @@ struct AskQuestionResultCard: View {
 
     var body: some View {
         let questions = AskQuestionParse.parseInput(vm.input)
-        let outcome = AskQuestionParse.parseOutcome(vm.output)
-        let isError = vm.isError || vm.state == .error
-        let isRunning = vm.state == .running || vm.state == .inputStreaming
-        let inFlight = !isError && outcome == nil && isRunning
+        let record = AskQuestionParse.recordState(of: vm)
+        let reason = (vm.output ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if isError {
-            shell(subtitle: nil) {
-                Text(verbatim: (vm.output ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+        switch record {
+        case .error:
+            shell(subtitle: nil, record: record) {
+                Text(verbatim: reason)
                     .font(.caption)
                     .foregroundStyle(Theme.danger)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-        } else if inFlight {
-            shell(subtitle: "Waiting for your answer…") {
+        case .inFlight:
+            shell(subtitle: "Waiting for your answer…", record: record) {
                 if !questions.isEmpty {
                     chips(questions.map { $0.header.isEmpty ? $0.question : $0.header })
                 }
             }
-        } else if questions.isEmpty {
-            answersOnly(outcome)
-        } else {
-            answered(questions: questions, outcome: outcome)
+        case .expired:
+            // The call ended without an answer (a cancelled turn, the agent's
+            // process gone, the agent gave up): say so, rather than a card that
+            // still looks like it waits or reads as answered with no selection.
+            shell(subtitle: "This question expired", record: record) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("The agent stopped waiting before it was answered.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !questions.isEmpty {
+                        chips(questions.map { $0.header.isEmpty ? $0.question : $0.header })
+                    }
+                    // Why the call ended, when its error result says.
+                    if vm.isError || vm.state == .error, !reason.isEmpty {
+                        Text(verbatim: reason)
+                            .font(.caption2)
+                            .foregroundStyle(Theme.textTertiary)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        case .answered:
+            let outcome = AskQuestionParse.parseOutcome(vm.output)
+            if questions.isEmpty {
+                answersOnly(outcome)
+            } else {
+                answered(questions: questions, outcome: outcome)
+            }
         }
     }
 
@@ -124,7 +149,7 @@ struct AskQuestionResultCard: View {
         if answers.isEmpty {
             EmptyView()
         } else {
-            shell(subtitle: (outcome?.declined ?? false) ? "Declined" : nil) {
+            shell(subtitle: (outcome?.declined ?? false) ? "Declined" : nil, record: .answered) {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(answers.enumerated()), id: \.offset) { _, a in
                         VStack(alignment: .leading, spacing: 4) {
@@ -146,8 +171,13 @@ struct AskQuestionResultCard: View {
         }
     }
 
-    private func shell<Content: View>(subtitle: LocalizedStringKey?, @ViewBuilder content: () -> Content) -> some View {
-        let isError = vm.isError || vm.state == .error
+    private func shell<Content: View>(subtitle: LocalizedStringKey?, record: AskRecordState,
+                                      @ViewBuilder content: () -> Content) -> some View {
+        let border: Color = switch record {
+        case .error: Theme.danger.opacity(0.4)
+        case .expired: Theme.surfaceStroke
+        case .inFlight, .answered: Theme.accent.opacity(0.3)
+        }
         return VStack(alignment: .leading, spacing: 8) {
             // The gutter marker carries the question-bubble icon for this node, so
             // the card header leads with just the title.
@@ -167,7 +197,7 @@ struct AskQuestionResultCard: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-        .hairlineBorder(Theme.Radius.md, color: isError ? Theme.danger.opacity(0.4) : Theme.accent.opacity(0.3))
+        .hairlineBorder(Theme.Radius.md, color: border)
     }
 
     private func chips(_ labels: [String]) -> some View {

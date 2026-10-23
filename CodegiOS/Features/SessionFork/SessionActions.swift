@@ -143,6 +143,12 @@ final class SessionActions {
         app.openFork(outcome, from: origin)
     }
 
+    /// Open another session of this server on top of the screen you are on,
+    /// so Back returns there (a delivered sub-agent result opens its session).
+    func openSession(_ conversationID: Int) {
+        app?.open(.conversation(conversationID))
+    }
+
     // MARK: - Row extras
 
     /// Pin or unpin from a row whose list has no pin action of its own.
