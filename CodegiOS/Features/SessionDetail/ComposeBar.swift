@@ -18,10 +18,10 @@ struct ComposeBar: View {
     let canAttachMore: Bool
     let onAddAttachments: ([Attachment]) -> Void
     let onRemoveAttachment: (UUID) -> Void
-    /// A video picked, recorded or chosen in Files, or an audio file from
-    /// Files: it uploads while the user writes.
+    /// A video picked, recorded or chosen in Files, or an audio file or a
+    /// document from Files: it uploads while the user writes.
     var onAddMedia: (AttachmentSource) -> Void = { _ in }
-    /// Try a video or audio file that didn't upload again.
+    /// Try a video, audio file or document that didn't upload again.
     var onRetryAttachment: (UUID) -> Void = { _ in }
     /// Send a video as it is or compressed.
     var onSetVideoQuality: (VideoQuality, UUID) -> Void = { _, _ in }
@@ -248,7 +248,10 @@ struct ComposeBar: View {
         }
         .fileImporter(
             isPresented: $showFileImporter,
-            allowedContentTypes: [.image, .movie, .audio],
+            // Any file: pictures ride in the prompt; videos, audio and
+            // documents (PDF, Word, text, spreadsheets, code, archives…) are
+            // uploaded to codeg and linked from it.
+            allowedContentTypes: PickedFileRoute.importableTypes,
             allowsMultipleSelection: true
         ) { result in handleFiles(result) }
         .sheet(item: $presentedInsert) { source in
@@ -669,37 +672,45 @@ struct ComposeBar: View {
         }
     }
 
+    /// Files: a picture rides in the prompt; a video, an audio file or a
+    /// document is uploaded (``PickedFileRoute``). A picture the iPhone can't
+    /// decode (an SVG, say) goes as a document; a folder or a package says
+    /// why it wasn't attached.
     private func handleFiles(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, !urls.isEmpty else { return }
-        let slots = remainingSlots
-        // Videos and audio files are uploaded; pictures ride in the prompt.
-        let isUploaded: (URL) -> Bool = { url in
-            UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true || AttachmentSource.isAudioFile(url)
-        }
-        let media = urls.prefix(slots).filter(isUploaded)
-        let pictures = urls.prefix(slots).filter { !isUploaded($0) }
-        let attempted = pictures.count
+        let picked = Array(urls.prefix(remainingSlots))
         Task { @MainActor in
-            // A file from Files is copied into the app's own folder first.
-            for url in media {
-                let copied = await Task.detached(priority: .userInitiated) { () -> URL? in
-                    let scoped = url.startAccessingSecurityScopedResource()
-                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    return try? VideoAttachmentPrep.keep(url)
-                }.value
-                if let copied { onAddMedia(.file(copied)) } else { onNotice("\(url.lastPathComponent) couldn't be read.") }
-            }
-            var prepared: [Attachment] = []
-            for url in pictures {
-                if let attachment = await Task.detached(priority: .userInitiated, operation: {
-                    AttachmentPrep.make(fromFile: url)
-                }).value {
-                    prepared.append(attachment)
+            var pictures: [Attachment] = []
+            for url in picked {
+                let route = await Task.detached(priority: .userInitiated) { PickedFileRoute.route(for: url) }.value
+                switch route {
+                case .folder, .package:
+                    if let notice = route.notice(forFileNamed: url.lastPathComponent) { onNotice(notice) }
+                case .picture:
+                    if let attachment = await Task.detached(priority: .userInitiated, operation: {
+                        AttachmentPrep.make(fromFile: url)
+                    }).value {
+                        pictures.append(attachment)
+                    } else {
+                        await addUploaded(url)
+                    }
+                case .upload:
+                    await addUploaded(url)
                 }
             }
-            if prepared.count < attempted { onNotice("Some images couldn't be added.") }
-            if !prepared.isEmpty { onAddAttachments(prepared) }
+            if !pictures.isEmpty { onAddAttachments(pictures) }
         }
+    }
+
+    /// A file from Files to upload: copied into the app's own folder first
+    /// (the picker only lends its URL), then it uploads while the user writes.
+    private func addUploaded(_ url: URL) async {
+        let copied = await Task.detached(priority: .userInitiated) { () -> URL? in
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            return try? VideoAttachmentPrep.keep(url)
+        }.value
+        if let copied { onAddMedia(.file(copied)) } else { onNotice("\(url.lastPathComponent) couldn't be read.") }
     }
 
     /// Camera capture is a single image and small enough to prep inline on the

@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 // MARK: - Where a file comes from
 
-/// A video or an audio file picked for the next message.
+/// A video, an audio file or a document picked for the next message.
 enum AttachmentSource {
     /// A video from the photo library: it may still be in iCloud.
     case library(PhotosPickerItem)
@@ -14,11 +14,14 @@ enum AttachmentSource {
     /// copied into the app's own folder.
     case file(URL)
 
-    /// An audio file from Files; everything else is a video.
-    var isAudio: Bool {
-        if case .file(let url) = self { return Self.isAudioFile(url) }
-        return false
+    /// A video from the library; a file by its name (``AttachmentKind``).
+    var kind: AttachmentKind {
+        if case .file(let url) = self { return AttachmentKind(forFileNamed: url.lastPathComponent) }
+        return .video
     }
+
+    /// An audio file from Files.
+    var isAudio: Bool { kind == .audio }
 
     static func isAudioFile(_ url: URL) -> Bool {
         guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
@@ -64,11 +67,11 @@ enum VideoQuality: String, CaseIterable, Sendable {
 
 // MARK: - The job
 
-/// One video or audio file on its way into a message: fetched from iCloud
-/// when it has to be, compressed when it must be, and uploaded to codeg's
-/// uploads directory, each with its progress. The message links to the
-/// uploaded file, as codeg web attaches a file that isn't a picture; it can be
-/// sent once the upload is done.
+/// One video, audio file or document on its way into a message: fetched from
+/// iCloud when it has to be, compressed when it must be (a video only), and
+/// uploaded to codeg's uploads directory, each with its progress. The message
+/// links to the uploaded file, as codeg web attaches a file that isn't a
+/// picture; it can be sent once the upload is done.
 ///
 /// A server that says its limits (`upload_limits`, fork.191) takes video and
 /// audio up to its media limit (1 GiB by default) and a resumable upload:
@@ -77,13 +80,15 @@ enum VideoQuality: String, CaseIterable, Sendable {
 /// app the upload pauses and goes on once the app is back
 /// (``AttachmentUploadLifecycle``). Any other server gets 1.3.14's upload: 20 MiB,
 /// HEVC and larger files compressed to fit, one multipart request.
+///
+/// A document goes as it is, within the server's limit for other files
+/// (`maxFileBytes`, 20 MiB), the same way. One over that limit, or an empty
+/// one, can never go: the job says so once (``onRefused``) and its owner
+/// drops the chip.
 @MainActor
 @Observable
 final class AttachmentUpload: Identifiable, Hashable {
-    enum Kind: Sendable, Equatable {
-        case video
-        case audio
-    }
+    typealias Kind = AttachmentKind
 
     enum WaitReason: Sendable, Equatable {
         /// The network dropped; it tries again on its own.
@@ -119,6 +124,11 @@ final class AttachmentUpload: Identifiable, Hashable {
     /// What the server takes, once asked.
     private(set) var limits: ServerUploadLimits?
     private(set) var quality: VideoQuality
+    /// A document that can't go as it is (over the server's limit, or
+    /// empty), in words for a notice.
+    private(set) var refusal: String?
+    /// Told about ``refusal`` once the run has ended.
+    @ObservationIgnored var onRefused: ((String) -> Void)?
 
     @ObservationIgnored private let source: AttachmentSource
     @ObservationIgnored private let uploader: any AttachmentUploading
@@ -140,13 +150,15 @@ final class AttachmentUpload: Identifiable, Hashable {
          bucket: String?, preparer: any VideoPreparing = VideoAttachmentPrep(), quality: VideoQuality = .original,
          lifecycle: AttachmentUploadLifecycle? = nil) {
         self.source = source
-        self.kind = source.isAudio ? .audio : .video
+        self.kind = source.kind
         self.displayName = displayName
         self.uploader = uploader
         self.bucket = bucket
         self.preparer = preparer
         self.quality = quality
         self.lifecycle = lifecycle ?? .shared
+        // A document's size is known at once, for its chip.
+        if kind == .document, case .file(let url) = source { totalBytes = VideoAttachmentPrep.size(of: url) }
     }
 
     nonisolated static func == (lhs: AttachmentUpload, rhs: AttachmentUpload) -> Bool { lhs === rhs }
@@ -189,6 +201,7 @@ final class AttachmentUpload: Identifiable, Hashable {
             self.task = nil
             self.runToken = nil
             self.lifecycle.ended(self)
+            if let refusal = self.refusal { self.onRefused?(refusal) }
         }
     }
 
@@ -262,6 +275,7 @@ final class AttachmentUpload: Identifiable, Hashable {
     private func run() async {
         // A run stopped by a change of quality must not finish with the other one.
         let wanted = quality
+        refusal = nil
         do {
             try Task.checkCancellation()
             let limits: ServerUploadLimits
@@ -292,6 +306,8 @@ final class AttachmentUpload: Identifiable, Hashable {
                     }
                 case .audio:
                     result = try await AudioAttachmentPrep.prepare(file, maxBytes: limits.maxMediaBytes)
+                case .document:
+                    result = try DocumentAttachmentPrep.prepare(file, maxBytes: limits.maxFileBytes)
                 }
                 guard quality == wanted else { throw CancellationError() }
                 prepared = result
@@ -338,7 +354,35 @@ final class AttachmentUpload: Identifiable, Hashable {
             return
         } catch {
             guard !Task.isCancelled else { return }
+            if let refused = refusalMessage(for: error) {
+                refusal = refused
+                phase = .failed(refused)
+                return
+            }
             phase = .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
+    /// The words for a document that can never go as it is: over the
+    /// server's limit (by its size here, or by the server's answer) or empty.
+    /// Nil for anything trying again may fix.
+    private func refusalMessage(for error: Error) -> String? {
+        guard kind == .document else { return nil }
+        if let error = error as? DocumentAttachmentError { return error.errorDescription }
+        if case .tooLarge(let limit)? = error as? AttachmentUploadError {
+            return DocumentAttachmentError.tooLarge(name: displayName, size: totalBytes, limit: limit).errorDescription
+        }
+        return nil
+    }
+
+    /// The type a file of `kind` named `fileName` goes as, when the server
+    /// doesn't say.
+    nonisolated static func mimeType(for kind: Kind, fileName: String) -> String {
+        let ext = (fileName as NSString).pathExtension
+        switch kind {
+        case .video: return VideoAttachmentPrep.mimeType(forExtension: ext)
+        case .audio: return AudioAttachmentPrep.mimeType(forExtension: ext)
+        case .document: return DocumentAttachmentPrep.mimeType(forFileNamed: fileName)
         }
     }
 

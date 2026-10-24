@@ -59,6 +59,17 @@ enum MediaFormats {
         guard !ext.isEmpty else { return nil }
         return format(forExtension: ext)
     }
+
+    /// A file attached to a message whose type isn't one of the above (a text
+    /// file, a spreadsheet, code, an archive): a document, opened with Quick
+    /// Look. Only a file in codeg's uploads directory
+    /// (`…/uploads/<bucket>/<name>`, where `upload_attachment` puts it), so a
+    /// file a message merely mentions stays a link in its text.
+    static func attachment(atPath path: String) -> MediaFormat? {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
+        guard parts.count >= 3, parts[parts.count - 3] == "uploads" else { return nil }
+        return MediaFormat(kind: .document, native: true)
+    }
 }
 
 // MARK: - References
@@ -232,6 +243,9 @@ enum MediaPaths {
 ///   `~/Movies/b.mov`), in the text or in a code span. A bare or relative
 ///   name in prose has no base it is known to be relative to, so it is left
 ///   out. Fenced code is left out.
+/// - **Attachments**: in the user's message, a `file://` link to any file in
+///   codeg's uploads directory is an attached file, a document when its type
+///   isn't media (``MediaFormats/attachment(atPath:)``).
 /// - **Tool calls**: what a Write / Edit / apply_patch call wrote (its
 ///   `file_path` and the other path keys, as codeg web's "New files" card
 ///   reads them), and a "Saved to …" / "Wrote …" line in what a tool
@@ -310,11 +324,21 @@ enum MediaDetector {
 
     // MARK: Prose
 
-    /// The media files `text` (a message or the agent's prose) refers to, in order.
-    static func references(inText text: String, scope: String, context: MediaPathContext) -> [MediaRef] {
+    /// The media files `text` (a message or the agent's prose) refers to, in
+    /// order. `attachments`: the text is the user's message, whose `file://`
+    /// links into codeg's uploads directory are files attached to it.
+    static func references(inText text: String, scope: String, context: MediaPathContext,
+                           attachments: Bool = false) -> [MediaRef] {
         var found: [MediaRef] = []
         // Fenced code is example code and commands, not a product.
         var prose = blank(fence, in: text)
+
+        /// The format of a linked file: a media one, or an attached document.
+        func linkedFormat(_ path: String, destination: String) -> MediaFormat? {
+            if let format = MediaFormats.format(forPath: path) { return format }
+            guard attachments, isFileURL(destination) else { return nil }
+            return MediaFormats.attachment(atPath: path)
+        }
 
         for match in markdownLink.matches(in: prose, range: NSRange(prose.startIndex..., in: prose)) {
             guard let destRange = Range(match.range(at: 3), in: prose) else { continue }
@@ -322,7 +346,8 @@ enum MediaDetector {
             guard !isTemplate(dest) else { continue }
             let isPicture = Range(match.range(at: 1), in: prose).map { !prose[$0].isEmpty } ?? false
             guard let path = MediaPaths.resolve(dest, in: context, decode: true),
-                  let format = MediaFormats.format(forPath: path) else { continue }
+                  let format = isPicture ? MediaFormats.format(forPath: path) : linkedFormat(path, destination: dest)
+            else { continue }
             // codeg web draws a Markdown picture only from inside the
             // session's folder (`markdown-local-image.ts`).
             if isPicture, !MediaPaths.isInside(path, folder: context.folderPath) { continue }
@@ -333,7 +358,7 @@ enum MediaDetector {
         for match in autolink.matches(in: prose, range: NSRange(prose.startIndex..., in: prose)) {
             guard let range = Range(match.range(at: 1), in: prose), !isTemplate(prose[range]),
                   let path = MediaPaths.resolve(String(prose[range]), in: context),
-                  let format = MediaFormats.format(forPath: path) else { continue }
+                  let format = linkedFormat(path, destination: String(prose[range])) else { continue }
             found.append(MediaRef(path: path, format: format, origin: .link, scope: scope))
         }
         prose = blank(autolink, in: prose)
@@ -484,7 +509,7 @@ enum MediaDetector {
         for block in blocks {
             switch block {
             case .text(let text):
-                found += references(inText: text, scope: turn.id, context: context)
+                found += references(inText: text, scope: turn.id, context: context, attachments: turn.role == .user)
             case .toolUse(let id, let name, let input, _):
                 let result = id.flatMap { results[$0] }
                 found += references(inToolCall: name, input: input, output: result?.output,
@@ -574,6 +599,13 @@ enum MediaDetector {
             if out.count == limit { break }
         }
         return out
+    }
+
+    /// A `file:` URL, bare or in angle brackets.
+    private static func isFileURL(_ destination: String) -> Bool {
+        var text = destination.trimmingCharacters(in: .whitespaces)
+        if text.hasPrefix("<") { text.removeFirst() }
+        return text.lowercased().hasPrefix("file:")
     }
 
     /// Says where it is: absolute, in the home, or a `file:` URL.

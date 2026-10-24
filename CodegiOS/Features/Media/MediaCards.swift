@@ -190,7 +190,8 @@ private struct MediaListRow: View {
         if let size = item.size, size > 0 {
             parts.append(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
         }
-        return parts.joined(separator: " · ")
+        // A file without an extension (an attached `Makefile`) has no type to show.
+        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     private func open() {
@@ -656,7 +657,8 @@ private struct DocumentMediaCard: View {
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text(error?.errorDescription ?? (ref.format.vector ? "SVG image" : "\(ref.ext.uppercased()) document"))
+                    Text(error?.errorDescription ?? (ref.format.vector ? "SVG image"
+                        : ref.ext.isEmpty ? "Document" : "\(ref.ext.uppercased()) document"))
                         .font(.caption)
                         .foregroundStyle(error == nil ? Theme.textTertiary : Theme.danger)
                         .fixedSize(horizontal: false, vertical: true)
