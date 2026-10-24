@@ -222,7 +222,7 @@ final class SessionDetailViewModel {
             && attachments.reduce(0) { $0 + $1.byteCount } < AttachmentPrep.maxTotalBytes
     }
 
-    /// Uploads attached videos and audio files: the server, or a fake in tests.
+    /// Uploads attached videos, audio files and documents: the server, or a fake in tests.
     @ObservationIgnored var uploaderOverride: (any AttachmentUploading)?
     private var uploader: any AttachmentUploading { uploaderOverride ?? client }
     /// Compresses attached videos (AVFoundation; a fake in tests).
@@ -1143,10 +1143,12 @@ final class SessionDetailViewModel {
         attachments.removeAll { $0.id == id }
     }
 
-    /// Attach a video or an audio file: it is fetched (from iCloud if it has
-    /// to be), compressed when it needs to be and uploaded to codeg while the
-    /// user writes; the message can go once it is uploaded. A video goes as
-    /// the user last chose (``VideoQuality/preferred``).
+    /// Attach a video, an audio file or a document: it is fetched (from
+    /// iCloud if it has to be), compressed when it needs to be (a video) and
+    /// uploaded to codeg while the user writes; the message can go once it is
+    /// uploaded. A video goes as the user last chose
+    /// (``VideoQuality/preferred``). A document over the server's limit, or
+    /// an empty one, is said as a notice and its chip goes.
     func addMedia(_ source: AttachmentSource) {
         guard attachments.count < AttachmentPrep.maxCount else {
             notice = "You can attach up to \(AttachmentPrep.maxCount) files."
@@ -1157,11 +1159,18 @@ final class SessionDetailViewModel {
         if case .file(let url) = source { name = url.lastPathComponent } else { name = "Video" }
         let upload = AttachmentUpload(source: source, displayName: name, uploader: uploader, bucket: uploadBucket,
                                       preparer: videoPreparer, quality: VideoQuality.preferred)
-        attachments.append(Attachment(upload: upload))
+        let attachment = Attachment(upload: upload)
+        let id = attachment.id
+        upload.onRefused = { [weak self] message in
+            guard let self else { return }
+            self.removeAttachment(id)
+            self.notice = message
+        }
+        attachments.append(attachment)
         upload.start()
     }
 
-    /// Try a video or audio file that didn't upload again.
+    /// Try a video, audio file or document that didn't upload again.
     func retryAttachment(_ id: UUID) {
         attachments.first { $0.id == id }?.upload?.start()
     }
@@ -1179,15 +1188,26 @@ final class SessionDetailViewModel {
     private var attachmentsNotReadyNotice: String? {
         guard !attachmentsReady else { return nil }
         let waiting = attachments.compactMap(\.upload).filter { !$0.isDone }
-        let failed = waiting.filter { $0.failure != nil }
-        if !failed.isEmpty {
-            return failed.contains { $0.kind == .video }
-                ? "A video didn't upload. Tap it to try again, or remove it."
-                : "An audio file didn't upload. Tap it to try again, or remove it."
+        if let failed = Self.namedKind(waiting.filter { $0.failure != nil }.map(\.kind)) {
+            switch failed {
+            case .video: return "A video didn't upload. Tap it to try again, or remove it."
+            case .audio: return "An audio file didn't upload. Tap it to try again, or remove it."
+            case .document: return String(localized: "A document didn't upload. Tap it to try again, or remove it.")
+            }
         }
-        return waiting.contains { $0.kind == .video }
-            ? "Wait for the video to finish uploading."
-            : "Wait for the audio file to finish uploading."
+        switch Self.namedKind(waiting.map(\.kind)) ?? .video {
+        case .video: return "Wait for the video to finish uploading."
+        case .audio: return "Wait for the audio file to finish uploading."
+        case .document: return String(localized: "Wait for the document to finish uploading.")
+        }
+    }
+
+    /// The kind a notice names when several wait: a video, then an audio
+    /// file, then a document.
+    private static func namedKind(_ kinds: [AttachmentUpload.Kind]) -> AttachmentUpload.Kind? {
+        if kinds.contains(.video) { return .video }
+        if kinds.contains(.audio) { return .audio }
+        return kinds.first
     }
 
     /// Where `upload_attachment` keeps this session's files: the bucket codeg
@@ -3990,7 +4010,7 @@ final class SessionDetailViewModel {
         persistOutbox()
     }
 
-    /// The stored form: text and pictures; an uploaded video stays on the
+    /// The stored form: text and pictures; an uploaded file stays on the
     /// server and comes back as its reference in the text.
     private static func outboxMessage(_ item: QueuedMessage) -> OutboxMessage {
         var text = item.text
@@ -3999,7 +4019,7 @@ final class SessionDetailViewModel {
             if let uploaded = attachment.upload?.uploaded {
                 let marker = MediaAttachmentText.marker(name: uploaded.name, path: uploaded.path)
                 text = text.isEmpty ? marker : text + "\n" + marker
-            } else if !attachment.isVideo {
+            } else if attachment.upload == nil {
                 images.append(OutboxMessage.Image(name: attachment.name, mimeType: attachment.mimeType,
                                                   data: attachment.data))
             }

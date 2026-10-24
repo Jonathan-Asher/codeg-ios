@@ -1,6 +1,126 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "%@ is %@; codeg takes documents up to %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 的大小为 %2$@；codeg 接受的文档最大为 %3$@。"
+          }
+        }
+      }
+    },
+    "%@ is over %@; codeg takes documents up to %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 超过 %2$@；codeg 接受的文档最大为 %3$@。"
+          }
+        }
+      }
+    },
+    "%@ is empty, so it wasn't attached." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 是空文件，因此未附加。"
+          }
+        }
+      }
+    },
+    "%@ is a folder. Attach the files in it instead." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 是文件夹。请改为附加其中的文件。"
+          }
+        }
+      }
+    },
+    "%@ is a package, not a single file, so it can't be attached." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 是文件包而不是单个文件，因此无法附加。"
+          }
+        }
+      }
+    },
+    "Wait for the document to finish uploading." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请等待文档上传完成。"
+          }
+        }
+      }
+    },
+    "A document didn't upload. Tap it to try again, or remove it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "有文档未能上传。轻点它以重试，或将其移除。"
+          }
+        }
+      }
+    },
+    "The document didn't upload" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文档未能上传"
+          }
+        }
+      }
+    },
+    "Didn't upload" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未能上传"
+          }
+        }
+      }
+    },
+    "Waiting for the network" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在等待网络"
+          }
+        }
+      }
+    },
+    "Paused" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已暂停"
+          }
+        }
+      }
+    },
+    "Document" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文档"
+          }
+        }
+      }
+    },
     "This question expired" : {
       "localizations" : {
         "zh-Hans" : {

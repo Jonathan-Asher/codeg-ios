@@ -1,14 +1,16 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// A picture, a video or an audio file the user has attached to the next prompt.
+/// A picture, a video, an audio file or a document the user has attached to
+/// the next prompt.
 ///
 /// A picture travels inline: the already-prepared (downscaled/compressed)
 /// bytes, so the chip thumbnail and the wire payload come from the same
-/// source. A video or audio file is uploaded to codeg first
-/// (``AttachmentUpload``) and the prompt links to the uploaded file (a
-/// `resource_link`, as codeg web attaches a file that isn't a picture); it can
-/// be sent once the upload is done.
+/// source. A video, an audio file or a document (a PDF, a Word or text file,
+/// anything else from Files) is uploaded to codeg first (``AttachmentUpload``)
+/// and the prompt links to the uploaded file (a `resource_link`, as codeg web
+/// attaches a file that isn't a picture); it can be sent once the upload is
+/// done.
 ///
 /// NOTE: the web client gates image attaching on the connection's
 /// `prompt_capabilities.image`. That capability is delivered as a live
@@ -23,9 +25,9 @@ struct Attachment: Identifiable, Hashable, Sendable {
     let id: UUID
     let name: String
     let mimeType: String
-    /// A picture's bytes. Empty for a video or audio file.
+    /// A picture's bytes. Empty for an uploaded file.
     let data: Data
-    /// A video's or audio file's upload; nil for a picture.
+    /// A video's, audio file's or document's upload; nil for a picture.
     let upload: AttachmentUpload?
 
     init(id: UUID = UUID(), name: String, mimeType: String, data: Data) {
@@ -36,11 +38,11 @@ struct Attachment: Identifiable, Hashable, Sendable {
         self.upload = nil
     }
 
-    /// A video or audio file on its way to the server.
+    /// A video, audio file or document on its way to the server.
     @MainActor init(id: UUID = UUID(), upload: AttachmentUpload) {
         self.id = id
         self.name = upload.displayName
-        self.mimeType = upload.kind == .audio ? "audio/mpeg" : "video/mp4"
+        self.mimeType = AttachmentUpload.mimeType(for: upload.kind, fileName: upload.displayName)
         self.data = Data()
         self.upload = upload
     }
@@ -50,28 +52,27 @@ struct Attachment: Identifiable, Hashable, Sendable {
     }
 
     @MainActor var isVideo: Bool { upload?.kind == .video }
-    /// Bytes that ride in the prompt itself (a video's are uploaded instead).
+    /// Bytes that ride in the prompt itself (an uploaded file's don't).
     var byteCount: Int { data.count }
     var base64: String { data.base64EncodedString() }
-    /// Ready to send: a picture always, a video or audio file once it is uploaded.
+    /// Ready to send: a picture always, an uploaded file once it is uploaded.
     @MainActor var isReady: Bool { upload?.isDone ?? true }
 
-    /// The wire block sent in `acp_prompt`.
+    /// The wire block sent in `acp_prompt`: a picture's bytes, or a link to
+    /// the uploaded file with the type the server recorded for it.
     @MainActor var promptInputBlock: PromptInputBlock {
         if let upload, let uploaded = upload.uploaded {
-            let ext = (uploaded.name as NSString).pathExtension
-            let fallback = upload.kind == .audio ? AudioAttachmentPrep.mimeType(forExtension: ext)
-                : VideoAttachmentPrep.mimeType(forExtension: ext)
+            let recorded = uploaded.mimeType.flatMap { $0.isEmpty ? nil : $0 }
             return .resourceLink(uri: MediaAttachmentText.fileURI(forPath: uploaded.path), name: uploaded.name,
-                                 mimeType: uploaded.mimeType ?? fallback)
+                                 mimeType: recorded ?? AttachmentUpload.mimeType(for: upload.kind, fileName: uploaded.name))
         }
         return .image(data: base64, mimeType: mimeType, uri: nil)
     }
 
     /// The block used to render this attachment immediately in the optimistic
-    /// user turn: a picture decoded by `InlineImageView`; a video or audio
-    /// file as the link codeg shows for it (`[name](file://…)`), which the
-    /// message's card plays.
+    /// user turn: a picture decoded by `InlineImageView`; an uploaded file as
+    /// the link codeg shows for it (`[name](file://…)`), which becomes the
+    /// message's card (a video or audio player, a document's row).
     @MainActor var optimisticBlock: ContentBlock {
         if let uploaded = upload?.uploaded {
             return .text(MediaAttachmentText.marker(name: uploaded.name, path: uploaded.path))
@@ -125,12 +126,13 @@ enum AttachmentPrep {
     }
 
     /// Prepare an image file chosen via `.fileImporter` (security-scoped URL).
+    /// Nil for a file the iPhone can't decode as a picture (an SVG, say),
+    /// which then goes as a document.
     static func make(fromFile url: URL) -> Attachment? {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         guard let raw = try? Data(contentsOf: url) else { return nil }
         let name = url.lastPathComponent
-        // Files are filtered to images by the picker, but guard anyway.
         guard UIImage(data: raw) != nil else { return nil }
         return make(fromImageData: raw, name: name)
     }
