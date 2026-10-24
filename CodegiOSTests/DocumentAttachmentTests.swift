@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import XCTest
 @testable import Codeg
 
@@ -183,7 +184,8 @@ final class DocumentAttachmentTests: XCTestCase {
         upload.onRefused = { told.append($0) }
         upload.start()
         await upload.finish()
-        XCTAssertEqual(told, [DocumentAttachmentError.tooLarge(name: "Report.pdf", size: 22, limit: 16).errorDescription])
+        XCTAssertEqual(told, [try XCTUnwrap(DocumentAttachmentError.tooLarge(name: "Report.pdf", size: 22,
+                                                                             limit: 16).errorDescription)])
         XCTAssertTrue(server.calls("upload_attachment_chunk").isEmpty)
 
         // One request on an older server: its 413 reads the same way.
@@ -197,8 +199,8 @@ final class DocumentAttachmentTests: XCTestCase {
         legacy.onRefused = { legacyTold.append($0) }
         legacy.start()
         await legacy.finish()
-        XCTAssertEqual(legacyTold, [DocumentAttachmentError.tooLarge(name: "notes.md", size: 22,
-                                                                     limit: 20 * 1024 * 1024).errorDescription])
+        XCTAssertEqual(legacyTold, [try XCTUnwrap(DocumentAttachmentError.tooLarge(name: "notes.md", size: 22,
+                                                                                   limit: 20 * 1024 * 1024).errorDescription)])
     }
 
     func testAnEmptyDocumentIsRefused() async throws {
@@ -368,15 +370,14 @@ final class DocumentAttachmentTests: XCTestCase {
 
     private func turn(_ id: String, _ role: String, _ texts: [String]) throws -> MessageTurn {
         let blocks = texts.map { text -> [String: String] in ["type": "text", "text": text] }
-        let json = try JSONSerialization.data(withJSONObject: [
-            "id": id, "role": role, "timestamp": "2026-10-24T10:00:00Z", "blocks": blocks,
-        ])
+        let object: [String: Any] = ["id": id, "role": role, "timestamp": "2026-10-24T10:00:00Z", "blocks": blocks]
+        let json = try JSONSerialization.data(withJSONObject: object)
         return try CodegJSON.decoder.decode(MessageTurn.self, from: json)
     }
 
     func testAnAttachedDocumentShowsAsACardInTheMessage() throws {
         let uploads = "/Users/j/.codeg/uploads/\(bucket)"
-        let message = try turn("u-1", "user", [
+        let message = try turn("u-doc-1", "user", [
             "Compare these:",
             "[@notes.md](file://\(uploads)/notes.md)",
             "[Report.pdf](file://\(uploads)/Report.pdf)",
@@ -400,7 +401,7 @@ final class DocumentAttachmentTests: XCTestCase {
             .map(\.path), ["/srv/uploads/b/Budget (final).csv"])
 
         // An agent's reply isn't an attachment: its link stays a link.
-        let reply = try turn("a-1", "assistant", ["[notes.md](file://\(uploads)/notes.md)"])
+        let reply = try turn("a-doc-1", "assistant", ["[notes.md](file://\(uploads)/notes.md)"])
         XCTAssertEqual(MediaDetector.references(inTurn: reply, context: context), [])
 
         XCTAssertEqual(MediaFormats.attachment(atPath: "/srv/uploads/b/Makefile")?.kind, .document)

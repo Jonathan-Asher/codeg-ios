@@ -12,6 +12,19 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Attach documents (1.3.25). Files now offers any file, not only pictures,
+  videos and audio: a PDF, a Word or Pages document, a spreadsheet, a text,
+  Markdown or CSV file, code, an archive. A document is uploaded to the codeg
+  server as it is, the same way as a video (in pieces that survive a dropped
+  connection on a server that takes them), and your message links to it, so
+  the agent can open it. Its chip shows its name, size and upload progress;
+  one that didn't upload says why and tries again on a tap. A document over
+  the server's limit (20 MB) is refused before anything is sent ("Report.pdf
+  is 23 MB; codeg takes documents up to 20 MB."), as is an empty one. In the
+  conversation an attached document shows as a card with its name and
+  symbol, and opens in Quick Look. A picture the iPhone can't show (an SVG)
+  goes as a file instead of being dropped, and a folder says it can't be
+  attached.
 - Expired questions, paused sub-agents and delivered sub-agent results
   (1.3.24), matching the codeg server. A question the agent asked that
   ended without an answer (the turn was cancelled, the agent's process went

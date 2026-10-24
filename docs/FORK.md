@@ -7,7 +7,8 @@ in open pull requests. The fork carries those fixes and its own app identity, so
 installs next to the upstream app. Features for Jonathan's own codeg server,
 push notifications, on-device voice (read aloud and voice typing, with
 clean-up and translation through the codeg server), Camera Control to
-talk, and the pictures, videos and audio a session refers to, are added here.
+talk, and the pictures, videos, audio and documents a session refers to, are
+added here.
 
 `LICENSE` is kept as upstream ships it. `THIRD_PARTY_NOTICES.md` keeps
 upstream's entries and adds the fork's own dependencies at the end.
@@ -1567,6 +1568,127 @@ Presentation only; no new endpoints.
 transcript's and a live turn's unanswered question and their markers, the
 paused delegate card, delegate output and status rows turning Done, the
 badge, and reading delivered results (and what is not one).
+
+### Attaching documents (1.3.25)
+
+`Features/SessionDetail/DocumentAttachment.swift` (`PickedFileRoute`,
+`AttachmentKind`, `DocumentAttachmentPrep`, `DocumentAttachmentError`),
+`Features/SessionDetail/VideoAttachment.swift` (the job's `.document` kind),
+`Features/SessionDetail/AttachmentChipsView.swift` (`DocumentAttachmentChip`),
+`Models/MediaReference.swift` (`MediaFormats.attachment(atPath:)`). Until
+1.3.24 Files offered only pictures, videos and audio
+(`allowedContentTypes: [.image, .movie, .audio]`), so a PDF was greyed out.
+Nothing changed on the codeg side: `upload_attachment` and the resumable
+upload already take any file, up to `max_file_bytes` when it isn't video or
+audio (`UploadLimits::limit_for`).
+
+- **What Files offers.** `[.image, .movie, .audio, .pdf, .data]`: any
+  regular file (PDF, Word, text and Markdown, CSV, spreadsheets, code,
+  archives…). A folder or a package isn't `public.data`, so it stays greyed
+  out; one that comes through anyway (`isDirectory`, `isPackage`, read
+  inside the picker's security scope) says so in the composer's notice
+  ("Projects is a folder. Attach the files in it instead.", "Deck.key is a
+  package, not a single file, so it can't be attached.") instead of failing
+  silently.
+- **Where each file goes** (`PickedFileRoute.route(forFileNamed:)`, by the
+  name's type):
+  - a `public.image` is a picture and rides in the prompt as before
+    (downscaled, re-encoded when it must be); one the iPhone can't decode
+    (an SVG, say) goes as a document instead of "Some images couldn't be
+    added";
+  - video and audio follow the app's own media table (`MediaFormats`, the
+    formats the transcript plays), then the system's type (`.movie`,
+    `.audio`), and keep the path of 1.3.22 unchanged: compression, Original
+    or Compressed, the media limit;
+  - everything else is a document. `.ts`, `.mts` and `.cts` are TypeScript,
+    not an MPEG transport stream: the iPhone types them as video, which a
+    server before fork.191 would refuse as "no video in it".
+- **The job.** A document is an `AttachmentUpload` of kind `.document`, on
+  the machinery of video and audio: copied into the app's own folder (inside
+  the security scope), the server's limits asked (`upload_limits`, cached),
+  uploaded as it is, never compressed, in pieces
+  (`upload_attachment_create`, `chunk`, `complete`) on a server that takes
+  the resumable upload and in one multipart `upload_attachment` otherwise,
+  with the same retries, pause in the background, Try Again and cancel on
+  removal. The copy is deleted once the server has the file.
+- **Its type.** `DocumentAttachmentPrep.mimeType(forFileNamed:)`: codeg web's
+  type for the names it knows (`MIME_BY_EXT` in
+  `src/components/chat/composer/attachment-files.ts`: `text/markdown`,
+  `text/csv`, `application/json`, `text/typescript`, …), the office formats
+  and `application/zip`, then the system's (`UTType.preferredMIMEType`),
+  `text/plain` for text without one, `application/octet-stream` for the
+  rest. It is the multipart part's `Content-Type` and the create's
+  `mimeType`; codeg records it and answers it back. `Attachment.mimeType` is
+  now the real type for every kind (it was `video/mp4` or `audio/mpeg`
+  whatever the file).
+- **Size.** Checked before a byte is sent, against the server's
+  `maxFileBytes` (20 MiB, and 20 MiB from a server that doesn't report its
+  limits). A document over it is refused with a notice, "Report.pdf is
+  23 MB; codeg takes documents up to 20 MB." (both in binary megabytes, as
+  codeg counts its limits; "is over 20 MB" when the two would read the
+  same), and its chip goes: Try Again couldn't help. The server's own
+  refusal (`errors.upload.tooLarge` with its `limit`, or a 413) reads the
+  same way, and so does an empty file ("notes.txt is empty, so it wasn't
+  attached.", which codeg refuses too). Any other failure (the network, the
+  upload space full) keeps the chip, outlined red, with Try Again, as for a
+  video.
+- **The prompt.** The `resource_link` of video and audio:
+  `{type: "resource_link", uri: "file://…", name, mime_type}`, with the type
+  the server recorded (the name's when it recorded none). That is codeg's
+  `PromptInputBlock::ResourceLink`; its `description` is optional, and codeg
+  web sends it as null. The agent gets an ACP resource link to the file under
+  codeg's uploads directory and reads it with its own tools (Claude Code's
+  Read takes PDFs). Send, insert and queue wait until every upload is done:
+  "Wait for the document to finish uploading.", "A document didn't upload.
+  Tap it to try again, or remove it."
+- **The chip.** `DocumentAttachmentChip`, 176 by 56 pt beside the 56 pt
+  pictures and videos: the document's symbol (`doc.richtext` for a PDF,
+  `doc` otherwise, as its card in the message has it), its name, truncated in
+  the middle, and under it its size and type ("PDF · 2.3 MB"), how far the
+  upload is ("40% · 2.3 MB"), "Waiting for the network", "Paused" or "Didn't
+  upload". A ring stands in for the symbol while it uploads. A tap on a
+  failed one says why, with Try Again and Remove; the corner's ✕ and the long
+  press remove it; VoiceOver reads its name and where it is ("PDF document,
+  2.3 MB").
+- **In the message.** The optimistic message carries the link codeg shows
+  for the attachment (`[Report.pdf](file://…)`), and codeg's history
+  projects the `resource_link` the same way (`attachment_marker`). A PDF or
+  an office file was already a document card (`MediaFormats.documents`
+  since 1.3.13: its name, "PDF document", Quick Look on a tap). Any other
+  file now is too, in the user's own message only and only for a `file://`
+  link into codeg's uploads directory (`…/uploads/<bucket>/<name>`, where
+  `upload_attachment` puts it): `MediaFormats.attachment(atPath:)`. A file a
+  message merely mentions (an `@`-mention from the desktop or web composer,
+  `[main.swift](file:///…/proj/main.swift)`) stays a link in its text, and an
+  agent's reply shows what it showed before. Several attachments fold into
+  one row ("1 PDF · 1 document").
+- **Strings.** In the string catalog with zh-Hans: the notices, "The
+  document didn't upload", "Didn't upload", "Waiting for the network",
+  "Paused" and "Document".
+- **Tests.** `CodegiOSTests/DocumentAttachmentTests.swift`: the routing (a
+  PDF, office, text and code files, an archive and a name without an
+  extension to the document upload, pictures inline, video and audio to
+  their uploads, a folder), the types, the size notice (the 23 MB example,
+  the "over" case, an empty file), the limit with and without
+  `upload_limits`, the server's too-large answer on both paths, the
+  resumable and the multipart upload byte for byte, the exact
+  `resource_link` in `acp_prompt`, a send that waits for the upload, a
+  failure that keeps its chip and goes on with Try Again, the oversized
+  document whose chip goes, and the cards in the message.
+- **Checked live** with curl, as the app sends it, against an isolated
+  codeg-server (fork.204 from the app bundle, with a HOME, data directory
+  and `CODEG_HOME` of its own on port 3397; never the live server):
+  `upload_limits` answered 20 MiB for files and 1 GiB for media; a 3 MB
+  `Report.pdf` created as `application/pdf` was admitted under the 20 MiB
+  limit, went up in two pieces and completed to
+  `uploads/<bucket>/Report.pdf` with `mimeType: application/pdf` and the same
+  SHA-256; `Notes.md` (`text/markdown`) and `app.ts` (`text/typescript`) went
+  in one multipart request each; a create of 23 MiB answered 500
+  `errors.upload.tooLarge` with `limit` 20971520, and an empty one 400
+  "Uploaded file is empty". `stat_paths` found the uploaded file under the
+  uploads root as configured (`/tmp/…`), and said `outsideRoots` for the
+  canonical path the upload answers (`/private/tmp/…`); the app then lists
+  the directory instead. Only an uploads root under a symlink differs so.
 
 ## Session lists
 
