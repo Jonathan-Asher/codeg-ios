@@ -115,7 +115,7 @@ final class PendingPushTests: XCTestCase {
     }
 
     func testAQuestionWithoutIDsIsNoQuestion() {
-        XCTAssertNil(PushQuestion(["text": "Which?", "options": ["a"]]))
+        XCTAssertNil(PushQuestion(["text": "Which?", "options": ["a"]] as [String: Any]))
         XCTAssertNil(PushQuestion(nil))
     }
 
@@ -246,7 +246,9 @@ final class PendingPushTests: XCTestCase {
 
     func testForegroundNeverShowsABadgeOnlyPushAndNeverSetsTheBadgeItself() throws {
         let all: UNNotificationPresentationOptions = [.banner, .list, .sound]
-        let badge = try XCTUnwrap(PushPayload(userInfo: ["aps": ["badge": NSNumber(value: 3)], "kind": "badge"]))
+        let badge = try XCTUnwrap(PushPayload(userInfo: [
+            "aps": ["badge": NSNumber(value: 3)] as [String: Any], "kind": "badge",
+        ]))
         XCTAssertEqual(PushRegistration.foregroundOptions(for: badge, all: all, aboutVisibleSession: false), [])
         let question = try XCTUnwrap(PushPayload(userInfo: questionReminder()))
         XCTAssertEqual(PushRegistration.foregroundOptions(for: question, all: all, aboutVisibleSession: false), all)
