@@ -82,6 +82,15 @@ struct RootView: View {
             guard scenePhase == .active else { return }
             await model.activity.autoRefresh(client: model.selectedClient())
         }
+        // What waits on the user ("Waiting for you" and the icon badge):
+        // loaded and followed while the app is in front. A session on screen
+        // keeps event sockets of its own, which hand the events over;
+        // otherwise the store keeps one.
+        .task(id: pendingTaskID) {
+            guard scenePhase == .active else { return }
+            await model.pending.run(client: model.selectedClient(), serverProfileID: model.selectedServerID,
+                                    ownSocket: PresenceTracker.shared.visible == nil)
+        }
         // Which fork endpoints the server has, checked once per server, so a
         // fork the server can't take is greyed out before it is tapped.
         .task(id: "\(activityPulseID)|fork") {
@@ -115,7 +124,12 @@ struct RootView: View {
         .onChange(of: PushRouter.shared.pending) { _, _ in openPendingPush() }
         // Notice a permission change made in iOS Settings while away.
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { PushRegistration.shared.refreshOnForeground() }
+            if phase == .active {
+                PushRegistration.shared.refreshOnForeground()
+                // Put the badge right: a push may have left another count.
+                let selected = model.selectedServerID
+                Task { await AppBadge.shared.refresh(skipping: selected) }
+            }
         }
         // Down time only counts toward "Offline" while the app is in front.
         .onChange(of: scenePhase, initial: true) { _, phase in
@@ -128,6 +142,12 @@ struct RootView: View {
               let request = PushRouter.shared.take() else { return }
         model.setLayout(compact: usesTabs, initial: true)
         model.openFromPush(serverID: request.serverProfileID, conversationID: request.conversationID)
+    }
+
+    /// Identity for the pending list's `.task`: the activity pulse's, and
+    /// whether a session is on screen (whose sockets then carry the events).
+    private var pendingTaskID: String {
+        "\(activityPulseID)|pending|\(PresenceTracker.shared.visible == nil)"
     }
 
     /// Identity for the activity poller's `.task` — composes everything that
@@ -237,7 +257,9 @@ struct RootView: View {
                         selection: $model.selectedServerID,
                         onManage: { model.serversSheetPresented = true }
                     ),
-                    markedConversationID: model.markedConversationID
+                    markedConversationID: model.markedConversationID,
+                    pending: model.pending,
+                    onOpenPending: { model.openPending($0) }
                 )
                 .id(server.id)
             } else if model.selectedServer != nil {
@@ -356,7 +378,9 @@ struct RootView: View {
                     selectedConversationID: $model.selectedConversationID,
                     onOpenGroup: { model.open(.sessionGroup($0)) },
                     cardNamespace: chatsCardNamespace,
-                    onNewSession: { model.open(.newSession(NewSessionRequest())) }
+                    onNewSession: { model.open(.newSession(NewSessionRequest())) },
+                    pending: model.pending,
+                    onOpenPending: { model.openPending($0) }
                 )
                 .id(server.id)
             } else {

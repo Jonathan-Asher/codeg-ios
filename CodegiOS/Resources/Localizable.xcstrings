@@ -1,6 +1,196 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "%lld waiting" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 项等待中"
+          }
+        }
+      }
+    },
+    "Waiting for you" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等你处理"
+          }
+        }
+      }
+    },
+    "Couldn't send the answer: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "答案未能发送：%@"
+          }
+        }
+      }
+    },
+    "Answer %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回答“%@”"
+          }
+        }
+      }
+    },
+    "Permission" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "权限"
+          }
+        }
+      }
+    },
+    "Already handled" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已处理"
+          }
+        }
+      }
+    },
+    "That question was answered elsewhere or has ended. Tap to open the session." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该问题已在别处回答或已结束。轻点以打开会话。"
+          }
+        }
+      }
+    },
+    "That permission request was answered elsewhere or has ended. Tap to open the session." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该权限请求已在别处处理或已结束。轻点以打开会话。"
+          }
+        }
+      }
+    },
+    "Still waiting · reminder %lld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仍在等待 · 第 %lld 次提醒"
+          }
+        }
+      }
+    },
+    "Reminders" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提醒"
+          }
+        }
+      }
+    },
+    "Remind me again while a question, permission or plan is still waiting. For every device of this server." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "问题、权限请求或计划仍在等待时再次提醒我。适用于此服务器的所有设备。"
+          }
+        }
+      }
+    },
+    "Remind after" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提醒时间点"
+          }
+        }
+      }
+    },
+    "Then every" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "之后每隔"
+          }
+        }
+      }
+    },
+    "Quiet hours" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "免打扰时段"
+          }
+        }
+      }
+    },
+    "Reminders due then wait for the end." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此时段内的提醒会等到时段结束后再发送。"
+          }
+        }
+      }
+    },
+    "Reminders due then wait for the end. Saved in %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此时段内的提醒会等到时段结束后再发送。时区：%@。"
+          }
+        }
+      }
+    },
+    "From" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始"
+          }
+        }
+      }
+    },
+    "Until" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结束"
+          }
+        }
+      }
+    },
+    "Never" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从不"
+          }
+        }
+      }
+    },
     "%@ is %@; codeg takes documents up to %@." : {
       "localizations" : {
         "zh-Hans" : {

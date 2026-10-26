@@ -170,7 +170,7 @@ final class SessionListViewModel {
         return sortedFolders.compactMap { folder in
             guard archivedIDs.contains(folder.id) == archived else { return nil }
             let convs = matching(unpinnedByGroup[folder.id] ?? [], searchText)
-                .sorted { $0.updatedAt > $1.updatedAt }
+                .sorted { $0.recency > $1.recency }
             if searching, convs.isEmpty { return nil }
             return FolderGroup(folder: folder, conversations: convs)
         }
@@ -186,7 +186,7 @@ final class SessionListViewModel {
         return matching(conversations.filter {
             !$0.isPinned && !known.contains(FolderVisibility.mergedFolderId($0.folderId, childToParent: map))
         }, searchText)
-        .sorted { $0.updatedAt > $1.updatedAt }
+        .sorted { $0.recency > $1.recency }
     }
 
     private func trimmed(_ s: String) -> String {

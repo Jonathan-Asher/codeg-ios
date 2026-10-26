@@ -72,7 +72,9 @@ branch `fork/solution-plan`). `App/PushRegistration.swift` does the work:
   Settings, unregisters from every server: a server that believes the phone
   took a critical alert skips its chat-channel fallback.
 - **Categories and actions.** `CODEG_CRITICAL` (Acknowledge, Snooze 15 min,
-  Open), `CODEG_PERMISSION` (Approve, Open) and `CODEG_SESSION` (Open).
+  Open), `CODEG_PERMISSION` (Approve, Open), `CODEG_SESSION` (Open) and
+  `CODEG_QUESTION` (Open; the notification service extension swaps in answer
+  buttons, see "Waiting for you" below).
   Acknowledge, Snooze and Approve run in the background
   (`ack_critical_session`, `snooze_critical_session`,
   `acp_respond_permission` with `approve_option_id`); Approve needs the device
@@ -101,12 +103,98 @@ branch `fork/solution-plan`). `App/PushRegistration.swift` does the work:
   errors) through `list_push_devices` / `update_push_device_prefs`, plus "Send
   test push" (`send_test_push`).
 
+### Waiting for you, reminders and answers from a notification (1.3.26)
+
+codeg keeps one list of everything waiting on the user across a server's
+sessions: permission requests, questions, plans waiting for approval, and the
+same from delegated sub-agents (filed under their parent). It reminds at 5
+min, 30 min, 2 h and then every 4 h until the item is answered (codeg
+`docs/ios-push.md` §9).
+
+- **"Waiting for you".** `Features/Sessions/PendingItemsStore.swift` loads
+  `list_pending_items` (`{items, count}`, oldest first) for the selected
+  server and follows the `app://pending-items` event, which carries the whole
+  list on every change. Every event socket of the app hands that event over
+  (`EventStream.setGlobalEventHandler`; the rest of the legacy firehose is
+  still dropped), so while a session is on screen its sockets carry it; on
+  the lists the store keeps one socket of its own, reconnecting with a
+  back-off, and it reloads when a socket becomes ready and when a push says
+  the list moved. A server without the endpoint shows nothing.
+  `WaitingForYouCard` sits above every card of the Chats list (not while
+  filtering on iPad): per item the session title (else the folder), how long
+  it has waited, the kind (Question, Permission, Plan; Sub-agent for a
+  delegated one), the agent and what is asked. A tap opens
+  `root_conversation_id` (a sub-agent's parent) at the latest message, where
+  the waiting card sits above the message bar. One single-choice question
+  with up to six short options shows them as buttons and is answered right
+  there (`acp_answer_question` with `questionId` = the item's `request_id`
+  and the label); the row hides at once and comes back with the reason if the
+  answer fails while the item still waits.
+- **Badge.** Every push carries `aps.badge` (its server's count) and a
+  silent `kind: "badge"` push follows a change of the count; iOS applies both
+  while the app is away (the app asks for badge permission with alerts and
+  sounds). In the foreground the app sets the badge itself
+  (`setBadgeCount`, `AppBadge`): the sum of the saved servers' counts, from
+  the lists it loads, the events and the pushes it sees, so a foreground push
+  never applies its own number. Coming to the front it asks every saved
+  server for its count and replaces whatever a push left; with notifications
+  off in the app the badge is cleared.
+- **Answering from the notification.** `NotificationService/` is a
+  Notification Service Extension (bundle id
+  `io.ashurov.codeg.NotificationService`, Foundation and UserNotifications
+  only, sharing `CodegiOS/Shared/QuestionPush.swift` with the app). For a
+  `CODEG_QUESTION` push (sent with `mutable-content: 1`) whose `question` is
+  `answerable`, single choice, one question and at most four options, it
+  registers `CODEG_QUESTION.<FNV-1a of the labels>` with one action per label
+  (`ANSWER_<i>`, background, needs the device unlocked) and Open when there
+  is room, adds it to the registered set (keeping at most 24 such
+  categories), reads the set back so the category is in place, and points the
+  notification at it. Multiple choice, several questions, free text or more
+  options keep `CODEG_QUESTION` (Open). The app's launch keeps the
+  extension's categories when it registers its own. Tapping a label runs the
+  app's notification response handler in the background, which sends
+  `acp_answer_question` with `connection_id`, `question.question_id` and
+  `{answers: [{questionId: question.item_id, labels: [the label]}],
+  declined: false}` to the push's server, with the token the app already
+  has. An answer that fails (answered on the desktop, the turn ended) posts
+  "Already handled", whose tap opens the session.
+- **Reminders** read "Still waiting · reminder 2" as the subtitle of a
+  question reminder (the extension adds it from `reminder` / `attempt`); the
+  server's body already says how long the agent has waited.
+- **Payload.** `PushPayload` reads `pending_id`, `pending_kind`,
+  `pending_since`, `reminder`, `attempt`, `connection_id`,
+  `asking_conversation_id`, `approval_id`, `question` and `aps.badge`; a push
+  from an older server simply has none of them.
+- **Settings › Notifications** shows the server's reminders under its device
+  preferences (`get_pending_reminder_settings` /
+  `update_pending_reminder_settings`): on or off, Remind after (5 min, 30 min,
+  2 h and three other sets), Then every (never, 1 h to 24 h) and quiet hours
+  with their times. A save waits 0.6 s (a time wheel sends one request) and
+  sends this iPhone's time zone with the quiet hours.
+- **Session recency.** Lists order by the later of a session's last activity
+  (`updated_at`) and the last time the user opened it on any client
+  (`last_viewed_at`, absent from an older server), as the desktop's Recent
+  section does: Activity's Running, Recent and Earlier, the Chats folder
+  cards and full lists, a folder's sessions and Search. Opening a session in
+  the app (its screen on top with the app in front) sends
+  `mark_conversations_viewed {views: [{conversationId, ageMs}]}`, batched for
+  1.5 s per server, each view with its age so the phone's clock does not
+  matter; a server without the endpoint is not asked again until the app
+  restarts.
+
 ### Apple-side setup (not done from this repo)
 
 - **App ID** `io.ashurov.codeg` (explicit) under team `3L92BZK46V`, with the
   **Push Notifications** and **Time Sensitive Notifications** capabilities
   enabled. With automatic signing, Xcode can also turn these on during a
   signed build that uses `-allowProvisioningUpdates`.
+- **App ID** `io.ashurov.codeg.NotificationService` ("Codeg Plus Notification
+  Service", registered through the App Store Connect API, no capabilities)
+  for the notification service extension. It is signed like the app: the
+  archive's automatic signing uses the same development certificate from the
+  CI keychain and creates its development profile, and the export's cloud
+  signing its App Store profile. Both targets take their version from the
+  project-level `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`.
 - **APNs auth key** (`.p8`, Keys → Apple Push Notifications service). The codeg
   server uses it to send pushes. It is separate from the App Store Connect API
   key below.

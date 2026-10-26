@@ -238,10 +238,21 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
     /// as of the list fetch (see ``ConversationBackground``). Nil when nothing,
     /// and always from a server that predates the field.
     var background: ConversationBackground? = nil
+    /// When the user last opened this conversation on any client (fork
+    /// `mark_conversations_viewed`). Nil when never, or from a server that
+    /// predates it.
+    var lastViewedAt: Date? = nil
+
+    /// What the lists order by: the later of the last activity and the last
+    /// time the user opened the session, as the desktop's Recent section does.
+    var recency: Date {
+        guard let lastViewedAt, lastViewedAt > updatedAt else { return updatedAt }
+        return lastViewedAt
+    }
 
     private enum CodingKeys: String, CodingKey {
         case id, folderId, title, agentType, status, model, gitBranch, externalId
-        case messageCount, createdAt, updatedAt, pinnedAt
+        case messageCount, createdAt, updatedAt, pinnedAt, lastViewedAt
         case turnState, critical, criticalStall, parentId, limitPause, limitAutoContinue, limitReason
         case background
     }
@@ -272,6 +283,7 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         limitAutoContinue = (try? c.decodeIfPresent(Bool.self, forKey: .limitAutoContinue)) ?? true
         limitReason = (try? c.decodeIfPresent(LimitReason.self, forKey: .limitReason)) ?? nil
         background = (try? c.decodeIfPresent(ConversationBackground.self, forKey: .background)) ?? nil
+        lastViewedAt = (try? c.decodeIfPresent(Date.self, forKey: .lastViewedAt)) ?? nil
     }
 
     func encode(to encoder: Encoder) throws {
@@ -303,6 +315,7 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         try c.encode(limitAutoContinue, forKey: .limitAutoContinue)
         try c.encodeIfPresent(limitReason, forKey: .limitReason)
         try c.encodeIfPresent(background, forKey: .background)
+        try c.encodeIfPresent(lastViewedAt, forKey: .lastViewedAt)
     }
 
     /// Non-empty, trimmed user-provided title, or `nil` for an unnamed session.

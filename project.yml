@@ -51,6 +51,10 @@ settings:
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: minimal
     ENABLE_USER_SCRIPT_SANDBOXING: "YES"
+    # One version for the app and its notification service extension (App
+    # Store Connect wants them equal). `scripts/release.sh` bumps these two.
+    MARKETING_VERSION: "1.3.25"
+    CURRENT_PROJECT_VERSION: "2"
 
 targets:
   CodegiOS:
@@ -68,6 +72,9 @@ targets:
       - package: WhisperCpp
         product: whisper
       - package: ExceptionCatcher
+      # Answer buttons on question pushes; embedded in PlugIns/.
+      - target: NotificationService
+        embed: true
     scheme:
       testTargets:
         - CodegiOSTests
@@ -84,8 +91,6 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CODEG_BUNDLE_ID)
         PRODUCT_NAME: Codeg
-        MARKETING_VERSION: "1.3.25"
-        CURRENT_PROJECT_VERSION: "2"
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: "NO"
         # App icon lives in Assets.xcassets/AppIcon.appiconset (single-size 1024 universal).
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -146,6 +151,36 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+
+  # Notification Service Extension: for a question push (CODEG_QUESTION, sent
+  # with mutable-content) it registers a category whose buttons are the
+  # option labels and points the notification at it, and it says which
+  # reminder a reminder is. Foundation and UserNotifications only; it shares
+  # CodegiOS/Shared/QuestionPush.swift with the app. Signed like the app
+  # (automatic signing, the same team and certificate); its App ID is
+  # $(CODEG_BUNDLE_ID).NotificationService.
+  NotificationService:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: NotificationService
+      - path: CodegiOS/Shared/QuestionPush.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(CODEG_BUNDLE_ID).NotificationService
+        PRODUCT_NAME: NotificationService
+        # Embedded in the app, not a product of the archive of its own.
+        SKIP_INSTALL: "YES"
+    info:
+      path: NotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: "$(CODEG_DISPLAY_NAME)"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).NotificationService"
 
   # Unit tests for the pure logic: session activity, push payload routing,
   # Markdown-to-speech text, voice typing (VAD trimming, model manifest and

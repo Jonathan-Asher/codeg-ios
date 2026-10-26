@@ -177,7 +177,7 @@ actor ServerSnapshotCache {
     private func trimmed(_ snapshot: SavedServerSnapshot) -> Data? {
         var kept = snapshot.conversations.sorted { lhs, rhs in
             if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
-            return lhs.updatedAt > rhs.updatedAt
+            return lhs.recency > rhs.recency
         }
         while kept.count > 1 {
             kept = Array(kept.prefix(kept.count * 3 / 4))

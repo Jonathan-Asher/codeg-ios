@@ -12,6 +12,23 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Waiting for you, reminders and answers from a notification (1.3.26),
+  matching the codeg server. The top of the sessions list shows everything
+  waiting on you on the server: questions, permission requests and plans,
+  also from sub-agents, each with its session, how long it has waited, its
+  kind and what is asked. It stays live while the app is open; a tap opens
+  the session (a sub-agent's parent) at its waiting card, and a question
+  with a few options can be answered right in the list. A question
+  notification with up to four options has them as buttons (the new
+  notification service extension): tap one to answer without opening the
+  app; anything else offers Open. A reminder of a question says which one it
+  is ("Still waiting · reminder 2"). The app icon's badge counts what waits,
+  across your servers, and is put right whenever the app opens. Settings ›
+  Notifications has the server's reminders: on or off, when to remind,
+  how often after that, and quiet hours.
+- Sessions you open move up (1.3.26). The lists order by the later of a
+  session's last activity and the last time you opened it, on any device,
+  as the desktop does; opening a session in the app tells the server.
 - Attach documents (1.3.25). Files now offers any file, not only pictures,
   videos and audio: a PDF, a Word or Pages document, a spreadsheet, a text,
   Markdown or CSV file, code, an archive. A document is uploaded to the codeg
