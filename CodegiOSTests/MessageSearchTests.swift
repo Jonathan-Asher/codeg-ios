@@ -460,6 +460,61 @@ final class MessageSearchTests: XCTestCase {
                                         in: nodes))
     }
 
+    // MARK: - Screenshot
+
+    /// The results as the Search tab draws them, English and Hebrew, into the
+    /// session list screenshots (`search-results-light.png`, `-dark`).
+    func testRenderSearchResults() throws {
+        let now = Date()
+        let hebrewTitle = "תיקון ההקלטה הקולית בטלפון"
+        let sessions = [
+            SampleSessions.decode(.init(id: 201, folder: 2, title: "Voice typing: keep the first words",
+                                        minutesAgo: 12), now: now),
+            SampleSessions.decode(.init(id: 202, folder: 3, title: hebrewTitle, agent: "codex", minutesAgo: 95), now: now),
+        ]
+        let groups = MessageSearch.group([
+            MessageSearchHit(conversationId: 201, folderId: 2, agentType: .claudeCode,
+                             title: "Voice typing: keep the first words", turnIdx: 41, role: .assistant,
+                             snippet: "…the pre-roll keeps the first [[mark]]voice[[/mark]] frames, so the start of a sentence isn't lost when you speak right away…",
+                             rank: -6),
+            MessageSearchHit(conversationId: 202, folderId: 3, agentType: .codex, title: hebrewTitle, turnIdx: 7,
+                             role: .user, snippet: "…ההקלטה ה[[mark]]קולית[[/mark]] נתקעת אחרי שתי שניות, אפשר לבדוק את זה ב-DictationController?",
+                             rank: -5),
+            MessageSearchHit(conversationId: 201, folderId: 2, agentType: .claudeCode,
+                             title: "Voice typing: keep the first words", turnIdx: 12, role: .user,
+                             snippet: "make [[mark]]voice[[/mark]]\n\ntyping start faster", rank: -4),
+            MessageSearchHit(conversationId: 203, folderId: 1, agentType: .claudeCode, title: nil, turnIdx: 3,
+                             role: .system, snippet: "[[mark]]Voice[[/mark]] model downloaded", rank: -3),
+        ])
+        for style in Shot.styles {
+            try Shot.capture("search-results", style) {
+                ZStack(alignment: .top) {
+                    CodegBackground()
+                    ScrollView {
+                        VStack(spacing: 8) {
+                            SearchMessagesRow(query: "voice") {}
+                            SearchSectionHeader(title: "Sessions")
+                            ForEach(sessions) { conversation in
+                                SessionRow(conversation: conversation, isSelected: false,
+                                           folderName: SampleSessions.folders[conversation.folderId], onTap: {})
+                            }
+                            SearchSectionHeader(title: "Messages")
+                            ForEach(groups) { group in
+                                MessageHitCard(group: group, folderName: SampleSessions.folders[group.folderID],
+                                               isSelected: group.conversationID == 202,
+                                               isExpanded: .constant(group.conversationID == 201), onOpen: { _ in })
+                            }
+                            SearchNoteRow(text: "Message search needs a word of at least 3 characters.",
+                                          symbol: "info.circle")
+                        }
+                        .padding(.horizontal, Theme.Layout.screenHMargin)
+                        .padding(.vertical, 24)
+                    }
+                }
+            }
+        }
+    }
+
     func testOlderTurnsComeInOnePageWhenTheServerAllows() {
         XCTAssertEqual(TranscriptJump.pageLimit(target: 12, offset: 180, pageTurns: 150), 169)
         XCTAssertEqual(TranscriptJump.pageLimit(target: 170, offset: 180, pageTurns: 150), 150)
