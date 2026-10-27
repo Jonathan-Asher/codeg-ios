@@ -147,8 +147,11 @@ struct SessionRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Group {
                 if let title = conversation.trimmedTitle {
+                    // A Hebrew title reads right to left from the right edge.
                     Text(verbatim: title)
                         .foregroundStyle(Theme.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .blockDirection(TextDirection.detect(title))
                 } else {
                     Text("Untitled session")
                         .foregroundStyle(Theme.textSecondary)
@@ -353,7 +356,7 @@ enum SessionRowStyle {
 /// plate per row reads as a stack of shadowed plates on the light backdrop and
 /// costs a backdrop pass per cell; glass stays on the cards and bars around
 /// the rows.
-private struct SessionRowSurface: View {
+struct SessionRowSurface: View {
     let style: SessionRowStyle
     let isSelected: Bool
     let isPressed: Bool
@@ -382,7 +385,7 @@ private struct SessionRowSurface: View {
 /// Press feedback for a session row: the surface darkens (or lightens, in
 /// dark mode) and the row shrinks a touch, so a tap visibly lands on the row
 /// you touched.
-private struct SessionRowButtonStyle: ButtonStyle {
+struct SessionRowButtonStyle: ButtonStyle {
     let style: SessionRowStyle
     let isSelected: Bool
 

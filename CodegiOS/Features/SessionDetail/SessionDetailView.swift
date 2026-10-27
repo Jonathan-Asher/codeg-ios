@@ -394,11 +394,18 @@ struct SessionDetailView: View {
                     Task { await model.load() }
                 }
             case .loaded:
-                loadedBody
+                if model.isFindingJumpTarget {
+                    // A search hit further back than the turns held: they
+                    // come first, then the transcript opens at it.
+                    LoadingView(label: "Finding the message…")
+                } else {
+                    loadedBody
+                }
             }
         }
         .transition(.opacity)
         .animation(Theme.Motion.content, value: model.phase)
+        .animation(Theme.Motion.content, value: model.isFindingJumpTarget)
     }
 
     private var loadedBody: some View {
@@ -418,10 +425,12 @@ struct SessionDetailView: View {
             isLoadingOlder: model.isLoadingOlder,
             windowStart: model.transcriptWindowStart,
             onWindowStartChange: { model.transcriptWindowStart = $0 },
-            // Decided once for this screen: the latest message, or where the
-            // reader left the session.
+            // Decided once for this screen: the latest message, where the
+            // reader left the session, or a search hit's message.
             restore: model.restoreDecision(screen: holderID),
             onViewportChange: { model.noteViewport($0) },
+            jump: model.transcriptJump,
+            onJumpLanded: { model.jumpLanded($0) },
             mediaContext: model.mediaPathContext,
             mediaPresence: model.mediaEnvironment?.library.presence
         ) {
@@ -451,6 +460,9 @@ struct SessionDetailView: View {
             .padding(.top, 4)
             .padding(.bottom, 6)
         }
+        // A search hit made ready while the transcript is up: it is built
+        // again, opening at the hit.
+        .id(model.transcriptGeneration)
         .environment(\.codegImageSource, model.imageSource)
         .environment(\.codegMedia, model.mediaEnvironment)
         // A link in a message to a picture, video, audio file or document in

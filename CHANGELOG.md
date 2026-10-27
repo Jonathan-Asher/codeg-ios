@@ -12,6 +12,16 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Search finds sessions by their messages as well as their titles (1.3.26).
+  As you type, the Search tab looks through what every session's messages
+  say, Hebrew and English, beside the titles: Sessions lists the title
+  matches and Messages the sessions whose messages match, each with whose
+  message it was and the matched words highlighted, the session's other
+  matches a tap away. Tapping a message opens its session at that message,
+  lit for a moment, even far back in a long session. Message search needs a
+  word of 3 or more characters; a server without it searches titles only,
+  as before. On iPad the Chats filter offers "Search messages for “…”".
+  Hebrew titles and excerpts read right to left.
 - Attach documents (1.3.25). Files now offers any file, not only pictures,
   videos and audio: a PDF, a Word or Pages document, a spreadsheet, a text,
   Markdown or CSV file, code, an archive. A document is uploaded to the codeg

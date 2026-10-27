@@ -1690,6 +1690,89 @@ audio (`UploadLimits::limit_for`).
   canonical path the upload answers (`/private/tmp/…`); the app then lists
   the directory instead. Only an uploads root under a symlink differs so.
 
+### Searching messages (1.3.26)
+
+`Features/Search/SearchView.swift`, `Features/Search/MessageSearch.swift`
+(`MessageSearchHit`, `MessageSnippet`, `MessageSearchGroup`,
+`MessageSearch`), `Features/Search/MessageSearchViews.swift`,
+`Networking/CodegClient+MessageSearch.swift`,
+`Features/SessionDetail/TranscriptJump.swift`. Until 1.3.25 the Search tab
+found sessions by title only (`list_all_conversations` with `search`). It
+now also searches what the messages say, with the index codeg's desktop ⌘K
+"Messages" uses. Nothing changed on the codeg side.
+
+- **The server.** `POST /api/message_search` with `{query, limit}` (40, as
+  ⌘K asks) answers `MessageSearchHit[]`, best first: the conversation and
+  folder ids, agent type, title, `turn_idx` (the turn's position in the
+  whole transcript, the same global index as the turn-window protocol's
+  `turnsOffset + i`), `role` and a `snippet` with every matched word in
+  `[[mark]]…[[/mark]]`; `rank` is BM25, lower is better. It is an FTS5
+  trigram index over the text of every top-level session's messages (not
+  reasoning or tool output), refreshed about once a minute, so Hebrew and
+  English work and a word matches inside longer ones.
+- **As you type.** The 300 ms debounce stays. Titles and messages are
+  searched side by side; the titles show as soon as they come, the messages
+  under them ("Searching messages…" until then). With message hits the list
+  has two headed sections: **Sessions** (the title matches, as before;
+  the first five, then "Show all N sessions") and **Messages**.
+- **A session's hits** are one card: the agent, the title, the agent and
+  folder, and the best hit's excerpt: whose message it was (You, the
+  agent's name, System) and the text around the match with the matched
+  words in bold on a highlighter yellow (`Theme.searchMatch`). The
+  session's other hits fold under "N more matches", each its own row. The
+  excerpt's whitespace and line breaks fold into one paragraph of up to
+  three lines (`MessageSnippet`: an unclosed mark runs to the end, a stray
+  close is dropped, adjacent marks join).
+- **Short queries.** The trigram index needs a word of three characters or
+  more (shorter ones would scan every message), so a query without one
+  searches titles only and says so quietly: "Message search needs a word of
+  at least 3 characters." (`MessageSearch.canSearchMessages`).
+- **Older servers.** A codeg without `message_search` answers 501
+  `not_implemented` (a proxy may say 404 or 405): titles only, no error, and
+  the screen doesn't ask again (`MessageSearch.isUnsupported`). Any other
+  failure shows "Couldn't search messages." with Try Again under the titles.
+- **Opening a hit** opens its session at that message
+  (`AppModel.openMessage`, `SessionModelStore.requestOpen(conversationID:at:)`,
+  `SessionDetailViewModel.requestJump`). The session opens the way it opens
+  at a saved reading position (see "Keeping the reader's place"): the
+  screen's restore decision is anchored at the hit's turn (for a turn of a
+  reply, the reply's first turn: consecutive assistant turns merge into one
+  reply), the window widens to show it, and the list stays hidden until the
+  bridge has the row in place, 12 pt below the top. The row is the turn's
+  row that holds the most of the searched words (a long reply's text part,
+  not its first tool call), and it is lit with the highlighter colour for
+  about a second and a half. When the turn is further back than the turns
+  held, the older pages come first, as large as the server sends (500
+  turns), behind "Finding the message…"; when it may be newer than a saved
+  transcript, what changed is fetched first. A turn that isn't there any
+  more (a compaction, an in-place fork) leaves the session opening as it
+  would. Opened from a notification or a link afterwards, the session goes
+  to its latest message as before. On iPad a hit in the session already in
+  the detail column jumps there (the transcript is built again at the hit).
+  Back returns to the results; the reading position saved there is the
+  hit's.
+- **The Chats filter.** The iPad's "Filter sessions" field keeps its
+  instant local title filter. Its results start with "Search messages for
+  “…”", and an empty result offers Search Messages: both push the search
+  with those words in the content column (the iPad has no Search tab; on
+  the tabs, `AppModel.openSearch` opens the Search tab with them).
+- **Right to left.** A Hebrew title (in the hit cards and in every session
+  row) and a Hebrew excerpt lay out right to left by their own text
+  (`TextDirection.detect`, `blockDirection`), the excerpt's "You" on the
+  right.
+- **Strings.** In the string catalog with zh-Hans: the section titles, the
+  hint, the "N more matches" plural, "Search messages for “%@”", "Finding
+  the message…" and the empty and failure lines.
+- **Tests.** `CodegiOSTests/MessageSearchTests.swift`: decoding the hits
+  from the server's snake_case, the `[[mark]]` parsing into highlighted
+  ranges (Hebrew, folded whitespace, odd marks), the highlighted runs,
+  grouping and ordering, the short-query rule (no request), 501, 404 and
+  500 against a mock server, the request's query and limit, a hit opening
+  on the Search tab and on iPad, the Chats filter's search, the store
+  handing a hit to the model made for it, the model at a held turn, an
+  older turn (one page), a hit asked for before the load, a turn that isn't
+  there, a notification winning, and the row picked in a reply.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one

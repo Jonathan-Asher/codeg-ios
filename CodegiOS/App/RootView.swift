@@ -59,6 +59,8 @@ struct RootView: View {
         .environment(appearance)
         // Forking and the session rows' long-press actions.
         .environment(model.actions)
+        // The Chats filter's "Search messages for …".
+        .environment(\.openMessageSearch, OpenMessageSearchAction { model.openSearch(query: $0) })
         // App display language: overriding `\.locale` re-resolves every
         // `LocalizedStringKey` live (no `.id(...)` teardown, so live streams
         // survive). `.system` hands back the device locale (a no-op override).
@@ -309,7 +311,10 @@ struct RootView: View {
             SearchView(
                 client: model.selectedClient(),
                 markedConversationID: model.markedConversationID,
-                onOpen: { model.open(.conversation($0)) }
+                request: model.searchRequest,
+                onRequestHandled: { model.searchRequestHandled($0) },
+                onOpen: { model.open(.conversation($0)) },
+                onOpenMessage: { model.openMessage(conversationID: $0, jump: $1) }
             )
             .id(model.selectedServerID)
             .navigationDestination(for: Route.self) { route in
@@ -432,6 +437,14 @@ struct RootView: View {
                     onOpen: { model.open(.conversation($0)) }
                 )
                 .navigationTransition(.zoom(sourceID: group.transitionID, in: chatsCardNamespace))
+            case .search(let query):
+                SearchView(
+                    client: client,
+                    markedConversationID: model.markedConversationID,
+                    request: SearchRequest(id: 0, query: query),
+                    onOpen: { model.open(.conversation($0)) },
+                    onOpenMessage: { model.openMessage(conversationID: $0, jump: $1) }
+                )
             case .project(let id):
                 ProjectDetailView(
                     client: client,
