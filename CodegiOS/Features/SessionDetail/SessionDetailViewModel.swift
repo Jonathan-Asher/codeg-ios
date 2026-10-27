@@ -624,7 +624,7 @@ final class SessionDetailViewModel {
                let entry = await cache.load(serverKey: cacheServerKey, conversationID: id),
                turns.isEmpty, phase != .loaded {
                 applyCached(entry)
-                settleJump(synced: false)
+                settleJump(fetchNewer: true)
                 phase = .loaded
                 openedFromCache = true
                 // Where it opens (the latest message, or where the reader
@@ -671,7 +671,7 @@ final class SessionDetailViewModel {
             // Another path (a turn reconciling, an older page) changed the
             // turns while this fetch ran: its copy is newer.
             if turnsVersion == version { adoptWindow(outcome, allowShrink: true) }
-            settleJump(synced: true)
+            settleJump(fetchNewer: false)
             sessionStats = detail.sessionStats
             allFolders = folders
             folder = folders.first { $0.id == detail.summary.folderId }
@@ -834,14 +834,14 @@ final class SessionDetailViewModel {
     /// Fetch the page of turns before the held ones and put it in front. When
     /// the server's history before the window was rewritten (a compaction),
     /// the page can't join it, and the screen starts over from the end.
-    func loadOlderTurns(limit: Int = SessionDetailViewModel.olderPageTurns) async {
+    func loadOlderTurns(limit: Int? = nil) async {
         guard let id = conversationID, hasOlderTurns, !isLoadingOlder else { return }
         isLoadingOlder = true
         defer { isLoadingOlder = false }
         let before = heldWindow
         do {
             let page = try await client.conversationTurnsPage(id: id, beforeIndex: before.offset,
-                                                              limit: limit)
+                                                              limit: limit ?? Self.olderPageTurns)
             // Only joins the window it was asked for.
             guard conversationID == id, turnsOffset == before.offset, windowPrefixHash == before.prefixHash
             else { return }
@@ -3513,13 +3513,13 @@ final class SessionDetailViewModel {
         findJumpTarget(fetchNewer: true)
     }
 
-    /// The load's hook: the saved transcript is shown (`synced` false) or the
-    /// server's window adopted (true).
-    private func settleJump(synced: Bool) {
+    /// The load's hook, once there are turns: the saved transcript (which
+    /// may be behind the server, so what changed is fetched too) or the
+    /// server's window, just adopted.
+    private func settleJump(fetchNewer: Bool) {
         guard jumpRequest != nil, jumpTask == nil else { return }
         if applyJumpIfHeld() { return }
-        guard synced else { return }
-        findJumpTarget(fetchNewer: false)
+        findJumpTarget(fetchNewer: fetchNewer)
     }
 
     /// Fetch what brings the requested turn in: what changed since the held

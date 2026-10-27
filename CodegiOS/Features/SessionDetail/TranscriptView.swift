@@ -638,12 +638,12 @@ struct TranscriptView<Header: View>: View {
         if let start = restoreWindowStart, windowStart.map({ start < $0 }) ?? true {
             onWindowStartChange(start)
         }
-        let nodes = self.nodes
+        let shown = nodes
         // A search hit: the row of its turn that holds the searched words,
         // a little below the top.
-        let jumpRow = jump.flatMap { TranscriptJump.row(for: $0, in: nodes) }
+        let jumpRow = jump.flatMap { TranscriptJump.row(for: $0, in: shown) }
         let target: (id: String, offset: Double)? = jumpRow.map { (id: $0, offset: -Double(TranscriptJump.topGap)) }
-            ?? ReadingRestore.resolve(position, rows: nodes.map { (id: $0.id, turnID: $0.turnID) })
+            ?? ReadingRestore.resolve(position, rows: shown.map { (id: $0.id, turnID: $0.turnID) })
         guard let target else {
             isRestoring = false
             setStuck(true)

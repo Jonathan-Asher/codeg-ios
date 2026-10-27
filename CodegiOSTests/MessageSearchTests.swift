@@ -11,10 +11,14 @@ import XCTest
 final class MessageSearchTests: XCTestCase {
     private var suites: [String] = []
     private var models: [SessionDetailViewModel] = []
+    /// The transcripts the mock servers answer from (their routes hold them
+    /// unowned).
+    private var transcripts: [WindowedTranscriptServer] = []
 
     override func tearDown() async throws {
         models.forEach { $0.teardown() }
         models = []
+        transcripts = []
         for suite in suites { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         suites = []
     }
@@ -248,7 +252,7 @@ final class MessageSearchTests: XCTestCase {
 
     func testTheStoreHandsAHitToTheModelMadeForIt() {
         let server = MockCodegServer()
-        WindowedTranscriptServer(count: 10).install(on: server)
+        serve(10, on: server)
         let store = SessionModelStore()
         store.transcriptCache = nil
         let profile = ServerProfile(name: "Box", urlString: "http://\(server.host)")
@@ -279,8 +283,14 @@ final class MessageSearchTests: XCTestCase {
 
     // MARK: - The session model reaching the message
 
+    private func serve(_ count: Int, on server: MockCodegServer) {
+        let transcript = WindowedTranscriptServer(count: count)
+        transcript.install(on: server)
+        transcripts.append(transcript)
+    }
+
     private func makeModel(_ server: MockCodegServer, count: Int) -> SessionDetailViewModel {
-        WindowedTranscriptServer(count: count).install(on: server)
+        serve(count, on: server)
         let model = SessionDetailViewModel(client: server.client, conversationID: Fixtures.conversationID,
                                            makeEventStream: { _ in StreamFactory([]).make() }, transcriptCache: nil,
                                            readingPositions: ReadingPositionStore(defaults: scratchDefaults()))
@@ -348,6 +358,42 @@ final class MessageSearchTests: XCTestCase {
         XCTAssertTrue(found)
         XCTAssertEqual(model.transcriptJump?.turnID, "turn-40")
         XCTAssertEqual(anchor(model.restoreDecision(screen: UUID()))?.anchorTurnID, "turn-40")
+    }
+
+    func testASavedTranscriptWithoutTheTurnFetchesItBeforeShowing() async {
+        let server = MockCodegServer()
+        serve(300, on: server)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ms-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = TranscriptCache(root: root)
+        let positions = ReadingPositionStore(defaults: scratchDefaults())
+        func make() -> SessionDetailViewModel {
+            let model = SessionDetailViewModel(client: server.client, conversationID: Fixtures.conversationID,
+                                               makeEventStream: { _ in StreamFactory([]).make() },
+                                               transcriptCache: cache, readingPositions: positions)
+            models.append(model)
+            return model
+        }
+        let first = make()
+        await first.load()
+        let key = TranscriptCache.serverKey(for: server.client)
+        let deadline = Date().addingTimeInterval(5)
+        var saved = false
+        while !saved, Date() < deadline {
+            saved = await cache.contains(serverKey: key, conversationID: Fixtures.conversationID)
+            if !saved { try? await Task.sleep(for: .milliseconds(20)) }
+        }
+        XCTAssertTrue(saved)
+
+        // Opened again from a hit far before the saved window.
+        let second = make()
+        second.requestJump(TranscriptJumpRequest(turnIndex: 20, terms: []))
+        await second.load()
+        let found = await eventually { second.transcriptJump != nil }
+        XCTAssertTrue(found)
+        XCTAssertEqual(second.transcriptJump?.turnID, "turn-20")
+        XCTAssertFalse(second.isFindingJumpTarget)
+        XCTAssertEqual(anchor(second.restoreDecision(screen: UUID()))?.anchorTurnID, "turn-20")
     }
 
     func testATurnThatIsNotThereOpensAsUsual() async {
