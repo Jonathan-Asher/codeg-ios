@@ -28,6 +28,11 @@ struct SessionListView: View {
     /// The session to mark as the one you came from (iPhone, where nothing
     /// stays selected). iPad marks `selectedConversationID` instead.
     var markedConversationID: Int?
+    /// What waits on the user on this server ("Waiting for you" on top).
+    var pending: PendingItemsStore?
+    /// Opens a waiting item's session at its waiting card. Without it the row
+    /// opens like any session row.
+    var onOpenPending: ((PendingItem) -> Void)?
 
     /// Configuration for the leading server-switcher title menu.
     struct ServerSwitcher {
@@ -61,7 +66,9 @@ struct SessionListView: View {
         cardNamespace: Namespace.ID,
         onNewSession: (() -> Void)? = nil,
         serverSwitcher: ServerSwitcher? = nil,
-        markedConversationID: Int? = nil
+        markedConversationID: Int? = nil,
+        pending: PendingItemsStore? = nil,
+        onOpenPending: ((PendingItem) -> Void)? = nil
     ) {
         self.server = server
         self.client = client
@@ -73,6 +80,8 @@ struct SessionListView: View {
         self.onNewSession = onNewSession
         self.serverSwitcher = serverSwitcher
         self.markedConversationID = markedConversationID
+        self.pending = pending
+        self.onOpenPending = onOpenPending
     }
 
     /// The row drawn as the current one: the open session on iPad, the one
@@ -201,6 +210,19 @@ struct SessionListView: View {
                     .padding(.horizontal, Theme.Layout.screenHMargin)
                 }
 
+                // What waits on the user, above every group (not while filtering).
+                if !searching, let pending, !pending.visibleItems.isEmpty {
+                    WaitingForYouCard(
+                        items: pending.visibleItems,
+                        error: pending.answerError,
+                        onOpen: { openPending($0) },
+                        onAnswer: { item, label in Task { await pending.answer(item, label: label) } },
+                        onDismissError: { pending.dismissAnswerError() }
+                    )
+                    .padding(.horizontal, Theme.Layout.screenHMargin)
+                    .transition(.opacity)
+                }
+
                 if isEmpty {
                     emptyState
                         .frame(maxWidth: .infinity, minHeight: 360)
@@ -222,7 +244,11 @@ struct SessionListView: View {
         }
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.immediately)
-        .refreshable { await viewModel.refresh() }
+        .refreshable {
+            await viewModel.refresh()
+            await pending?.refresh()
+        }
+        .animation(Theme.Motion.content, value: pending?.visibleItems.map(\.id) ?? [])
     }
 
     // MARK: - Cards
@@ -356,6 +382,16 @@ struct SessionListView: View {
 
     private func select(_ conversation: ConversationSummary) {
         open(id: conversation.id)
+    }
+
+    /// A waiting item: its session (a sub-agent's parent) at the latest
+    /// message, where the waiting card is.
+    private func openPending(_ item: PendingItem) {
+        if let onOpenPending {
+            onOpenPending(item)
+        } else {
+            open(id: item.rootConversationId)
+        }
     }
 
     /// Open a conversation by id — pushes (compact) or binds the selection (iPad).

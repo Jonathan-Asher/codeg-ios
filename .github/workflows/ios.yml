@@ -76,6 +76,12 @@ jobs:
           check CFBundleURLTypes:0:CFBundleURLSchemes:0 codegplus
           check CodegURLScheme codegplus
           check ITSAppUsesNonExemptEncryption false
+          # The notification service extension (answer buttons on question pushes).
+          ext="$(dirname "$plist")/PlugIns/NotificationService.appex/Info.plist"
+          if [[ ! -f "$ext" ]]; then echo "::error::the notification service extension is not embedded"; exit 1; fi
+          plist="$ext"
+          check CFBundleIdentifier io.ashurov.codeg.NotificationService
+          check NSExtension:NSExtensionPointIdentifier com.apple.usernotifications.service
 
       - name: Upload the build log
         if: failure()

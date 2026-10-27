@@ -190,6 +190,8 @@ final class EventStream: @unchecked Sendable {
     let frames: AsyncStream<Frame>
     private let continuation: AsyncStream<Frame>.Continuation
     private let url: URL
+    /// The server's HTTP base URL (the forwarded events say which server).
+    private let baseURL: URL
     private let token: String
     private let makeSocket: (URL, [String]) -> any EventSocket
     private let clock: any LivenessClock
@@ -263,6 +265,7 @@ final class EventStream: @unchecked Sendable {
          clock: any LivenessClock, probe: @escaping Probe) {
         self.token = token
         self.url = EventStream.websocketURL(from: baseURL)
+        self.baseURL = baseURL
         self.makeSocket = makeSocket
         self.clock = clock
         self.probe = probe
@@ -496,24 +499,63 @@ final class EventStream: @unchecked Sendable {
     }
 
     private func decode(_ data: Data) {
-        for frame in Self.frames(from: data) { continuation.yield(frame) }
+        let routed = Self.route(data)
+        if let global = routed.global, let handler = Self.globalEventHandler() {
+            handler(baseURL, global.channel, global.payload)
+        }
+        for frame in routed.frames { continuation.yield(frame) }
+    }
+
+    // MARK: - App-wide events
+
+    /// The legacy global events (`{channel, payload}`) handed to
+    /// ``setGlobalEventHandler(_:)`` from every socket; the rest of the
+    /// firehose is dropped. `app://pending-items` keeps "Waiting for you" and
+    /// the badge live.
+    static let forwardedChannels: Set<String> = ["app://pending-items"]
+
+    /// Receives the forwarded events of every socket: the socket's server,
+    /// the channel and the payload's JSON.
+    typealias GlobalEventHandler = @Sendable (URL, String, Data) -> Void
+
+    private static let handlerLock = NSLock()
+    nonisolated(unsafe) private static var storedHandler: GlobalEventHandler?
+
+    static func setGlobalEventHandler(_ handler: GlobalEventHandler?) {
+        handlerLock.lock()
+        storedHandler = handler
+        handlerLock.unlock()
+    }
+
+    private static func globalEventHandler() -> GlobalEventHandler? {
+        handlerLock.lock()
+        defer { handlerLock.unlock() }
+        return storedHandler
     }
 
     /// The frames one text message carries: none (the legacy firehose, which
     /// is ignored but for its ready signal), one, or one followed by
     /// ``Frame/frameCut`` when the server shrank it.
-    static func frames(from data: Data) -> [Frame] {
+    static func frames(from data: Data) -> [Frame] { route(data).frames }
+
+    /// ``frames(from:)``, plus a forwarded global event's channel and payload.
+    static func route(_ data: Data) -> (frames: [Frame], global: (channel: String, payload: Data)?) {
         // The socket multiplexes the legacy firehose ({channel, payload}) with
         // the attach protocol ({type, ...}). Route on which key is present.
         var cut = false
         if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let channel = obj["channel"] as? String {
-                return channel == "__ready__" ? [.ready] : [] // other legacy global events are ignored
+                if channel == "__ready__" { return ([.ready], nil) }
+                // Other legacy global events are ignored, but for the forwarded ones.
+                guard forwardedChannels.contains(channel), let payload = obj["payload"],
+                      let json = try? JSONSerialization.data(withJSONObject: payload, options: [.fragmentsAllowed])
+                else { return ([], nil) }
+                return ([], (channel, json))
             }
-            guard obj["type"] is String else { return [] }
+            guard obj["type"] is String else { return ([], nil) }
             cut = (obj["frame_cut"] as? Bool) == true
         }
-        guard let message = try? CodegJSON.decoder.decode(WSServerMessage.self, from: data) else { return [] }
+        guard let message = try? CodegJSON.decoder.decode(WSServerMessage.self, from: data) else { return ([], nil) }
         let frame: Frame
         switch message {
         case .snapshot(let snapshot): frame = .snapshot(snapshot)
@@ -521,9 +563,9 @@ final class EventStream: @unchecked Sendable {
         case .event(let envelope): frame = .event(envelope)
         case .detached(let reason): frame = .detached(reason: reason)
         case .pong: frame = .pong
-        case .unknown: return []
+        case .unknown: return ([], nil)
         }
-        return cut ? [frame, .frameCut] : [frame]
+        return (cut ? [frame, .frameCut] : [frame], nil)
     }
 
     // MARK: - Helpers

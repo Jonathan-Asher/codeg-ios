@@ -4,7 +4,9 @@ import UserNotifications
 /// Settings › Notifications: iOS permission, the app-level switch, and for
 /// every saved server this iPhone's preferences on that server — the same
 /// preferences the codeg desktop shows per device (`list_push_devices` /
-/// `update_push_device_prefs`) — plus "Send test push".
+/// `update_push_device_prefs`) — plus "Send test push", and the server's
+/// reminders of what still waits (`get_pending_reminder_settings` /
+/// `update_pending_reminder_settings`).
 struct NotificationsSettingsView: View {
     let store: ServerStore
 
@@ -158,6 +160,9 @@ struct NotificationsSettingsView: View {
                 Task { await model.setPrefs(entry.id, prefs) }
             }
         }
+        if let reminders = entry.reminders {
+            reminderRows(entry, reminders)
+        }
         rowDivider
         settingRow("Critical alerts", hint: "A session you marked critical needs you.") {
             Toggle("", isOn: Binding(get: { device.prefs.critical }, set: { on in
@@ -208,6 +213,119 @@ struct NotificationsSettingsView: View {
         rowDivider
         settingRow("Device", hint: LocalizedStringKey("\(device.name) · \(device.environment) · \(device.tokenHint)")) {
             EmptyView()
+        }
+    }
+
+    // MARK: - Reminders
+
+    /// The server's reminders of an item still waiting: on/off, when, how
+    /// often after that, and quiet hours. They apply to every device of the
+    /// server and to the desktop.
+    @ViewBuilder
+    private func reminderRows(_ entry: NotificationsSettingsModel.Entry,
+                              _ reminders: PendingReminderSettings) -> some View {
+        let save: (PendingReminderSettings) -> Void = { model.setReminders(entry.id, $0) }
+        rowDivider
+        settingRow("Reminders", hint: "Remind me again while a question, permission or plan is still waiting. For every device of this server.") {
+            Toggle("", isOn: Binding(get: { reminders.enabled }, set: { on in
+                var next = reminders
+                next.enabled = on
+                save(next)
+            }))
+            .labelsHidden()
+            .tint(Theme.accent)
+        }
+        if reminders.enabled {
+            rowDivider
+            settingRow("Remind after") {
+                choiceMenu(current: reminders.stepsSecs, choices: PendingReminderSettings.stepPresets,
+                           title: ReminderText.steps) { steps in
+                    var next = reminders
+                    next.stepsSecs = steps
+                    save(next)
+                }
+            }
+            rowDivider
+            settingRow("Then every") {
+                choiceMenu(current: reminders.repeatSecs, choices: PendingReminderSettings.repeatPresets,
+                           title: ReminderText.repeating) { secs in
+                    var next = reminders
+                    next.repeatSecs = secs
+                    save(next)
+                }
+            }
+            rowDivider
+            settingRow("Quiet hours", hint: quietHint(reminders)) {
+                Toggle("", isOn: Binding(get: { reminders.quietHours }, set: { on in
+                    var next = reminders
+                    next.quietHours = on
+                    save(next)
+                }))
+                .labelsHidden()
+                .tint(Theme.accent)
+            }
+            if reminders.quietHours {
+                rowDivider
+                settingRow("From") {
+                    DatePicker("", selection: ReminderText.time(reminders.quietStartMin) { minutes in
+                        var next = reminders
+                        next.quietStartMin = minutes
+                        save(next)
+                    }, displayedComponents: .hourAndMinute)
+                    .labelsHidden()
+                }
+                rowDivider
+                settingRow("Until") {
+                    DatePicker("", selection: ReminderText.time(reminders.quietEndMin) { minutes in
+                        var next = reminders
+                        next.quietEndMin = minutes
+                        save(next)
+                    }, displayedComponents: .hourAndMinute)
+                    .labelsHidden()
+                }
+            }
+        }
+        if let error = entry.remindersError {
+            Text(verbatim: error)
+                .font(.caption)
+                .foregroundStyle(Theme.danger)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func quietHint(_ reminders: PendingReminderSettings) -> LocalizedStringKey {
+        let zone = reminders.timezone
+        if !zone.isEmpty, zone != TimeZone.current.identifier {
+            return "Reminders due then wait for the end. Saved in \(zone)."
+        }
+        return "Reminders due then wait for the end."
+    }
+
+    private func choiceMenu<Value: Hashable>(current: Value, choices: [Value], title: @escaping (Value) -> String,
+                                             set: @escaping (Value) -> Void) -> some View {
+        Menu {
+            ForEach(choices, id: \.self) { choice in
+                Button {
+                    set(choice)
+                } label: {
+                    if choice == current {
+                        Label(title(choice), systemImage: "checkmark")
+                    } else {
+                        Text(verbatim: title(choice))
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(verbatim: title(current))
+                    .font(.subheadline)
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(Theme.accent)
         }
     }
 
@@ -299,6 +417,9 @@ final class NotificationsSettingsModel {
         var testResults: [TestPushResult] = []
         var testing = false
         var saveError: String?
+        /// The server's reminder settings; nil on a server without them.
+        var reminders: PendingReminderSettings?
+        var remindersError: String?
         var id: UUID { profile.id }
     }
 
@@ -330,9 +451,12 @@ final class NotificationsSettingsModel {
                 device.id == recorded?.deviceID && (token.map { device.matches(token: $0) } ?? true)
             })
             let mine = byID ?? token.flatMap { t in devices.first(where: { $0.matches(token: t) }) }
+            // A server that predates the pending list has no reminders.
+            let reminders = try? await client.getPendingReminderSettings()
             update(id) {
                 $0.device = mine
                 $0.state = mine == nil ? .notRegistered : .loaded
+                $0.reminders = reminders
             }
         } catch {
             update(id) { $0.state = .failed(Self.describe(error)) }
@@ -387,6 +511,40 @@ final class NotificationsSettingsModel {
         }
     }
 
+    /// Saves wait a moment, so turning a time wheel sends one request.
+    @ObservationIgnored private var reminderSaves: [UUID: Task<Void, Never>] = [:]
+
+    /// Show the new reminder settings at once and save them shortly, with this
+    /// iPhone's time zone for the quiet hours. A failed save puts back what
+    /// the server has.
+    func setReminders(_ id: UUID, _ settings: PendingReminderSettings) {
+        guard let entry = entries.first(where: { $0.id == id }),
+              let client = ServerStore.makeClient(for: entry.profile) else { return }
+        update(id) {
+            $0.reminders = settings
+            $0.remindersError = nil
+        }
+        reminderSaves[id]?.cancel()
+        reminderSaves[id] = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            var outgoing = settings
+            outgoing.timezone = TimeZone.current.identifier
+            do {
+                let saved = try await client.updatePendingReminderSettings(outgoing)
+                guard !Task.isCancelled else { return }
+                self?.update(id) { $0.reminders = saved }
+            } catch {
+                guard !Task.isCancelled else { return }
+                let stored = try? await client.getPendingReminderSettings()
+                self?.update(id) {
+                    if let stored { $0.reminders = stored }
+                    $0.remindersError = Self.describe(error)
+                }
+            }
+        }
+    }
+
     private func update(_ id: UUID, _ change: (inout Entry) -> Void) {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
         change(&entries[index])
@@ -394,5 +552,41 @@ final class NotificationsSettingsModel {
 
     private static func describe(_ error: Error) -> String {
         (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+    }
+}
+
+/// How the reminder settings read.
+enum ReminderText {
+    /// "5 min", "2 hr", "1 day" in the app's language.
+    static func duration(_ secs: Int) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .short
+        formatter.allowedUnits = [.day, .hour, .minute]
+        formatter.maximumUnitCount = 2
+        return formatter.string(from: TimeInterval(secs)) ?? "\(secs / 60) min"
+    }
+
+    /// "5 min, 30 min, 2 hr".
+    static func steps(_ steps: [Int]) -> String {
+        steps.isEmpty ? String(localized: "Never") : steps.map(duration).joined(separator: ", ")
+    }
+
+    /// "4 hr", or "Never" for no repeat.
+    static func repeating(_ secs: Int) -> String {
+        secs <= 0 ? String(localized: "Never") : duration(secs)
+    }
+
+    /// A time of day as minutes after midnight, for a `DatePicker`.
+    static func time(_ minutes: Int, set: @escaping (Int) -> Void) -> Binding<Date> {
+        Binding(
+            get: {
+                Calendar.current.date(bySettingHour: (minutes / 60) % 24, minute: minutes % 60, second: 0, of: Date())
+                    ?? Date()
+            },
+            set: { date in
+                let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+                set((parts.hour ?? 0) * 60 + (parts.minute ?? 0))
+            }
+        )
     }
 }

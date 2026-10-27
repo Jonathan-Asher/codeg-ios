@@ -13,6 +13,8 @@ final class AppModel {
     /// App-wide pulse of the selected server (running sessions, recents,
     /// folders) — the poll-based stand-in for the future persistent event hub.
     let activity = ActivityModel()
+    /// What waits on the user on the selected server ("Waiting for you").
+    let pending = PendingItemsStore()
 
     /// The session screens' models, kept above the navigation containers so
     /// a rebuilt screen gets the same one (see `SessionModelStore`).
@@ -354,6 +356,14 @@ final class AppModel {
         }
     }
 
+    /// A waiting item from "Waiting for you": its session (a sub-agent's
+    /// parent) at the latest message, where the waiting card sits above the
+    /// message bar. Back returns to the list.
+    func openPending(_ item: PendingItem) {
+        sessions.requestOpenAtLatest(conversationID: item.rootConversationId)
+        open(.conversation(item.rootConversationId))
+    }
+
     /// Open a fork that just happened. From a list it opens on top of the
     /// list, so Back returns there. From the session it was taken from, the
     /// original goes under it (after an in-place fork that is the sibling row
@@ -430,6 +440,7 @@ final class AppModel {
         prefetcher.reset()
         chatsList = nil
         AttentionStore.shared.clear()
+        pending.reset()
     }
 
     /// …and when the selected server is edited in place (same UUID, new

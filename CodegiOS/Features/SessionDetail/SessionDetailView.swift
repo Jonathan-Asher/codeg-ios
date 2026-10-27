@@ -376,6 +376,9 @@ struct SessionDetailView: View {
         model.setOnScreen(looking)
         if looking {
             PresenceTracker.shared.show(serverProfileID: server.id, conversationID: model.conversationID)
+            // Opened: the lists of every client move it up (by the later of
+            // its last activity and this).
+            if let id = model.conversationID { ConversationViews.shared.record(id, client: client) }
         } else {
             PresenceTracker.shared.hide(serverProfileID: server.id, conversationID: model.conversationID)
         }

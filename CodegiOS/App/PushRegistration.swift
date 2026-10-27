@@ -16,7 +16,10 @@ import os
 ///   notifications are turned off (in the app or in iOS Settings): a server
 ///   that thinks the phone took an alert skips the chat-channel fallback.
 /// - Handles the notification actions in the background (ACK, SNOOZE,
-///   APPROVE) and routes taps / OPEN to the session.
+///   APPROVE, and ANSWER_<i> on a question) and routes taps / OPEN to the
+///   session.
+/// - Keeps the icon badge on the pending count while the app runs (see
+///   ``AppBadge``).
 @MainActor
 @Observable
 final class PushRegistration {
@@ -67,7 +70,7 @@ final class PushRegistration {
     /// be set before launch finishes so a tap that launched the app is seen.
     func appDidLaunch() {
         center.delegate = notificationDelegate
-        center.setNotificationCategories(Self.categories)
+        registerCategories()
         Task {
             await refreshAuthorization()
             // Servers exist but the question was never asked (an install that
@@ -162,6 +165,7 @@ final class PushRegistration {
         let entry = PushServerIndex.entry(for: profile.id)
         PushServerIndex.forget(profile.id)
         serverErrors[profile.id] = nil
+        AppBadge.shared.forget(profile.id)
         guard let client, let token = entry?.token ?? deviceToken else { return }
         Task { try? await client.unregisterPushDevice(token: token) }
     }
@@ -226,17 +230,34 @@ final class PushRegistration {
     // MARK: - Notification responses
 
     /// Whether a push arriving in the foreground shows: not when it is about
-    /// the session on screen.
+    /// the session on screen, and never a badge-only update. While the app
+    /// runs it sets the badge itself (``AppBadge``, the sum over the saved
+    /// servers), so `.badge` is never returned: the push's own number is only
+    /// its server's.
     func presentationOptions(for payload: PushPayload?) -> UNNotificationPresentationOptions {
-        let all: UNNotificationPresentationOptions = [.banner, .list, .sound, .badge]
+        let all: UNNotificationPresentationOptions = [.banner, .list, .sound]
         guard let payload else { return all }
-        let visible = PresenceTracker.shared.visible
         let saved = ServerStore.persistedServers().map(\.id)
-        if PushRouting.isAboutVisibleSession(payload, visibleServer: visible?.serverProfileID,
-                                             visibleConversation: visible?.conversationID,
-                                             recorded: PushServerIndex.serverIDs(), saved: saved) {
-            return []
+        let profileID = PushRouting.serverProfileID(for: payload.serverID, recorded: PushServerIndex.serverIDs(),
+                                                    saved: saved)
+        if let badge = payload.badge, let profileID {
+            AppBadge.shared.set(badge, for: profileID)
         }
+        if payload.kind == "needs_you" || payload.isBadgeOnly, let profileID {
+            NotificationCenter.default.post(name: .pendingItemsMayHaveChanged, object: profileID)
+        }
+        let visible = PresenceTracker.shared.visible
+        let aboutVisible = PushRouting.isAboutVisibleSession(
+            payload, visibleServer: visible?.serverProfileID, visibleConversation: visible?.conversationID,
+            recorded: PushServerIndex.serverIDs(), saved: saved)
+        return Self.foregroundOptions(for: payload, all: all, aboutVisibleSession: aboutVisible)
+    }
+
+    /// The presentation of a push in the foreground: nothing for a badge-only
+    /// update or a push about the session on screen, else `all`.
+    nonisolated static func foregroundOptions(for payload: PushPayload, all: UNNotificationPresentationOptions,
+                                              aboutVisibleSession: Bool) -> UNNotificationPresentationOptions {
+        if payload.isBadgeOnly || aboutVisibleSession { return [] }
         return all
     }
 
@@ -268,18 +289,32 @@ final class PushRegistration {
                 try await client.respondPermission(connectionId: connectionID, requestId: requestID, optionId: optionID)
             } catch {
                 // Answered elsewhere, or its connection is gone.
-                await postAlreadyHandled(payload)
+                await postAlreadyHandled(payload, question: false)
             }
+        case .answer(let connectionID, let questionID, let itemID, let label):
+            do {
+                guard let client else { throw APIError.unauthorized }
+                try await client.answerQuestion(connectionId: connectionID, questionId: questionID,
+                                                answer: PushRouting.answer(itemID: itemID, label: label))
+                log.info("Answered a question from a notification")
+            } catch {
+                // Answered on the desktop or another device, or the turn ended.
+                log.error("Answering from a notification failed: \(error.localizedDescription, privacy: .public)")
+                await postAlreadyHandled(payload, question: true)
+            }
+            NotificationCenter.default.post(name: .pendingItemsMayHaveChanged, object: profile.id)
         case .none:
             break
         }
     }
 
     /// "Already handled": a local notification whose tap opens the session.
-    private func postAlreadyHandled(_ payload: PushPayload) async {
+    private func postAlreadyHandled(_ payload: PushPayload, question: Bool) async {
         let content = UNMutableNotificationContent()
-        content.title = "Already handled"
-        content.body = "That permission request was answered elsewhere or has ended. Tap to open the session."
+        content.title = String(localized: "Already handled")
+        content.body = question
+            ? String(localized: "That question was answered elsewhere or has ended. Tap to open the session.")
+            : String(localized: "That permission request was answered elsewhere or has ended. Tap to open the session.")
         content.categoryIdentifier = PushCategory.session
         if let thread = payload.threadID { content.threadIdentifier = thread }
         content.userInfo = payload.routingUserInfo.merging(["kind": "already_handled"]) { _, new in new }
@@ -289,6 +324,17 @@ final class PushRegistration {
     }
 
     // MARK: - Categories
+
+    /// Register the fixed categories, keeping the per-question ones the
+    /// notification service extension added (`setNotificationCategories`
+    /// replaces the whole set).
+    private func registerCategories() {
+        let center = self.center
+        Task {
+            let existing = await center.notificationCategories()
+            center.setNotificationCategories(QuestionCategory.preserving(existing, fixed: Self.categories))
+        }
+    }
 
     static var categories: Set<UNNotificationCategory> {
         let open = UNNotificationAction(identifier: PushActionID.open, title: "Open", options: [.foreground],
@@ -306,6 +352,10 @@ final class PushRegistration {
             UNNotificationCategory(identifier: PushCategory.permission, actions: [approve, open],
                                    intentIdentifiers: [], options: []),
             UNNotificationCategory(identifier: PushCategory.session, actions: [open],
+                                   intentIdentifiers: [], options: []),
+            // Without answer buttons (several questions, multiple choice, free
+            // text, or no extension): Open.
+            UNNotificationCategory(identifier: PushCategory.question, actions: [open],
                                    intentIdentifiers: [], options: []),
         ]
     }

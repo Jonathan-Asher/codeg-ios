@@ -312,7 +312,7 @@ struct SearchView: View {
             async let folders = client.listFolders()
             let (loaded, loadedFolders) = try await (matches, folders)
             guard !Task.isCancelled else { return }
-            results = loaded.sorted { $0.updatedAt > $1.updatedAt }
+            results = loaded.sorted { $0.recency > $1.recency }
             folderNames = Dictionary(loadedFolders.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
             hasSearched = true
         } catch is CancellationError {

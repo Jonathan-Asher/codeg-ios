@@ -52,19 +52,20 @@ final class ActivityModel {
     /// ``ConversationSummary/isRunningForLists``.
     var running: [ConversationSummary] {
         conversations.filter { $0.isRunningForLists }
-            .sorted { $0.updatedAt > $1.updatedAt }
+            .sorted { $0.recency > $1.recency }
     }
 
-    /// Non-running sessions touched in the last 24 hours, most recent first.
+    /// Non-running sessions touched or opened in the last 24 hours, most
+    /// recent first (``ConversationSummary/recency``).
     /// Sessions of archived folders are left out (see ``FolderArchive``); a
     /// running one still shows in ``running``.
     var recent: [ConversationSummary] {
         let cutoff = Self.recentCutoff()
         let archived = archivedFolderIDs
         return conversations.filter {
-            !$0.isRunningForLists && $0.updatedAt >= cutoff && !archived.contains($0.folderId)
+            !$0.isRunningForLists && $0.recency >= cutoff && !archived.contains($0.folderId)
         }
-        .sorted { $0.updatedAt > $1.updatedAt }
+        .sorted { $0.recency > $1.recency }
     }
 
     /// Non-running sessions last touched before the last 24 hours, most
@@ -74,9 +75,9 @@ final class ActivityModel {
         let cutoff = Self.recentCutoff()
         let archived = archivedFolderIDs
         return conversations.filter {
-            !$0.isRunningForLists && $0.updatedAt < cutoff && !archived.contains($0.folderId)
+            !$0.isRunningForLists && $0.recency < cutoff && !archived.contains($0.folderId)
         }
-        .sorted { $0.updatedAt > $1.updatedAt }
+        .sorted { $0.recency > $1.recency }
     }
 
     /// How many of `earlier` Activity shows: none until asked, then a page
@@ -175,7 +176,7 @@ final class ActivityModel {
         conversations.filter {
             FolderVisibility.mergedFolderId($0.folderId, childToParent: childToParent) == folderID
         }
-        .sorted { $0.updatedAt > $1.updatedAt }
+        .sorted { $0.recency > $1.recency }
     }
 
     // MARK: - Lifecycle
