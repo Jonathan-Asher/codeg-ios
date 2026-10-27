@@ -176,10 +176,43 @@ final class AppModel {
         case .project:
             sidebarSection = .projects
             if contentPath.last != route { contentPath.append(route) }
-        case .sessionGroup:
+        case .sessionGroup, .search:
             sidebarSection = .chats
             if contentPath.last != route { contentPath.append(route) }
         }
+    }
+
+    // MARK: - Search
+
+    /// Words the Search tab searches for next (the Chats filter's "Search
+    /// messages for …"), until it takes them.
+    private(set) var searchRequest: SearchRequest?
+    @ObservationIgnored private var searchRequestCount = 0
+
+    /// Search the server for `query`: the Search tab with it (iPhone), or the
+    /// search pushed in the content column (iPad, which has no Search tab).
+    func openSearch(query: String) {
+        guard isCompact else {
+            open(.search(query))
+            return
+        }
+        searchRequestCount += 1
+        searchRequest = SearchRequest(id: searchRequestCount, query: query)
+        // The search itself, not a session left open on the tab.
+        paths[.search] = []
+        selectedTab = .search
+    }
+
+    /// The Search tab took `request`.
+    func searchRequestHandled(_ request: SearchRequest) {
+        if searchRequest == request { searchRequest = nil }
+    }
+
+    /// A message search hit: its session, opened at that message (the
+    /// match lit for a moment), like any session from the list it is in.
+    func openMessage(conversationID: Int, jump: TranscriptJumpRequest) {
+        sessions.requestOpen(conversationID: conversationID, at: jump)
+        open(.conversation(conversationID))
     }
 
     // MARK: - Layout
@@ -213,7 +246,7 @@ final class AppModel {
                 switch stack[sessionIndex] {
                 case .conversation(let id): selectedConversationID = id
                 case .newSession(let request): pendingNewSession = request
-                case .project, .sessionGroup: break
+                case .project, .sessionGroup, .search: break
                 }
             }
         }

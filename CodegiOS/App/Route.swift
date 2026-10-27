@@ -36,12 +36,16 @@ enum Route: Hashable {
     /// from its card. Pushed rather than presented, so Back from a session
     /// opened in it returns to it.
     case sessionGroup(SessionGroup)
+    /// The server search with these words, pushed in the iPad's content
+    /// column from the Chats filter ("Search messages for …"); the iPhone
+    /// has the Search tab for it.
+    case search(String)
 
     /// A session screen (an existing conversation or a new task's draft).
     var isSession: Bool {
         switch self {
         case .conversation, .newSession: return true
-        case .project, .sessionGroup: return false
+        case .project, .sessionGroup, .search: return false
         }
     }
 }

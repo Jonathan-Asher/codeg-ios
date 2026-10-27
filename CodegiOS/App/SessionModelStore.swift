@@ -40,6 +40,9 @@ final class SessionModelStore {
     /// Conversations a notification or a link opened before their model was
     /// made: the model opens at the latest message.
     private var openAtLatest: Set<Int> = []
+    /// Conversations a message search hit opened before their model was
+    /// made: the model opens at that message.
+    private var openAtMessage: [Int: TranscriptJumpRequest] = [:]
     /// How long a model may go unheld before it is suspended: a screen rebuilt
     /// around it (old one gone, new one not yet on screen) holds it again
     /// well within this.
@@ -79,6 +82,7 @@ final class SessionModelStore {
             ?? SessionDetailViewModel(client: client, conversationID: conversationID, transcriptCache: transcriptCache)
         model.prime(summary: summaryLookup?(conversationID))
         if openAtLatest.remove(conversationID) != nil { model.requestOpenAtLatest(onScreen: false) }
+        if let request = openAtMessage.removeValue(forKey: conversationID) { model.requestJump(request) }
         entries[key] = Entry(model: model)
         return model
     }
@@ -86,6 +90,7 @@ final class SessionModelStore {
     /// A notification or a link opens this conversation: at its latest
     /// message, not where the reader left it. A screen showing it jumps there.
     func requestOpenAtLatest(conversationID: Int) {
+        openAtMessage.removeValue(forKey: conversationID)
         let kept = entries.filter { $0.key.target == .conversation(conversationID) }
         guard !kept.isEmpty else {
             openAtLatest.insert(conversationID)
@@ -94,6 +99,18 @@ final class SessionModelStore {
         for entry in kept.values {
             entry.model.requestOpenAtLatest(onScreen: !entry.holders.isEmpty)
         }
+    }
+
+    /// A message search hit opens this conversation at that message. A kept
+    /// model (on screen or not) goes there; otherwise the one made next does.
+    func requestOpen(conversationID: Int, at request: TranscriptJumpRequest) {
+        openAtLatest.remove(conversationID)
+        let kept = entries.filter { $0.key.target == .conversation(conversationID) }
+        guard !kept.isEmpty else {
+            openAtMessage[conversationID] = request
+            return
+        }
+        for entry in kept.values { entry.model.requestJump(request) }
     }
 
     /// The model for a new task's draft, made on first use.
@@ -192,6 +209,7 @@ final class SessionModelStore {
         }
         entries.removeAll()
         openAtLatest.removeAll()
+        openAtMessage.removeAll()
     }
 }
 

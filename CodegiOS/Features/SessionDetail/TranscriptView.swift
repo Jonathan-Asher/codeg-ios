@@ -100,6 +100,12 @@ struct TranscriptView<Header: View>: View {
     /// Where the reader is: whenever scrolling settles, and when the screen
     /// or the app goes.
     var onViewportChange: (TranscriptViewport) -> Void
+    /// A message search hit to open at. `restore` is already anchored at its
+    /// turn; this picks the turn's row that holds the searched words and
+    /// lights it for a moment once it is in place.
+    var jump: TranscriptJump?
+    /// The transcript is at the jump's row (or couldn't get there).
+    var onJumpLanded: (TranscriptJump) -> Void
     /// Where the session's paths point. With it, messages and replies that
     /// refer to media files show them as cards.
     var mediaContext: MediaPathContext?
@@ -117,6 +123,7 @@ struct TranscriptView<Header: View>: View {
          windowStart: Int? = nil, onWindowStartChange: @escaping (Int?) -> Void = { _ in },
          restore: ReadingRestore = .bottom,
          onViewportChange: @escaping (TranscriptViewport) -> Void = { _ in },
+         jump: TranscriptJump? = nil, onJumpLanded: @escaping (TranscriptJump) -> Void = { _ in },
          mediaContext: MediaPathContext? = nil, mediaPresence: MediaPresence? = nil,
          @ViewBuilder header: @escaping () -> Header) {
         self.turns = turns
@@ -136,6 +143,8 @@ struct TranscriptView<Header: View>: View {
         self.onWindowStartChange = onWindowStartChange
         self.restore = restore
         self.onViewportChange = onViewportChange
+        self.jump = jump
+        self.onJumpLanded = onJumpLanded
         self.mediaContext = mediaContext
         self.mediaPresence = mediaPresence
         self.header = header
@@ -164,6 +173,8 @@ struct TranscriptView<Header: View>: View {
     @State private var hasAppeared = false
     /// The list's collection view, for holding rows still and for positions.
     @State private var bridge = TranscriptScrollBridge()
+    /// The row a search hit opened at, lit for a moment.
+    @State private var litRowID: String?
     @Environment(\.scenePhase) private var scenePhase
 
     /// Layout changes must not be mistaken for the user scrolling into history.
@@ -454,6 +465,9 @@ struct TranscriptView<Header: View>: View {
                         startsGroup: node.startsGroup
                     ) {
                         NodeBody(node: node)
+                            .background {
+                                if litRowID == node.id { JumpHighlight() }
+                            }
                     }
                     .modifier(TimelineRowChrome())
                     // Fade newly-inserted nodes in (the optimistic user bubble on
@@ -624,11 +638,18 @@ struct TranscriptView<Header: View>: View {
         if let start = restoreWindowStart, windowStart.map({ start < $0 }) ?? true {
             onWindowStartChange(start)
         }
-        guard let target = ReadingRestore.resolve(position, rows: nodes.map { (id: $0.id, turnID: $0.turnID) }) else {
+        let shown = nodes
+        // A search hit: the row of its turn that holds the searched words,
+        // a little below the top.
+        let jumpRow = jump.flatMap { TranscriptJump.row(for: $0, in: shown) }
+        let target: (id: String, offset: Double)? = jumpRow.map { (id: $0, offset: -Double(TranscriptJump.topGap)) }
+            ?? ReadingRestore.resolve(position, rows: shown.map { (id: $0.id, turnID: $0.turnID) })
+        guard let target else {
             isRestoring = false
             setStuck(true)
             onPinnedChange(true)
             scrollToBottom(proxy)
+            if let jump { onJumpLanded(jump) }
             return
         }
         setStuck(false)
@@ -637,6 +658,7 @@ struct TranscriptView<Header: View>: View {
             isRestoring = false
             revealCheck &+= 1
             reportViewport()
+            landJump(at: jumpRow)
         }
         bridge.restore(id: target.id, offset: CGFloat(target.offset))
         Task { @MainActor in
@@ -645,6 +667,21 @@ struct TranscriptView<Header: View>: View {
             bridge.cancelRestore()
             proxy.scrollTo(target.id, anchor: .top)
             isRestoring = false
+            landJump(at: jumpRow)
+        }
+    }
+
+    /// Opened at a search hit: light its row for a moment, and let the model
+    /// forget the jump.
+    private func landJump(at row: String?) {
+        guard let jump else { return }
+        onJumpLanded(jump)
+        guard let row else { return }
+        withAnimation(.easeOut(duration: 0.2)) { litRowID = row }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1600))
+            guard litRowID == row else { return }
+            withAnimation(.easeOut(duration: 0.7)) { litRowID = nil }
         }
     }
 
@@ -673,6 +710,20 @@ struct TranscriptView<Header: View>: View {
             guard stuckToBottom, !isUserScrolling else { return }
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
         }
+    }
+}
+
+/// Behind the row a search hit opened at, for a moment: the search's
+/// highlighter colour, a little wider than the row's content.
+private struct JumpHighlight: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+            .fill(Theme.searchMatch)
+            .padding(.horizontal, -6)
+            .padding(.vertical, -3)
+            .transition(.opacity)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 

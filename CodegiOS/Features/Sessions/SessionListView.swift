@@ -48,6 +48,8 @@ struct SessionListView: View {
     /// The archived folders' cards at the bottom; closed until asked for.
     @AppStorage("codeg.chats.archivedExpanded") private var archivedExpanded = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// The server search, for the filter's "Search messages for …" row.
+    @Environment(\.openMessageSearch) private var openMessageSearch
 
     init(
         server: ServerProfile,
@@ -291,6 +293,10 @@ struct SessionListView: View {
         // large servers (matches the old flat list's virtualization).
         let matches = pinned + groups.flatMap(\.conversations) + orphans
         LazyVStack(spacing: 8) {
+            if let messageSearch {
+                SearchMessagesRow(query: searchText.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  action: messageSearch)
+            }
             ForEach(matches) { conv in
                 SessionRow(
                     conversation: conv,
@@ -306,6 +312,14 @@ struct SessionListView: View {
         .padding(.horizontal, Theme.Layout.screenHMargin)
     }
 
+    /// The filter's words searched on the server, messages too, when they
+    /// have a word long enough for message search.
+    private var messageSearch: (() -> Void)? {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let openMessageSearch, MessageSearch.canSearchMessages(query) else { return nil }
+        return { openMessageSearch(query) }
+    }
+
     @ViewBuilder
     private var emptyState: some View {
         if viewModel.error != nil {
@@ -317,7 +331,9 @@ struct SessionListView: View {
             EmptyStateView(
                 icon: "magnifyingglass",
                 title: "No Matches",
-                message: "No sessions match \"\(searchText)\"."
+                message: "No sessions match \"\(searchText)\".",
+                actionTitle: messageSearch == nil ? nil : "Search Messages",
+                action: messageSearch
             )
         } else if let onNewSession {
             EmptyStateView(

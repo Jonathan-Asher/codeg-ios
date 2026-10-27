@@ -258,6 +258,18 @@ final class SessionDetailViewModel {
     @ObservationIgnored private var restoreForScreen: ReadingRestore = .bottom
     /// The next screen opens at the latest message (a notification, a link).
     @ObservationIgnored private var openAtLatestNext = false
+    /// A message to open at (a search hit), until its turn is held.
+    @ObservationIgnored private(set) var jumpRequest: TranscriptJumpRequest?
+    /// The message the transcript opens at, once its turn is held; cleared
+    /// when the transcript has landed there.
+    private(set) var transcriptJump: TranscriptJump?
+    /// Bumped when a jump is ready: a transcript on screen is built again,
+    /// opening at it.
+    private(set) var transcriptGeneration = 0
+    /// Older turns (or what changed) are being fetched to reach the message.
+    private(set) var isFindingJumpTarget = false
+    @ObservationIgnored private var jumpTask: Task<Void, Never>?
+    @ObservationIgnored private var jumpCount = 0
     @ObservationIgnored private var positionSaveTask: Task<Void, Never>?
     /// How far the persisted transcript went (global end) when the reader
     /// last saw its end.
@@ -612,6 +624,7 @@ final class SessionDetailViewModel {
                let entry = await cache.load(serverKey: cacheServerKey, conversationID: id),
                turns.isEmpty, phase != .loaded {
                 applyCached(entry)
+                settleJump(fetchNewer: true)
                 phase = .loaded
                 openedFromCache = true
                 // Where it opens (the latest message, or where the reader
@@ -658,6 +671,7 @@ final class SessionDetailViewModel {
             // Another path (a turn reconciling, an older page) changed the
             // turns while this fetch ran: its copy is newer.
             if turnsVersion == version { adoptWindow(outcome, allowShrink: true) }
+            settleJump(fetchNewer: false)
             sessionStats = detail.sessionStats
             allFolders = folders
             folder = folders.first { $0.id == detail.summary.folderId }
@@ -820,14 +834,14 @@ final class SessionDetailViewModel {
     /// Fetch the page of turns before the held ones and put it in front. When
     /// the server's history before the window was rewritten (a compaction),
     /// the page can't join it, and the screen starts over from the end.
-    func loadOlderTurns() async {
+    func loadOlderTurns(limit: Int? = nil) async {
         guard let id = conversationID, hasOlderTurns, !isLoadingOlder else { return }
         isLoadingOlder = true
         defer { isLoadingOlder = false }
         let before = heldWindow
         do {
             let page = try await client.conversationTurnsPage(id: id, beforeIndex: before.offset,
-                                                              limit: Self.olderPageTurns)
+                                                              limit: limit ?? Self.olderPageTurns)
             // Only joins the window it was asked for.
             guard conversationID == id, turnsOffset == before.offset, windowPrefixHash == before.prefixHash
             else { return }
@@ -3398,6 +3412,7 @@ final class SessionDetailViewModel {
 
     /// Tear down all live work — call from `.onDisappear` / deinit paths.
     func teardown() {
+        cancelJump()
         isOnScreen = false
         unsentResendTask?.cancel()
         unsentResendTask = nil
@@ -3464,6 +3479,8 @@ final class SessionDetailViewModel {
         // The history was rewritten since: the saved row's id is another message now.
         if case .anchored(let saved) = decision, !ReadingRestore.isStillThere(saved, in: turns) { decision = .bottom }
         if case .anchored(let saved) = decision { seenTurnEnd = saved.seenTurnEnd }
+        // A search hit opens at its message.
+        if let jump = transcriptJump { decision = .anchored(jump.position(seenTurnEnd: seenTurnEnd)) }
         restoreForScreen = decision
         return decision
     }
@@ -3472,11 +3489,107 @@ final class SessionDetailViewModel {
     /// session. A screen showing it now jumps there; otherwise the next one
     /// opens there.
     func requestOpenAtLatest(onScreen: Bool) {
+        cancelJump()
         if onScreen {
             userTappedScrollToBottom()
         } else {
             openAtLatestNext = true
         }
+    }
+
+    // MARK: - Opening at a message (search)
+
+    /// Open at a message search hit's turn: now when the turn is held (a
+    /// kept session, the saved transcript), else once older turns, or what
+    /// changed since, are fetched. A turn that isn't in the transcript (any
+    /// more) leaves the session opening as it would.
+    func requestJump(_ request: TranscriptJumpRequest) {
+        cancelJump()
+        openAtLatestNext = false
+        jumpRequest = request
+        if applyJumpIfHeld() { return }
+        // Not loaded yet: the load settles it.
+        guard phase == .loaded else { return }
+        findJumpTarget(fetchNewer: true)
+    }
+
+    /// The load's hook, once there are turns: the saved transcript (which
+    /// may be behind the server, so what changed is fetched too) or the
+    /// server's window, just adopted.
+    private func settleJump(fetchNewer: Bool) {
+        guard jumpRequest != nil, jumpTask == nil else { return }
+        if applyJumpIfHeld() { return }
+        findJumpTarget(fetchNewer: fetchNewer)
+    }
+
+    /// Fetch what brings the requested turn in: what changed since the held
+    /// window when it may be newer, and older pages when it is further back.
+    /// The transcript waits behind "Finding the message…" meanwhile.
+    private func findJumpTarget(fetchNewer: Bool) {
+        guard let request = jumpRequest, let id = conversationID else { return cancelJump() }
+        isFindingJumpTarget = true
+        jumpTask = Task { [weak self] in
+            await self?.bringIn(request, id: id, fetchNewer: fetchNewer)
+        }
+    }
+
+    private func bringIn(_ request: TranscriptJumpRequest, id: Int, fetchNewer: Bool) async {
+        if fetchNewer, request.turnIndex >= heldEnd {
+            let version = turnsVersion
+            if let outcome = try? await fetchTranscript(id: id, overlap: TranscriptSync.liveOverlap),
+               !Task.isCancelled, turnsVersion == version {
+                adoptWindow(outcome, allowShrink: false)
+            }
+        }
+        var pages = 0
+        while !Task.isCancelled, request.turnIndex < turnsOffset, hasOlderTurns, pages < TranscriptJump.maxPages {
+            let before = turnsOffset
+            await loadOlderTurns(limit: TranscriptJump.pageLimit(target: request.turnIndex, offset: turnsOffset,
+                                                                 pageTurns: Self.olderPageTurns))
+            guard turnsOffset < before else { break }
+            pages += 1
+        }
+        guard !Task.isCancelled, jumpRequest == request else { return }
+        jumpTask = nil
+        if !applyJumpIfHeld() { cancelJump() }
+    }
+
+    /// The requested turn is held: the transcript opens at it.
+    @discardableResult
+    private func applyJumpIfHeld() -> Bool {
+        guard let request = jumpRequest,
+              let turnID = TranscriptJump.rowTurnID(forTurnAt: request.turnIndex, in: turns, offset: turnsOffset)
+        else { return false }
+        jumpTask?.cancel()
+        jumpTask = nil
+        jumpRequest = nil
+        isFindingJumpTarget = false
+        jumpCount &+= 1
+        let jump = TranscriptJump(token: jumpCount, turnIndex: request.turnIndex, turnID: turnID, terms: request.terms)
+        // What arrived since the reader last saw the end is new, as when the
+        // session opens where they left it; with nothing saved, nothing is.
+        if readingPosition == nil, let id = conversationID {
+            readingPosition = readingPositions.position(serverKey: cacheServerKey, conversationID: id)
+        }
+        seenTurnEnd = max(seenTurnEnd, readingPosition?.seenTurnEnd ?? heldEnd)
+        transcriptJump = jump
+        // A screen already showing the session opens again, at the message.
+        restoreForScreen = .anchored(jump.position(seenTurnEnd: seenTurnEnd))
+        transcriptGeneration &+= 1
+        return true
+    }
+
+    /// The transcript is at the jump's message (or gave up on it).
+    func jumpLanded(_ jump: TranscriptJump) {
+        if transcriptJump?.token == jump.token { transcriptJump = nil }
+    }
+
+    private func cancelJump() {
+        jumpTask?.cancel()
+        jumpTask = nil
+        jumpRequest = nil
+        transcriptJump = nil
+        if isFindingJumpTarget { isFindingJumpTarget = false }
     }
 
     /// The transcript says where the reader is (scrolling settled, the screen
