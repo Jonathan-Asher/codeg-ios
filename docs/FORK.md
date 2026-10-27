@@ -103,7 +103,7 @@ branch `fork/solution-plan`). `App/PushRegistration.swift` does the work:
   errors) through `list_push_devices` / `update_push_device_prefs`, plus "Send
   test push" (`send_test_push`).
 
-### Waiting for you, reminders and answers from a notification (1.3.26)
+### Waiting for you, reminders and answers from a notification (1.3.27)
 
 codeg keeps one list of everything waiting on the user across a server's
 sessions: permission requests, questions, plans waiting for approval, and the
@@ -158,7 +158,7 @@ min, 30 min, 2 h and then every 4 h until the item is answered (codeg
   declined: false}` to the push's server, with the token the app already
   has. An answer that fails (answered on the desktop, the turn ended) posts
   "Already handled", whose tap opens the session.
-- **Reminders** read "Still waiting · reminder 2" as the subtitle of a
+- **Reminders** read "Still waiting · 2nd reminder" as the subtitle of a
   question reminder (the extension adds it from `reminder` / `attempt`); the
   server's body already says how long the agent has waited.
 - **Payload.** `PushPayload` reads `pending_id`, `pending_kind`,

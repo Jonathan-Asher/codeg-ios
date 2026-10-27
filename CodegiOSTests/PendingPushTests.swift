@@ -184,6 +184,10 @@ final class PendingPushTests: XCTestCase {
         var freeText = one
         freeText.options = []
         XCTAssertNil(QuestionCategory.buttonLabels(for: freeText))
+        let secret = PushQuestion(["question_id": "q", "item_id": "i", "options": ["Yes", "No"],
+                                   "answerable": NSNumber(value: true), "secret": NSNumber(value: true)] as [AnyHashable: Any])
+        XCTAssertEqual(secret?.secret, true)
+        XCTAssertNil(secret.flatMap(QuestionCategory.buttonLabels(for:)), "a secret is answered in the session")
     }
 
     func testTheCategoryIDIsStablePerLabels() {
@@ -240,6 +244,10 @@ final class PendingPushTests: XCTestCase {
         let text = QuestionPushWording.reminderSubtitle(attempt: 2)
         XCTAssertTrue(text.contains("2"), text)
         XCTAssertNotEqual(text, QuestionPushWording.reminderSubtitle(attempt: 3))
+        if Bundle.codegApp.preferredLocalizations.first == "en" {
+            XCTAssertEqual(text, "Still waiting · 2nd reminder")
+            XCTAssertEqual(QuestionPushWording.reminderSubtitle(attempt: 1), "Still waiting · 1st reminder")
+        }
     }
 
     // MARK: - Foreground

@@ -111,6 +111,11 @@ final class PendingItemsTests: XCTestCase {
         var long = base
         long.options = [PendingOption(id: "x", label: String(repeating: "x", count: 61))]
         XCTAssertNil(long.quickAnswers)
+        let secretJSON = Self.question.replacingOccurrences(of: "\"count\": 1}", with: "\"count\": 1, \"secret\": true}")
+        let secret = try decode(Self.snapshotJSON([secretJSON])).items[0]
+        XCTAssertEqual(secret.question?.secret, true)
+        XCTAssertNil(secret.quickAnswers, "a secret is answered in the session")
+        XCTAssertEqual(base.question?.secret, false)
     }
 
     func testOneOddItemDoesNotHideTheRest() throws {

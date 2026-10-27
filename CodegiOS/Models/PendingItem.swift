@@ -26,14 +26,18 @@ struct PendingQuestionDetail: Decodable, Hashable, Sendable {
     var multiSelect: Bool = false
     /// How many questions the set holds.
     var count: Int = 1
+    /// The answer is a secret the session's card masks (present only when
+    /// true): never asked for here or in a notification.
+    var secret: Bool = false
 
-    private enum CodingKeys: String, CodingKey { case itemId, header, multiSelect, count }
+    private enum CodingKeys: String, CodingKey { case itemId, header, multiSelect, count, secret }
 
-    init(itemId: String, header: String = "", multiSelect: Bool = false, count: Int = 1) {
+    init(itemId: String, header: String = "", multiSelect: Bool = false, count: Int = 1, secret: Bool = false) {
         self.itemId = itemId
         self.header = header
         self.multiSelect = multiSelect
         self.count = count
+        self.secret = secret
     }
 
     init(from decoder: Decoder) throws {
@@ -42,6 +46,7 @@ struct PendingQuestionDetail: Decodable, Hashable, Sendable {
         header = (try? c.decodeIfPresent(String.self, forKey: .header)) ?? ""
         multiSelect = (try? c.decodeIfPresent(Bool.self, forKey: .multiSelect)) ?? false
         count = (try? c.decodeIfPresent(Int.self, forKey: .count)) ?? 1
+        secret = (try? c.decodeIfPresent(Bool.self, forKey: .secret)) ?? false
     }
 }
 
@@ -136,9 +141,10 @@ struct PendingItem: Decodable, Hashable, Sendable, Identifiable {
 
     /// The labels to answer with right in the list: one single-choice question
     /// with a few short options. Nil for anything else (a permission, a plan,
-    /// several questions, multiple choice, free text), which opens instead.
+    /// several questions, multiple choice, free text, a secret), which opens
+    /// instead.
     var quickAnswers: [String]? {
-        guard source == "question", let question, !question.multiSelect, question.count <= 1,
+        guard source == "question", let question, !question.secret, !question.multiSelect, question.count <= 1,
               !connectionId.isEmpty, !requestId.isEmpty else { return nil }
         let labels = options.map(\.label)
         guard !labels.isEmpty, labels.count <= Self.maxQuickAnswers,

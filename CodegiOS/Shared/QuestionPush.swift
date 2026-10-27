@@ -48,9 +48,12 @@ struct PushQuestion: Equatable, Sendable {
     var count: Int
     /// One single-choice question whose labels all fit a button.
     var answerable: Bool
+    /// The answer is a secret (`secret` on the pending item; a push may carry
+    /// it too): no buttons, the session's card answers it.
+    var secret: Bool
 
     init(questionID: String, itemID: String, text: String = "", header: String = "", multiSelect: Bool = false,
-         options: [String] = [], count: Int = 1, answerable: Bool = false) {
+         options: [String] = [], count: Int = 1, answerable: Bool = false, secret: Bool = false) {
         self.questionID = questionID
         self.itemID = itemID
         self.text = text
@@ -59,6 +62,7 @@ struct PushQuestion: Equatable, Sendable {
         self.options = options
         self.count = count
         self.answerable = answerable
+        self.secret = secret
     }
 
     /// Nil when the object is missing or has no ids.
@@ -74,6 +78,7 @@ struct PushQuestion: Equatable, Sendable {
         options = (dict["options"] as? [Any])?.compactMap { PushValue.string($0) } ?? []
         count = PushValue.int(dict["count"]) ?? 1
         answerable = PushValue.bool(dict["answerable"]) ?? false
+        secret = PushValue.bool(dict["secret"]) ?? false
     }
 }
 
@@ -97,10 +102,10 @@ enum QuestionCategory {
     static let keep = 24
 
     /// The labels to offer as buttons, or nil when the question gets Open
-    /// only: several questions, multiple choice, free text, or too many
-    /// options.
+    /// only: several questions, multiple choice, free text, too many
+    /// options, or a secret.
     static func buttonLabels(for question: PushQuestion) -> [String]? {
-        guard question.answerable, !question.multiSelect, question.count <= 1,
+        guard question.answerable, !question.secret, !question.multiSelect, question.count <= 1,
               !question.options.isEmpty, question.options.count <= maxButtons,
               !question.options.contains(where: { $0.trimmingCharacters(in: .whitespaces).isEmpty })
         else { return nil }
@@ -172,9 +177,18 @@ enum QuestionCategory {
 
 /// Wording the extension adds to a question push.
 enum QuestionPushWording {
-    /// The subtitle of the n-th reminder: "Still waiting · reminder 2".
+    /// The subtitle of the n-th reminder: "Still waiting · 2nd reminder".
     static func reminderSubtitle(attempt: Int) -> String {
-        String(localized: "Still waiting · reminder \(attempt)", bundle: .codegApp)
+        let ordinal = ordinal(attempt)
+        return String(localized: "Still waiting · \(ordinal) reminder", bundle: .codegApp)
+    }
+
+    /// "2nd", in the language the app's strings are shown in.
+    static func ordinal(_ number: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .ordinal
+        formatter.locale = Locale(identifier: Bundle.codegApp.preferredLocalizations.first ?? "en")
+        return formatter.string(from: NSNumber(value: number)) ?? String(number)
     }
 
     static var openTitle: String { String(localized: "Open", bundle: .codegApp) }
