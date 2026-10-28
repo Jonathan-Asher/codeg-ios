@@ -277,16 +277,21 @@ final class PushRegistration {
             PushRouter.shared.open(serverProfileID: profile.id, conversationID: conversationID, folderID: folderID)
             // Opening a critical session acknowledges its alert, as on the desktop.
             if payload.kind == "critical" {
-                try? await client?.ackCriticalSession(conversationId: conversationID)
+                try? await send { try await client?.ackCriticalSession(conversationId: conversationID) }
             }
         case .ack(let conversationID):
-            try? await client?.ackCriticalSession(conversationId: conversationID)
+            try? await send { try await client?.ackCriticalSession(conversationId: conversationID) }
         case .snooze(let conversationID, let minutes):
-            try? await client?.snoozeCriticalSession(conversationId: conversationID, minutes: minutes)
+            try? await send {
+                try await client?.snoozeCriticalSession(conversationId: conversationID, minutes: minutes)
+            }
         case .approve(let connectionID, let requestID, let optionID):
             do {
                 guard let client else { throw APIError.unauthorized }
-                try await client.respondPermission(connectionId: connectionID, requestId: requestID, optionId: optionID)
+                try await send {
+                    try await client.respondPermission(connectionId: connectionID, requestId: requestID,
+                                                       optionId: optionID)
+                }
             } catch {
                 // Answered elsewhere, or its connection is gone.
                 await postAlreadyHandled(payload, question: false)
@@ -294,11 +299,14 @@ final class PushRegistration {
         case .answer(let connectionID, let questionID, let itemID, let label):
             do {
                 guard let client else { throw APIError.unauthorized }
-                try await client.answerQuestion(connectionId: connectionID, questionId: questionID,
-                                                answer: PushRouting.answer(itemID: itemID, label: label))
+                try await send {
+                    try await client.answerQuestion(connectionId: connectionID, questionId: questionID,
+                                                    answer: PushRouting.answer(itemID: itemID, label: label))
+                }
                 log.info("Answered a question from a notification")
             } catch {
-                // Answered on the desktop or another device, or the turn ended.
+                // Answered on the desktop or another device, the turn ended,
+                // or the server didn't answer in time.
                 log.error("Answering from a notification failed: \(error.localizedDescription, privacy: .public)")
                 await postAlreadyHandled(payload, question: true)
             }
@@ -306,6 +314,17 @@ final class PushRegistration {
         case .none:
             break
         }
+    }
+
+    /// A network call for a notification action. It holds a background task,
+    /// so it still goes out when iOS launched the app in the background just
+    /// for the button, and it is given up after ``NotificationTimeout/action``
+    /// (throwing ``NotificationTimeout/Expired``), so the system's completion
+    /// handler is called while the action still has time.
+    private func send(_ call: @escaping @MainActor () async throws -> Void) async throws {
+        let background = BackgroundTime(name: "Notification action")
+        defer { background.end() }
+        try await NotificationTimeout.run(within: NotificationTimeout.action, call)
     }
 
     /// "Already handled": a local notification whose tap opens the session.
@@ -463,20 +482,125 @@ final class PushRouter {
 }
 
 /// `UNUserNotificationCenterDelegate`, kept off the main actor so its
-/// requirements match whatever isolation the SDK declares; it reads the
-/// payload, then hops to `PushRegistration` on the main actor.
+/// requirements match whatever isolation the SDK declares. It implements the
+/// completion-handler requirements, not their async forms: Swift's thunk for
+/// an async one calls the system's completion handler from the cooperative
+/// pool, and iOS 27.2 ends the app ("Call must be made on main thread") when a
+/// response's completion comes off the main thread. Each method reads the
+/// payload where iOS calls it, then does the work on the main actor
+/// (``PushRegistration``) and calls the completion handler there, once.
 final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
-    func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        let payload = PushPayload(userInfo: notification.request.content.userInfo)
-        return await PushRegistration.shared.presentationOptions(for: payload)
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        Self.willPresent(PushPayload(userInfo: notification.request.content.userInfo),
+                         options: { PushRegistration.shared.presentationOptions(for: $0) },
+                         completion: completionHandler)
     }
 
-    func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                didReceive response: UNNotificationResponse) async {
-        let actionID = response.actionIdentifier
-        guard let payload = PushPayload(userInfo: response.notification.request.content.userInfo) else { return }
-        await PushRegistration.shared.handle(actionIdentifier: actionID, payload: payload)
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        Self.didReceive(actionIdentifier: response.actionIdentifier,
+                        payload: PushPayload(userInfo: response.notification.request.content.userInfo),
+                        handle: { await PushRegistration.shared.handle(actionIdentifier: $0, payload: $1) },
+                        completion: completionHandler)
+    }
+
+    /// A push arriving in the foreground: `options` on the main actor, handed
+    /// to `completion` there.
+    static func willPresent(_ payload: PushPayload?,
+                            options: @escaping @MainActor (PushPayload?) -> UNNotificationPresentationOptions,
+                            completion: @escaping (UNNotificationPresentationOptions) -> Void) {
+        Task { @MainActor in
+            completion(options(payload))
+        }
+    }
+
+    /// A tap or an action button: `handle` on the main actor, then
+    /// `completion` there, once, wherever `handle` awaits in between. Without
+    /// a payload there is nothing to handle, but iOS still gets its answer.
+    static func didReceive(actionIdentifier: String, payload: PushPayload?,
+                           handle: @escaping @MainActor (String, PushPayload) async -> Void,
+                           completion: @escaping () -> Void) {
+        Task { @MainActor in
+            if let payload { await handle(actionIdentifier, payload) }
+            completion()
+        }
+    }
+}
+
+/// How long a network call made for a notification action may take: iOS
+/// gives an action handled in the background limited time, and the
+/// completion handler has to be called within it.
+enum NotificationTimeout {
+    static let action: Duration = .seconds(8)
+
+    /// The call ran out of time.
+    struct Expired: LocalizedError {
+        var errorDescription: String? { "Timed out" }
+    }
+
+    /// `operation`'s result, or ``Expired`` once `timeout` passes first. The
+    /// operation is then cancelled but not waited for, so one that ignores
+    /// cancellation can't hold the caller past the deadline; what it returns
+    /// after that is dropped.
+    @MainActor
+    static func run<T>(within timeout: Duration,
+                       _ operation: @escaping @MainActor () async throws -> T) async throws -> T {
+        let race = Race()
+        return try await withCheckedThrowingContinuation { continuation in
+            race.work = Task { @MainActor in
+                let result: Result<T, Error>
+                do { result = .success(try await operation()) } catch { result = .failure(error) }
+                guard race.settle() else { return }
+                race.timer?.cancel()
+                continuation.resume(with: result)
+            }
+            race.timer = Task { @MainActor in
+                try? await Task.sleep(for: timeout)
+                guard race.settle() else { return }
+                race.work?.cancel()
+                continuation.resume(throwing: Expired())
+            }
+        }
+    }
+
+    /// The two sides of ``run(within:_:)``; the first to settle resumes the
+    /// caller. Both run on the main actor, so neither can interleave with the
+    /// other between checking and settling.
+    @MainActor
+    private final class Race {
+        var work: Task<Void, Never>?
+        var timer: Task<Void, Never>?
+        private var settled = false
+
+        /// True for the first caller only.
+        func settle() -> Bool {
+            defer { settled = true }
+            return !settled
+        }
+    }
+}
+
+/// A `beginBackgroundTask` assertion, ended once: by ``end()``, or when iOS
+/// says the time is up.
+@MainActor
+private final class BackgroundTime {
+    private var task = UIBackgroundTaskIdentifier.invalid
+
+    init(name: String) {
+        task = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+
+    func end() {
+        guard task != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(task)
+        task = .invalid
     }
 }
 

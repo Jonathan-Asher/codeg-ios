@@ -432,6 +432,16 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- Tapping a notification, or one of its buttons, no longer ends the app
+  (1.3.28). The crash reports from 1.3.27 were all this one: iOS 27.2 wants
+  a notification response reported as handled on the main thread, and
+  1.3.27 reported it from a background thread. The app now does the work on
+  the main thread and reports there, once. A button that reaches the server
+  (an answer, Approve, Acknowledge, Snooze) gives up after 8 seconds, so iOS
+  hears back in time, and an answer that didn't go through posts "Already
+  handled" as before. The call holds background time, so it still goes out
+  when iOS opened the app in the background just for the button.
+
 - An H.264 `.mp4` over the size limit (one from Files, say) couldn't be
   compressed (1.3.22): its compressed copy was written over the original,
   so the export failed. Compressed copies now go to a folder of their own.
