@@ -52,6 +52,9 @@ struct CodeBlockView: View {
     var collapsedLineLimit: Int = 20
 
     @State private var expanded = false
+    /// Where the screen offers Select Text, a long press on the block has
+    /// Copy and Select Text (the whole code, also when collapsed).
+    @Environment(\.selectText) private var selectText
 
     private var lines: [Substring] { trimmedTrailing.split(separator: "\n", omittingEmptySubsequences: false) }
     private var isLong: Bool { lines.count > collapsedLineLimit }
@@ -74,7 +77,7 @@ struct CodeBlockView: View {
                     .font(Theme.Typography.code)
                     .lineSpacing(Theme.Typography.codeLineSpacing)
                     .foregroundStyle(Theme.textSecondary)
-                    .textSelection(.enabled)
+                    .modifier(SelectableText(enabled: selectText == nil))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
             }
@@ -82,6 +85,7 @@ struct CodeBlockView: View {
         }
         .background(Self.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
         .hairlineBorder(Theme.Radius.sm)
+        .selectTextMenu(.code(trimmedTrailing), enabled: selectText != nil)
         // Code reads left to right in every language, also inside a
         // right-to-left reply.
         .environment(\.layoutDirection, .leftToRight)

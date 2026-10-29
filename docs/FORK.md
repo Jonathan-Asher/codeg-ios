@@ -1861,6 +1861,88 @@ now also searches what the messages say, with the index codeg's desktop ⌘K
   older turn (one page), a hit asked for before the load, a turn that isn't
   there, a notification winning, and the row picked in a reply.
 
+### Selecting text (1.3.29)
+
+`Features/SessionDetail/Rendering/SelectText.swift` (the menu items, the
+presenter and the sheet), `Rendering/SelectTextRenderer.swift` (the text the
+sheet shows), and the long-press menus of `MarkdownContent`, `CodeBlockView`,
+`DiffView`, `FileBodyView`, the tool error output and the message cards.
+
+- **Why a sheet.** CI builds with Xcode 26.6 (the iOS 26 SDK). There SwiftUI's
+  `Text` with `.textSelection(.enabled)` selects only the whole text on
+  iPhone: a long press offers Copy and Share of all of it, never a range.
+  A message is also several `Text`s (a paragraph, a list item, a run of
+  lines in one direction each), so not even that Copy covers a message.
+  iOS 27 reportedly adds range selection to `Text`, but CI doesn't build
+  with its SDK, and a selection could still not cross from one `Text` to
+  the next. So, as in other chat apps, a long press offers **Select
+  Text**, which opens the content in a read-only `UITextView`
+  (`SelectTextView`): drag handles, Select All, Copy, Share, Look Up and
+  Translate come from the system's edit menu, and a selection runs across
+  paragraphs in either direction. **Done** closes it; on iPad it is a page
+  sheet.
+- **Where.** Your messages: Copy, Select Text, Edit Message. The agent's
+  text (each part of a reply between tool calls), its reasoning, a plan, a
+  sub-agent's result and a tool's Markdown output: Copy and Select Text,
+  once the text has stopped streaming. The reply's footer: Copy, Select
+  Text and Fork from Here, for the whole reply. Code blocks (also a shell
+  command or JSON in a tool card, shown whole even when folded), a file a
+  tool read, an edit's diff (a line per row with its sign) and a tool's
+  error output: Copy and Select Text. The one-tap Copy buttons stay. These
+  views drop their own `.textSelection` where the menu is offered, since a
+  `Text`'s own long press would take the gesture; the menus are long-press
+  only, so scrolling and taps (links, expanding a card) are as before.
+- **Only in the conversation.** `selectTextSheet()` on the session screen's
+  transcript puts `SelectTextAction` in the environment and presents the
+  sheet. Without it (Settings' skill and expert views, the sheets the
+  session screen presents) nothing changes: no menu, and each text keeps its
+  own Copy. The presenter holds what is shown, so a reply that finishes, or
+  a row that scrolls away, doesn't close the sheet.
+- **Rendering** (`SelectTextRenderer`). Agent text goes through the same
+  block parser as the transcript (`MarkdownContent.parseBlocks`); your
+  messages through `MarkdownText.runs`, inline Markdown in runs of lines,
+  as on the card (a line starting with `-` stays as typed). The fonts are
+  `Theme.Typography` at the current text size: body, headings at title2,
+  title3, headline and subheadline with their weights, bold, italic,
+  strikethrough, inline code in monospace at the body size, code blocks at
+  13 pt monospaced. Lists keep their markers (`•`, `1.`) in the tertiary
+  colour with wrapped lines hung under the item's text; quotes are inset and
+  italic in the secondary colour; a table is a row per line with its cells
+  at tab stops; a rule is the gap it leaves. Each paragraph, list item,
+  heading and table row gets its own base writing direction and alignment
+  from `TextDirection` (one without letters takes the whole text's), so
+  Hebrew sits on the right and code is always left to right. A block's own
+  lines are paragraphs of their own with only the last carrying the gap
+  to the next block. Links keep their targets and the accent colour; a tap
+  closes the sheet, then opens the link with the transcript's own action,
+  so a link to a session's media opens it in the app.
+- **Strings.** "Select Text" in the catalog with zh-Hans; Copy and Done
+  were there.
+- **Tests.** `CodegiOSTests/SelectTextTests.swift`: headings' sizes and
+  weights, lists' markers, indents and gaps, links, inline and fenced code,
+  bold, italic and strikethrough, each paragraph's direction in a mixed
+  Hebrew and English reply, code in a right-to-left reply, your message's
+  runs, verbatim code, a diff as text, a link opening only after the sheet
+  has closed, and a screenshot of the sheet with a mixed reply and a
+  selection across both directions (`select-text-sheet-*.png` with the
+  compose screenshots).
+
+### A reply split by a mid-turn message, after a reconnect (1.3.29)
+
+When the app attaches to a running turn (opening the session, coming back
+to the app, a reconnect), the live turn rebuilt from the server's snapshot
+holds the whole reply, and the transcript hides the copy the agent has
+saved so far. That copy was taken to start after the last user turn, but a
+message sent into the turn is a user turn of its own in the middle of the
+reply, so the reply's first half showed twice until the turn ended. The
+transcript now anchors on the turn's prompt as the server marks it
+(`in_flight_user_turn_id`, kept by the model as `inFlightPromptID` from
+every transcript it adopts), as codeg web does, both for what it hides and
+for where its window counts back from
+(`TranscriptTimeline.inFlightPromptIndex`). Without the mark, or with one
+for a turn not held, the last user turn is the anchor as before. Test:
+`InsertPlacementTests.testAReattachedReplySplitByAMessageShowsItsFirstHalfOnce`.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one

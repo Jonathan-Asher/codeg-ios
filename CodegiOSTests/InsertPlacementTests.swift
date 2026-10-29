@@ -542,6 +542,43 @@ final class SteeredMessageTests: XCTestCase {
         XCTAssertEqual(live.snapshotAsMessageTurn().blocks, [.text("Started the build."), .text("Shipping now.")])
     }
 
+    func testAReattachedReplySplitByAMessageShowsItsFirstHalfOnce() {
+        // What the agent has persisted of the running turn: the prompt, the
+        // reply's first half, the message sent into the turn and the start of
+        // the second half. The live turn rebuilt on reattach holds the whole
+        // reply, so the persisted copy of all of it hides, not only what
+        // follows the message.
+        let at = Date()
+        let turns = [
+            MessageTurn(id: "u0", role: .user, blocks: [.text("Earlier")], timestamp: at),
+            MessageTurn(id: "a0", role: .assistant, blocks: [.text("Earlier reply.")], timestamp: at),
+            MessageTurn(id: "u1", role: .user, blocks: [.text("Build it")], timestamp: at),
+            MessageTurn(id: "a1", role: .assistant, blocks: [.text("Started the build.")], timestamp: at),
+            MessageTurn(id: "u2", role: .user, blocks: [.text("Ship it")], timestamp: at),
+            MessageTurn(id: "a2", role: .assistant, blocks: [.text("Shipping")], timestamp: at),
+        ]
+        func shown(promptID: String?) -> [String] {
+            TranscriptTimeline.buildPersisted(turns: turns, pending: [], agent: .claudeCode, suppressInFlight: true,
+                                              inFlightPromptID: promptID,
+                                              liveCoverage: .init(toolIDs: [], imageCount: 0))
+                .compactMap { node in
+                    switch node.content {
+                    case .user(let turn): return "you: " + turn.id
+                    case .assistantText(let text): return "agent: " + text
+                    default: return nil
+                    }
+                }
+        }
+        XCTAssertEqual(shown(promptID: "u1"), ["you: u0", "agent: Earlier reply.", "you: u1", "you: u2"])
+        XCTAssertEqual(TranscriptTimeline.inFlightPromptIndex(in: turns, promptID: "u1"), 2)
+        // Without the server's mark, or with one for a turn not held, the last
+        // user turn is where the running reply starts, as before.
+        let before = ["you: u0", "agent: Earlier reply.", "you: u1", "agent: Started the build.", "you: u2"]
+        XCTAssertEqual(shown(promptID: nil), before)
+        XCTAssertEqual(shown(promptID: "gone"), before)
+        XCTAssertEqual(shown(promptID: "a1"), before, "only a user turn is a prompt")
+    }
+
     func testAMessageSplitsAMultibyteRunOnACharacterBoundary() {
         let live = LiveTurn()
         live.appendText("שלום")
@@ -587,6 +624,7 @@ enum Rendered {
             : nil
         var nodes = TranscriptTimeline.buildPersisted(turns: model.turns, pending: model.pendingUserTurns,
                                                       agent: .claudeCode, suppressInFlight: suppress,
+                                                      inFlightPromptID: model.inFlightPromptID,
                                                       liveCoverage: coverage)
         if let live = model.liveTurn { nodes += TranscriptTimeline.buildLive(live, agent: .claudeCode) }
         return nodes.compactMap(label)

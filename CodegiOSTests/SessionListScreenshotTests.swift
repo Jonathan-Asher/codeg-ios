@@ -291,12 +291,15 @@ enum Shot {
 
     /// Hosts `content` full screen in its own window, lets layout, scroll
     /// anchors and images settle, then writes `<name>-<light|dark>.png`.
+    /// `prepare` runs on the settled window before the capture (to select
+    /// text, say).
     static func capture<Content: View>(
         _ name: String,
         _ style: UIUserInterfaceStyle,
         dynamicType: DynamicTypeSize = .large,
         in directory: URL? = nil,
         settle seconds: TimeInterval = 1.2,
+        prepare: ((UIWindow) -> Void)? = nil,
         @ViewBuilder _ content: () -> Content
     ) throws {
         let scene = try XCTUnwrap(
@@ -315,6 +318,10 @@ enum Shot {
             window.rootViewController = nil
         }
         settle(seconds)
+        if let prepare {
+            prepare(window)
+            settle(0.8)
+        }
 
         let format = UIGraphicsImageRendererFormat(for: window.traitCollection)
         format.scale = scene.screen.scale

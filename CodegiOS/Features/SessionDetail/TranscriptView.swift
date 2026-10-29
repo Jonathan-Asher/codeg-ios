@@ -64,6 +64,10 @@ struct TranscriptView<Header: View>: View {
     /// authoritative complete in-flight reply; the persisted partial copy the
     /// agent is concurrently writing into `turns` is hidden so it isn't doubled.
     var liveOwnsInFlightReply: Bool
+    /// The running turn's prompt, as the server stamps it
+    /// (`in_flight_user_turn_id`). The persisted copy of the running reply is
+    /// what follows it; without it, what follows the last user turn.
+    var inFlightPromptID: String?
     /// The session's agent, for the agent-branded marker on assistant nodes.
     let agent: AgentType
     /// A cheap, monotonic version of the view model's `turns`, bumped on every
@@ -116,7 +120,7 @@ struct TranscriptView<Header: View>: View {
     @ViewBuilder var header: () -> Header
 
     init(turns: [MessageTurn], pendingUserTurns: [MessageTurn], liveTurn: LiveTurn?,
-         liveOwnsInFlightReply: Bool = false, agent: AgentType, turnsVersion: Int,
+         liveOwnsInFlightReply: Bool = false, inFlightPromptID: String? = nil, agent: AgentType, turnsVersion: Int,
          scrollTick: Int, stickTick: Int, onPinnedChange: @escaping (Bool) -> Void,
          turnsOffset: Int = 0, hasOlderOnServer: Bool = false,
          onLoadOlder: @escaping () async -> Void = {}, isLoadingOlder: Bool = false,
@@ -130,6 +134,7 @@ struct TranscriptView<Header: View>: View {
         self.pendingUserTurns = pendingUserTurns
         self.liveTurn = liveTurn
         self.liveOwnsInFlightReply = liveOwnsInFlightReply
+        self.inFlightPromptID = inFlightPromptID
         self.agent = agent
         self.turnsVersion = turnsVersion
         self.scrollTick = scrollTick
@@ -254,6 +259,7 @@ struct TranscriptView<Header: View>: View {
         var effectiveStart: Int
         var pendingIDs: [String]
         var suppressInFlight: Bool
+        var inFlightPromptID: String?
         var liveCoverage: TranscriptTimeline.LiveCoverage?
         var agent: AgentType
         var mediaContext: MediaPathContext?
@@ -296,7 +302,7 @@ struct TranscriptView<Header: View>: View {
         // prompt and the live turn alone on a screen too short to scroll.
         var tailEnd = turns.count
         if liveTurn != nil, liveOwnsInFlightReply,
-           let prompt = turns.lastIndex(where: { $0.role == .user }) {
+           let prompt = TranscriptTimeline.inFlightPromptIndex(in: turns, promptID: inFlightPromptID) {
             tailEnd = prompt + 1
         }
         guard tailEnd > initialTurnWindow else { return 0 }
@@ -337,6 +343,7 @@ struct TranscriptView<Header: View>: View {
             effectiveStart: start,
             pendingIDs: pendingUserTurns.map(\.id),
             suppressInFlight: suppressInFlight,
+            inFlightPromptID: inFlightPromptID,
             liveCoverage: coverage,
             agent: agent,
             mediaContext: mediaContext,
@@ -350,7 +357,7 @@ struct TranscriptView<Header: View>: View {
             let slice = start == 0 ? turns : Array(turns[start...])
             persisted = TranscriptTimeline.buildPersisted(
                 turns: slice, pending: pendingUserTurns, agent: agent,
-                suppressInFlight: suppressInFlight, liveCoverage: coverage,
+                suppressInFlight: suppressInFlight, inFlightPromptID: inFlightPromptID, liveCoverage: coverage,
                 media: mediaContext, presence: mediaContext == nil ? nil : mediaPresence
             )
             persistedMemo.key = key
@@ -427,7 +434,7 @@ struct TranscriptView<Header: View>: View {
             : nil
         var count = TranscriptTimeline.buildPersisted(
             turns: Array(turns[local...]), pending: pendingUserTurns, agent: agent,
-            suppressInFlight: suppressInFlight, liveCoverage: coverage,
+            suppressInFlight: suppressInFlight, inFlightPromptID: inFlightPromptID, liveCoverage: coverage,
             media: mediaContext, presence: mediaContext == nil ? nil : mediaPresence
         ).count
         if let liveTurn { count += TranscriptTimeline.buildLive(liveTurn, agent: agent).count }

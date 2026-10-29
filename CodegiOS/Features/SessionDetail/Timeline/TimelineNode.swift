@@ -151,20 +151,23 @@ enum TranscriptTimeline {
     ///   isn't there doesn't show, unless the reply wrote it (then it is
     ///   listed as deleted). Without it every file shows.
     static func buildPersisted(turns rawTurns: [MessageTurn], pending: [MessageTurn], agent: AgentType,
-                               suppressInFlight: Bool, liveCoverage: LiveCoverage? = nil,
+                               suppressInFlight: Bool, inFlightPromptID: String? = nil,
+                               liveCoverage: LiveCoverage? = nil,
                                media: MediaPathContext? = nil,
                                presence: MediaPresence? = nil) -> [TimelineNode] {
         var nodes: [TimelineNode] = []
 
         // Hide the persisted partial in-flight reply while the reattach live turn
         // (which carries the full reply) is in hand: drop the assistant turns that
-        // follow the most recent user prompt. Earlier replies stay untouched —
+        // follow the running turn's prompt (`inFlightPromptIndex`: the one the
+        // server stamps, else the most recent user turn), also those after a
+        // message sent into the turn. Earlier replies stay untouched —
         // and so does this one unless the live turn holds everything it would
         // hide (`liveCovers`): a live copy rebuilt from a trimmed snapshot, or an
         // anchor that is not the running prompt, must never show less.
         let turns: [MessageTurn]
         if suppressInFlight,
-           let promptIdx = rawTurns.lastIndex(where: { $0.role == .user }),
+           let promptIdx = inFlightPromptIndex(in: rawTurns, promptID: inFlightPromptID),
            liveCovers(rawTurns[(promptIdx + 1)...], liveCoverage) {
             turns = rawTurns.enumerated()
                 .filter { $0.offset <= promptIdx || $0.element.role != .assistant }
@@ -250,6 +253,19 @@ enum TranscriptTimeline {
     struct LiveCoverage: Equatable {
         let toolIDs: Set<String>
         let imageCount: Int
+    }
+
+    /// Where the running turn's prompt is in `turns`: the turn the server
+    /// stamps as in flight (`in_flight_user_turn_id`) when it is held, else the
+    /// last user turn. A message sent into the turn is a user turn of its own,
+    /// in the middle of the reply, so the last user turn alone would leave the
+    /// reply's first half shown twice beside the live copy (codeg web anchors
+    /// the same way).
+    static func inFlightPromptIndex(in turns: [MessageTurn], promptID: String?) -> Int? {
+        if let promptID, let index = turns.lastIndex(where: { $0.role == .user && $0.id == promptID }) {
+            return index
+        }
+        return turns.lastIndex(where: { $0.role == .user })
     }
 
     /// Whether the live turn holds every tool call and image of the persisted

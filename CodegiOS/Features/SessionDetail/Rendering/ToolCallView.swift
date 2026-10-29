@@ -461,6 +461,7 @@ private struct ToolOutputBody: View {
 /// mono block. Mirrors web `renderErrorText`.
 private struct ToolErrorOutput: View {
     let output: String
+    @Environment(\.selectText) private var selectText
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -488,12 +489,13 @@ private struct ToolErrorOutput: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
         .hairlineBorder(Theme.Radius.sm, color: Theme.danger.opacity(0.4))
+        .selectTextMenu(.code(output), enabled: selectText != nil)
     }
 
     private func errorText(_ text: String) -> some View {
         Text(text)
             .font(.mono(11.5)).foregroundStyle(Theme.danger.opacity(0.92))
-            .textSelection(.enabled)
+            .modifier(SelectableText(enabled: selectText == nil))
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
     }

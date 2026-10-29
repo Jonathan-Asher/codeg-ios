@@ -65,6 +65,13 @@ struct MarkdownContent: View {
     /// the cached path.
     var streaming: Bool = false
 
+    @Environment(\.selectText) private var selectText
+
+    /// Long press: Copy and Select Text, where the screen offers the sheet,
+    /// once the text has stopped streaming. Otherwise each text keeps its own
+    /// Copy.
+    private var offersMenu: Bool { selectText != nil && !streaming }
+
     private var blocks: [MarkdownBlock] {
         streaming ? MarkdownContent.parseBlocks(raw) : MarkdownContent.blocks(for: raw)
     }
@@ -81,6 +88,7 @@ struct MarkdownContent: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .selectTextMenu(.markdown(raw), enabled: offersMenu)
     }
 
     private static func isParagraph(_ block: MarkdownBlock) -> Bool {
@@ -101,7 +109,7 @@ struct MarkdownContent: View {
                     .font(Theme.Typography.messageBody)
                     .lineSpacing(Theme.Typography.messageLineSpacing)
                     .foregroundStyle(Theme.textPrimary)
-                    .textSelection(.enabled)
+                    .modifier(SelectableText(enabled: !offersMenu))
                     .tint(Theme.accent)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
@@ -114,7 +122,7 @@ struct MarkdownContent: View {
                 .lineSpacing(Theme.Typography.headingLineSpacing)
                 .fontWeight(Theme.Typography.headingWeight(level))
                 .foregroundStyle(Theme.textPrimary)
-                .textSelection(.enabled)
+                .modifier(SelectableText(enabled: !offersMenu))
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -144,7 +152,7 @@ struct MarkdownContent: View {
                     .lineSpacing(Theme.Typography.quoteLineSpacing)
                     .foregroundStyle(Theme.textSecondary)
                     .italic()
-                    .textSelection(.enabled)
+                    .modifier(SelectableText(enabled: !offersMenu))
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -177,7 +185,7 @@ struct MarkdownContent: View {
                 .font(Theme.Typography.messageBody)
                 .lineSpacing(Theme.Typography.messageLineSpacing)
                 .foregroundStyle(Theme.textPrimary)
-                .textSelection(.enabled)
+                .modifier(SelectableText(enabled: !offersMenu))
                 .tint(Theme.accent)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)

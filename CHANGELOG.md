@@ -12,6 +12,15 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Select any part of a message (1.3.29). A long press on a message, yours
+  or the agent's, a code block or a tool's output now offers Select Text
+  beside Copy; the reply's footer offers it for the whole reply. It opens a
+  sheet with the text rendered as in the conversation (headings, lists,
+  links you can tap, code in monospace, Hebrew paragraphs on the right),
+  where you select with drag handles, across paragraphs in either
+  direction, and Copy, Share, Look Up or Translate from the system menu, or
+  Select All. Done closes it. The one-tap Copy of the whole message stays.
+  The same on iPad.
 - Waiting for you, reminders and answers from a notification (1.3.27),
   matching the codeg server. The top of the sessions list shows everything
   waiting on you on the server: questions, permission requests and plans,
@@ -431,6 +440,12 @@ the text as the git tag message and the GitHub Release notes.
   `scripts/release.sh --archive` and CI.
 
 ### Fixed
+
+- A reply split by a message you sent into the turn no longer shows its
+  first half twice after the app reconnects to the running turn (1.3.29).
+  The copy of the reply the agent had saved so far is now hidden from the
+  turn's own prompt, as the server marks it, not from your message in the
+  middle of it.
 
 - Tapping a notification, or one of its buttons, no longer ends the app
   (1.3.28). The crash reports from 1.3.27 were all this one: iOS 27.2 wants
