@@ -29,6 +29,9 @@ private struct DiffFileView: View {
     var collapsedRowLimit: Int = 80
 
     @State private var expanded = false
+    /// Where the screen offers Select Text, a long press on the file has Copy
+    /// and Select Text for its diff.
+    @Environment(\.selectText) private var selectText
 
     private enum Line: Identifiable {
         case separator(id: UUID, label: String?)
@@ -88,6 +91,7 @@ private struct DiffFileView: View {
         }
         .background(Self.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
         .hairlineBorder(Theme.Radius.sm)
+        .selectTextMenu(.code(file.selectableText), enabled: selectText != nil)
     }
 
     private var header: some View {
@@ -136,6 +140,7 @@ private struct DiffRowView: View {
     let row: DiffRow
     let newFile: Bool
     let gutterWidth: CGFloat
+    @Environment(\.selectText) private var selectText
 
     var body: some View {
         HStack(spacing: 0) {
@@ -153,7 +158,7 @@ private struct DiffRowView: View {
                 .font(Theme.Typography.diffCode)
                 .lineSpacing(Theme.Typography.diffLineSpacing)
                 .foregroundStyle(textColor)
-                .textSelection(.enabled)
+                .modifier(SelectableText(enabled: selectText == nil))
                 .padding(.trailing, 12)
         }
         .padding(.vertical, 1)

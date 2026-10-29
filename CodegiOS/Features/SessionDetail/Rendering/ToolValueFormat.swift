@@ -488,6 +488,9 @@ struct FileBodyView: View {
     var collapsedLineLimit: Int = 60
 
     @State private var expanded = false
+    /// Where the screen offers Select Text, a long press on the file has Copy
+    /// and Select Text for all of it.
+    @Environment(\.selectText) private var selectText
 
     /// Drop a trailing newline so the file doesn't render a dangling empty
     /// numbered line (matches `CodeBlockView`'s trim).
@@ -531,6 +534,7 @@ struct FileBodyView: View {
             }
             .background(Theme.codeSurface, in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
             .hairlineBorder(Theme.Radius.sm)
+            .selectTextMenu(.code(content), enabled: selectText != nil)
         }
     }
 
@@ -558,7 +562,7 @@ struct FileBodyView: View {
                 .font(Theme.Typography.diffCode)
                 .lineSpacing(Theme.Typography.diffLineSpacing)
                 .foregroundStyle(Theme.textSecondary)
-                .textSelection(.enabled)
+                .modifier(SelectableText(enabled: selectText == nil))
                 .padding(.trailing, 12)
         }
         .padding(.vertical, 1)

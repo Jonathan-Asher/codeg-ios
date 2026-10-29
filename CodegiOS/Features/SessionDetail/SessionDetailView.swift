@@ -154,12 +154,16 @@ struct SessionDetailView: View {
     }
 
     /// The transcript over the background, with the link's capsule on top.
+    /// Its messages, code blocks and tool outputs offer Select Text (not the
+    /// sheets this screen presents, which would have the sheet presented
+    /// twice).
     private var backdrop: some View {
         ZStack {
             CodegBackground()
             content
         }
         .connectionCapsule(updatedAt: model.lastSyncedAt)
+        .selectTextSheet()
     }
 
     private var screen: some View {
@@ -417,6 +421,7 @@ struct SessionDetailView: View {
             pendingUserTurns: model.pendingUserTurns,
             liveTurn: model.liveTurn,
             liveOwnsInFlightReply: model.liveTurnFromReattach && !model.liveCopyIncomplete,
+            inFlightPromptID: model.inFlightPromptID,
             agent: model.agentTypeForUI,
             turnsVersion: model.turnsVersion,
             scrollTick: model.scrollTick,

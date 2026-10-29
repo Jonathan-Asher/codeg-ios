@@ -97,8 +97,8 @@ private struct UserNodeBody: View {
                 case .text(let raw):
                     let text = shownText(raw)
                     if !text.isEmpty {
-                        // The card's long press (Copy, Edit Message) stands in
-                        // for the text's own.
+                        // The card's long press (Copy, Select Text, Edit
+                        // Message) stands in for the text's own.
                         MarkdownText(raw: text, selectable: false)
                             .multilineTextAlignment(.leading)
                     }
@@ -126,8 +126,8 @@ private struct UserNodeBody: View {
             in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
         )
         .hairlineBorder(Theme.Radius.md, color: Theme.accent.opacity(0.30))
-        // A long press: Copy, and Edit Message on the open session, greyed
-        // out with the reason while it can't run now.
+        // A long press: Copy, Select Text, and Edit Message on the open
+        // session, greyed out with the reason while it can't run now.
         .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
         .contextMenu { menu }
         .accessibilityActions {
@@ -155,6 +155,7 @@ private struct UserNodeBody: View {
                 Label("Copy", systemImage: "doc.on.doc")
             }
         }
+        SelectTextButton(source: .message(selectableText))
         if let edit = editOffer {
             Button {
                 edit.action.start(turn.id)
@@ -168,6 +169,15 @@ private struct UserNodeBody: View {
             }
             .disabled(!edit.availability.isEnabled)
         }
+    }
+
+    /// The message's text as the card shows it, for Select Text.
+    private var selectableText: String {
+        turn.blocks.compactMap { block -> String? in
+            guard case .text(let raw) = block else { return nil }
+            let text = shownText(raw)
+            return text.isEmpty ? nil : text
+        }.joined(separator: "\n\n")
     }
 
     /// The text without the attachment links whose files show below it.
@@ -298,8 +308,8 @@ private struct TurnFooter: View {
                 .fixedSize()
         }
         .padding(.top, 2)
-        // A long press on the reply's footer: Copy and Fork from Here, the
-        // reason under a greyed-out fork.
+        // A long press on the reply's footer: Copy, Select Text (the whole
+        // reply) and Fork from Here, the reason under a greyed-out fork.
         .contentShape(Rectangle())
         .contextMenu {
             if !copyText.isEmpty {
@@ -308,6 +318,7 @@ private struct TurnFooter: View {
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
+                SelectTextButton(source: .markdown(copyText))
             }
             if let fork {
                 Button {

@@ -115,6 +115,12 @@ final class SessionDetailViewModel {
     /// carries no trailing in-flight reply to hide. Reset on every send (the one
     /// chokepoint that creates a send live turn), set on every reattach build.
     private(set) var liveTurnFromReattach = false
+    /// The running turn's prompt as the last fetched transcript names it
+    /// (`in_flight_user_turn_id`). The persisted copy hidden beside a reattach
+    /// live turn is what follows it: a message sent into the turn is a user
+    /// turn of its own, so the last user turn may be in the middle of the
+    /// reply.
+    private(set) var inFlightPromptID: String?
     /// The live turn came (partly) through a frame the server shrank to fit
     /// this socket, so it is an incomplete copy: it must not stand in for the
     /// persisted one, and the transcript is reloaded. Reset with every new
@@ -800,6 +806,7 @@ final class SessionDetailViewModel {
         windowPrefixHash = window.prefixHash
         windowTotal = window.total
         turns = window.turns
+        inFlightPromptID = outcome.detail.inFlightUserTurnId
         scheduleCacheSave()
         return true
     }

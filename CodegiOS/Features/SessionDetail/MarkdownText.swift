@@ -110,8 +110,9 @@ struct MarkdownText: View {
 }
 
 /// `.textSelection(.enabled)` when `enabled` (the two settings are different
-/// types, so they can't be picked with a ternary).
-private struct SelectableText: ViewModifier {
+/// types, so they can't be picked with a ternary). Off where a long-press menu
+/// around the text (Copy, Select Text) takes the long press.
+struct SelectableText: ViewModifier {
     let enabled: Bool
 
     func body(content: Content) -> some View {
