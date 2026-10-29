@@ -194,10 +194,15 @@ final class SelectTextTests: XCTestCase {
 
     // MARK: - The sheet
 
+    /// The links an `OpenURLAction` was asked to open.
+    private final class Opened {
+        var urls: [URL] = []
+    }
+
     func testALinkTappedInTheSheetOpensOnceTheSheetHasClosed() throws {
-        var opened: [URL] = []
+        let opened = Opened()
         let openURL = OpenURLAction { url in
-            opened.append(url)
+            opened.urls.append(url)
             return .handled
         }
         let presentation = SelectTextPresentation()
@@ -208,23 +213,23 @@ final class SelectTextTests: XCTestCase {
         let url = try XCTUnwrap(URL(string: "https://example.com"))
         presentation.linkTapped(url)
         XCTAssertNil(presentation.shown, "the sheet closes")
-        XCTAssertEqual(opened, [], "nothing opens behind the sheet")
+        XCTAssertEqual(opened.urls, [], "nothing opens behind the sheet")
         presentation.dismissed()
-        XCTAssertEqual(opened, [url], "with the action where the text was")
+        XCTAssertEqual(opened.urls, [url], "with the action where the text was")
         presentation.dismissed()
-        XCTAssertEqual(opened, [url], "once")
+        XCTAssertEqual(opened.urls, [url], "once")
     }
 
     func testClosingTheSheetOpensNothing() {
-        var opened = 0
+        let opened = Opened()
         let presentation = SelectTextPresentation()
-        presentation.open(.code("x"), openURL: OpenURLAction { _ in
-            opened += 1
+        presentation.open(.code("x"), openURL: OpenURLAction { url in
+            opened.urls.append(url)
             return .handled
         })
         presentation.shown = nil
         presentation.dismissed()
-        XCTAssertEqual(opened, 0)
+        XCTAssertEqual(opened.urls, [])
     }
 
     /// The sheet with a reply that mixes English and Hebrew paragraphs, a
@@ -251,8 +256,8 @@ final class SelectTextTests: XCTestCase {
             ```
             """
         for style in [UIUserInterfaceStyle.light, .dark] {
-            try SessionListScreenshotTests.capture(
-                "select-text-sheet", style, in: SessionListScreenshotTests.composeDirectory,
+            try Shot.capture(
+                "select-text-sheet", style, in: Shot.composeDirectory,
                 prepare: { window in
                     guard let textView = Self.textView(in: window) else {
                         return XCTFail("the sheet has no text view")
