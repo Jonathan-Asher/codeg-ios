@@ -471,6 +471,9 @@ struct ComposePasteHook: UIViewRepresentable {
 final class ComposePasteProbe: UIView {
     let pasteHandler = ComposeTextPasteDelegate()
     private(set) weak var textView: UITextView?
+    /// Looks that found no text view, so a field SwiftUI draws some other
+    /// way isn't searched for on every layout.
+    private var misses = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -485,6 +488,7 @@ final class ComposePasteProbe: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        misses = 0
         attach()
         // The field's own view may come after this one.
         DispatchQueue.main.async { [weak self] in self?.attach() }
@@ -498,7 +502,12 @@ final class ComposePasteProbe: UIView {
     func attach() {
         guard window != nil else { return }
         if let textView, textView.window != nil, textView.pasteDelegate === pasteHandler { return }
-        guard let found = Self.findTextView(near: self) else { return }
+        guard misses < 40 else { return }
+        guard let found = Self.findTextView(near: self) else {
+            misses += 1
+            return
+        }
+        misses = 0
         if found.pasteDelegate !== pasteHandler {
             pasteHandler.forward = found.pasteDelegate
             found.pasteDelegate = pasteHandler
