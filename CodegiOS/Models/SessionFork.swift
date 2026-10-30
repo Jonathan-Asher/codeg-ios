@@ -130,10 +130,18 @@ enum ForkEndpoints: Equatable, Sendable {
     /// Not checked yet, or the check couldn't reach the server.
     case unknown
     /// `acp_fork` is there; `toNewConversation` says whether
-    /// `acp_fork_to_new_conversation` (forking while a turn runs) is too.
-    case available(toNewConversation: Bool)
+    /// `acp_fork_to_new_conversation` (forking while a turn runs) is too, and
+    /// `wholeConversation` whether `acp_fork_conversation` (a whole
+    /// conversation into a new one, the original left as it is) is.
+    case available(toNewConversation: Bool, wholeConversation: Bool = false)
     /// Neither endpoint: an older server.
     case missing
+
+    /// The server forks a whole conversation into a new one, open or not.
+    var forksWholeConversation: Bool {
+        if case .available(_, true) = self { return true }
+        return false
+    }
 }
 
 /// codeg web's rules for "Fork from here" and where a fork lands
@@ -157,6 +165,7 @@ enum SessionForkRules {
     static let reasonNotReady = String(localized: "Can’t fork from this reply just yet — try again in a moment")
     static let reasonInFlight = String(localized: "This reply is still running. Fork from an earlier reply, or from this one once it finishes")
     static let reasonServerTooOld = String(localized: "Needs a newer codeg server")
+    static let reasonNoReply = String(localized: "Nothing to fork yet: no reply has finished")
     static let reasonAnotherFork = String(localized: "Another fork is in progress")
 
     /// A fork button's availability while a fork may be under way. Forks run
@@ -186,21 +195,32 @@ enum SessionForkRules {
 
     /// Availability of the session-level "Fork Session" on a list row, from
     /// what the list knows: the server's endpoints, what the agent reported,
-    /// and whether a turn runs.
+    /// whether a turn runs, and whether the row has an agent session (its
+    /// `external_id`). Where the server forks a whole conversation, as
+    /// codeg's sidebar Fork does, a row with no agent session has nothing to
+    /// fork, and a running turn waits unless the agent forks while one runs.
     static func listAvailability(
         endpoints: ForkEndpoints,
         agent: AgentType,
         agentForks: Bool?,
         adapterForksWhileRunning: Bool? = nil,
         turnRunning: Bool,
-        forking: Bool
+        forking: Bool,
+        hasAgentSession: Bool = true
     ) -> ForkAvailability {
         if forking { return .forking }
         if endpoints == .missing { return .unavailable(reasonServerTooOld) }
         if agentForks == false { return .unavailable(reasonAgentCannotFork(agent)) }
+        if endpoints.forksWholeConversation {
+            if !hasAgentSession { return .unavailable(reasonNoReply) }
+            if turnRunning, !forksWhileRunning(agent, adapter: adapterForksWhileRunning) {
+                return .unavailable(reasonBetweenTurns)
+            }
+            return .available
+        }
         if turnRunning {
             if !forksWhileRunning(agent, adapter: adapterForksWhileRunning) { return .unavailable(reasonBetweenTurns) }
-            if case .available(let toNew) = endpoints, !toNew { return .unavailable(reasonBetweenTurns) }
+            if case .available(let toNew, _) = endpoints, !toNew { return .unavailable(reasonBetweenTurns) }
         }
         return .available
     }
@@ -239,7 +259,7 @@ enum SessionForkRules {
         let isTail = index == turns.count - 1
         if turnRunning {
             if !forksWhileRunning(agent, adapter: adapterForksWhileRunning) { return .unavailable(reasonBetweenTurns) }
-            if case .available(let toNew) = endpoints, !toNew { return .unavailable(reasonBetweenTurns) }
+            if case .available(let toNew, _) = endpoints, !toNew { return .unavailable(reasonBetweenTurns) }
             // With the running prompt still on the phone (a send from here),
             // every reply in `turns` has finished. Otherwise the reply after
             // the last prompt is the one being written.

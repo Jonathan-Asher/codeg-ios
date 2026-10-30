@@ -74,12 +74,15 @@ final class SessionForkTests: XCTestCase {
     private let connectionNotFound = #"{"code": "task_execution_failed", "message": "connection not found: "}"#
     private let notImplemented = #"{"code": "not_implemented", "message": "API endpoint is not available in web mode"}"#
 
-    /// A server with both fork endpoints, a live connection `conn-1` whose
-    /// snapshot reads `status`, and `acp_fork` answering an in-place fork.
+    /// A server with both connection fork endpoints (and none for a whole
+    /// conversation), a live connection `conn-1` whose snapshot reads
+    /// `status`, and `acp_fork` answering an in-place fork.
     private func serveFork(status: String = "connected", forkSupported: Bool? = true) {
         let snapshot = snapshotJSON(status: status, forkSupported: forkSupported)
         let result = forkResult
         let missing = connectionNotFound
+        let older = notImplemented
+        server.on("acp_fork_conversation") { _ in .status(501, older) }
         server.on("acp_find_connection_for_conversation") { _ in .body(Fixtures.connectionInfo) }
         server.on("acp_get_session_snapshot") { _ in .body(snapshot) }
         server.on("acp_fork") { call in
@@ -301,6 +304,7 @@ final class SessionForkTests: XCTestCase {
     func testTheEndpointCheckTellsAnOlderServerApart() async throws {
         let missing = notImplemented
         let gone = connectionNotFound
+        server.on("acp_fork_conversation") { _ in .status(501, missing) }
         server.on("acp_fork") { _ in .status(501, missing) }
         server.on("acp_fork_to_new_conversation") { _ in .status(501, missing) }
         let older = try await server.client.forkEndpoints()
@@ -315,6 +319,14 @@ final class SessionForkTests: XCTestCase {
         server.on("acp_fork_to_new_conversation") { _ in .status(500, gone) }
         let both = try await server.client.forkEndpoints()
         XCTAssertEqual(both, .available(toNewConversation: true))
+        XCTAssertFalse(both.forksWholeConversation)
+
+        server.on("acp_fork_conversation") { _ in .status(500, #"{"code": "task_execution_failed", "message": "Conversation not found: 0"}"#) }
+        let whole = try await server.client.forkEndpoints()
+        XCTAssertEqual(whole, .available(toNewConversation: true, wholeConversation: true))
+        XCTAssertTrue(whole.forksWholeConversation)
+        XCTAssertEqual(server.calls("acp_fork_conversation").last?.body["conversationId"] as? Int, 0,
+                       "asked about a conversation that can’t exist")
 
         server.on("acp_fork") { _ in .fail(.notConnectedToInternet) }
         do {
@@ -498,6 +510,99 @@ final class SessionForkTests: XCTestCase {
         } catch let error as ForkError {
             XCTAssertEqual(error.errorDescription, "Failed to fork session: the agent cannot fork at this reply")
         }
+    }
+
+    // MARK: - A whole conversation, as the desktop's sidebar Fork
+
+    /// A server that forks whole conversations: `acp_fork_conversation`
+    /// answers conversation 0 (the check) with "not found" and the rest with
+    /// `reply`.
+    private func serveWholeConversationFork(_ reply: @escaping (MockCodegServer.Call) -> MockCodegServer.Reply) {
+        serveFork()
+        server.on("acp_fork_conversation") { call in
+            (call.body["conversationId"] as? Int) == 0
+                ? .status(500, #"{"code": "task_execution_failed", "message": "Conversation not found: 0"}"#)
+                : reply(call)
+        }
+    }
+
+    func testWhereTheServerForksWholeConversationsARowNeedsAnAgentSession() {
+        let whole = ForkEndpoints.available(toNewConversation: false, wholeConversation: true)
+        func availability(_ agent: AgentType, running: Bool, session: Bool = true,
+                          adapter: Bool? = nil) -> ForkAvailability {
+            SessionForkRules.listAvailability(endpoints: whole, agent: agent, agentForks: true,
+                                              adapterForksWhileRunning: adapter, turnRunning: running,
+                                              forking: false, hasAgentSession: session)
+        }
+        XCTAssertEqual(availability(.codex, running: false), .available)
+        XCTAssertEqual(availability(.codex, running: false, session: false),
+                       .unavailable(SessionForkRules.reasonNoReply), "no agent session: nothing was answered yet")
+        XCTAssertEqual(availability(.codex, running: true), .unavailable(SessionForkRules.reasonBetweenTurns))
+        XCTAssertEqual(availability(.claudeCode, running: true), .available,
+                       "forks while a turn runs, without the older mid-turn endpoint")
+        XCTAssertEqual(availability(.pi, running: true), .available, "the forked adapter")
+        XCTAssertEqual(availability(.pi, running: true, adapter: false),
+                       .unavailable(SessionForkRules.reasonBetweenTurns), "an adapter that said it can't")
+        XCTAssertEqual(SessionForkRules.listAvailability(endpoints: whole, agent: .cline, agentForks: false,
+                                                         turnRunning: false, forking: false),
+                       .unavailable(SessionForkRules.reasonAgentCannotFork(.cline)))
+    }
+
+    func testForkSessionOnARowForksTheWholeConversationAndLeavesTheOriginal() async throws {
+        ForkCapabilities.shared.reset()
+        let (app, suite) = makeApp()
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let result = newConversationResult
+        serveWholeConversationFork { _ in .body(result) }
+        let list = "[" + summaryJSON(7) + ", " + summaryJSON(9, title: "[Fork] Topic") + "]"
+        server.on("list_all_conversations") { _ in .body(list) }
+        server.on("list_open_folder_details") { _ in .body("[]") }
+        server.on("list_conversation_attention") { _ in .body("[]") }
+        app.selectedTab = .activity
+
+        app.actions.fork(try summary(7))
+        let opened = await eventually { app.paths[.activity] == [.conversation(9)] }
+        XCTAssertTrue(opened, "the new conversation opens on top of Activity")
+        XCTAssertNil(app.actions.alert)
+        XCTAssertEqual(server.calls("acp_fork_conversation").last?.body["conversationId"] as? Int, 7)
+        XCTAssertTrue(forkCalls("acp_fork").isEmpty, "no fork in place")
+        XCTAssertTrue(server.calls("acp_connect").isEmpty, "no session resumed on the phone")
+        XCTAssertTrue(server.calls("acp_find_connection_for_conversation").isEmpty)
+        XCTAssertFalse(server.calls("list_all_conversations").isEmpty, "the lists show the new row")
+    }
+
+    func testTheWholeConversationForkSaysWhyItWasRefused() async throws {
+        func refusal(_ message: String) async throws -> ForkError? {
+            capabilities.reset()
+            let body = #"{"code": "invalid_input", "message": "\#(message)"}"#
+            serveWholeConversationFork { _ in .status(400, body) }
+            do {
+                _ = try await forker().fork(target, at: .latest, wholeConversation: true)
+                return nil
+            } catch let error as ForkError {
+                return error
+            }
+        }
+        let midTurn = try await refusal("this agent can only fork between turns")
+        XCTAssertEqual(midTurn, .betweenTurnsOnly)
+        let noReply = try await refusal("this conversation has no finished reply to fork yet")
+        XCTAssertEqual(noReply, .noFinishedReply)
+        let cannot = try await refusal("this agent cannot fork a conversation")
+        XCTAssertEqual(cannot, .agentCannotFork("Claude Code"))
+        XCTAssertEqual(capabilities.agentForks(.claudeCode, client: server.client), false,
+                       "the agent is greyed out from now on")
+        let other = try await refusal("the agent process exited")
+        XCTAssertEqual(other?.errorDescription, "Failed to fork session: the agent process exited")
+        XCTAssertTrue(forkCalls("acp_fork").isEmpty)
+        XCTAssertTrue(server.calls("acp_connect").isEmpty)
+    }
+
+    func testAServerWithoutTheWholeConversationForkForksTheOlderWay() async throws {
+        serveFork()
+        let outcome = try await forker().fork(target, at: .latest, wholeConversation: true)
+        XCTAssertTrue(outcome.isInPlace)
+        XCTAssertEqual(forkCalls("acp_fork").count, 1)
+        XCTAssertEqual(server.calls("acp_fork_conversation").count, 1, "only the check")
     }
 
     // MARK: - Opening the fork

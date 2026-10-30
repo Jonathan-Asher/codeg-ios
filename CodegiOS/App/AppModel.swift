@@ -71,6 +71,29 @@ final class AppModel {
             guard oldValue != selectedTab else { return }
             defaults.set(selectedTab.rawValue, forKey: Self.lastTabKey)
             Breadcrumbs.add("screen.tab", Breadcrumbs.caseName(selectedTab))
+            let now = Date()
+            if oldValue == .activity { activityReturn.left(awayFromNewest: activityFeedAwayFromNewest, at: now) }
+            if selectedTab == .activity, activityReturn.landsOnNewest(at: now) { activityNewestRequest &+= 1 }
+        }
+    }
+
+    /// Bumped to bring the Activity feed to its newest end: a tap on the
+    /// Activity tab while it shows, and coming to the tab from another one
+    /// (``ActivityTabReturn``).
+    private(set) var activityNewestRequest = 0
+    /// The Activity feed is scrolled away from its newest end, as it last
+    /// said.
+    @ObservationIgnored var activityFeedAwayFromNewest = false
+    @ObservationIgnored private var activityReturn = ActivityTabReturn()
+
+    /// A tap on a tab of the tab bar, also on the one that shows.
+    func tapTab(_ tab: AppTab) {
+        guard tab == selectedTab else {
+            selectedTab = tab
+            return
+        }
+        if tab == .activity, ActivityTabReturn.tapScrollsToNewest(stackDepth: paths[.activity]?.count ?? 0) {
+            activityNewestRequest &+= 1
         }
     }
     var paths: [AppTab: [Route]] = [:] {

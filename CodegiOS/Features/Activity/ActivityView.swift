@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The Activity tab: a live monitor of what your agents are doing right now and
 /// what just finished — running sessions, then everything touched in the last
@@ -13,6 +14,11 @@ struct ActivityView: View {
     let client: CodegClient?
     /// The session that is open (iPad) or was opened last (iPhone).
     var markedConversationID: Int? = nil
+    /// Bumped to bring the feed to its newest end (a tap on the Activity
+    /// tab, coming back to it).
+    var newestRequest = 0
+    /// The feed left its newest end, or came back to it.
+    var onAwayFromNewest: (Bool) -> Void = { _ in }
     let onOpen: (Int) -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -65,7 +71,9 @@ struct ActivityView: View {
                     onRefresh: { await activity.refresh(client: client) },
                     onDismissError: { activity.dismissError() },
                     onShowEarlier: { activity.showMoreEarlier() },
-                    newestAtBottom: appearance.newestAtBottom
+                    newestAtBottom: appearance.newestAtBottom,
+                    newestRequest: newestRequest,
+                    onAwayFromNewest: onAwayFromNewest
                 )
             }
         }
@@ -107,12 +115,25 @@ struct ActivityFeed: View {
     var onShowEarlier: () -> Void = {}
     /// Oldest at the top, the most recent session at the bottom.
     var newestAtBottom: Bool = false
+    /// Bumped to bring the feed to its newest end.
+    var newestRequest = 0
+    /// The feed left its newest end, or came back to it.
+    var onAwayFromNewest: (Bool) -> Void = { _ in }
 
     /// Bumped only when a user pull-to-refresh completes, so the soft landing
     /// haptic fires on the pull — not on the initial programmatic load.
     @State private var pullTick = 0
     @State private var pin = BottomPin()
     @State private var isUserScrolling = false
+    /// Older sessions are going in above the rows being read, which stay put.
+    @State private var holdingForEarlier = false
+    /// Newest first: the feed is at its top.
+    @State private var atTop = true
+
+    /// The feed shows its newest end.
+    private var showsNewest: Bool {
+        ActivityFeedLayout.showsNewest(newestAtBottom: newestAtBottom, pinned: pin.isPinned, atTop: atTop)
+    }
 
     private static let topID = "activity-top"
     private static let bottomID = "activity-bottom"
@@ -158,6 +179,10 @@ struct ActivityFeed: View {
                 }
                 .padding(.horizontal, Theme.Layout.screenHMargin)
                 .padding(.bottom, newestAtBottom ? 8 : Theme.Layout.screenBottomInset)
+                // A tap on the status bar (or iOS's own on the tab) scrolls to
+                // the top: only where the top is the newest end. And while
+                // older sessions go in above, the rows on screen stay put.
+                .background(FeedScrollHook(scrollsToTop: !newestAtBottom, holdsRows: holdingForEarlier))
                 // Ease rows between Running ↔ Last-24h as the background poll
                 // reorders them, instead of teleporting.
                 .animation(Theme.Motion.chrome, value: rowIDs)
@@ -170,19 +195,22 @@ struct ActivityFeed: View {
             // Newest at the bottom: open there (no visible jump), sit short
             // content at the bottom, and keep the bottom in place as rows
             // change, but only while pinned. Scrolled up, a size change keeps
-            // the top in place instead, so the rows he is reading stay put.
+            // the top in place instead (older sessions going in above are
+            // held by ``FeedScrollHook``).
             .defaultScrollAnchor(newestAtBottom ? UnitPoint.bottom : nil, for: .initialOffset)
             .defaultScrollAnchor(newestAtBottom ? UnitPoint.bottom : nil, for: .alignment)
             .defaultScrollAnchor(newestAtBottom && pin.isPinned ? UnitPoint.bottom : UnitPoint.top, for: .sizeChanges)
             .onScrollPhaseChange { _, phase, context in
                 let wasUserScrolling = isUserScrolling
                 isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
+                if isUserScrolling { holdingForEarlier = false }
                 guard newestAtBottom, isUserScrolling || wasUserScrolling else { return }
                 pin.update(atBottom: FeedScrollMetrics(context.geometry).atBottom, userScrolling: true)
             }
             // Late row measurement and inset changes: follow while pinned; a
             // layout change can re-pin but never unpin.
             .onScrollGeometryChange(for: FeedScrollMetrics.self) { FeedScrollMetrics($0) } action: { old, new in
+                atTop = new.atTop
                 guard newestAtBottom else { return }
                 if isUserScrolling {
                     pin.update(atBottom: new.atBottom, userScrolling: true)
@@ -206,6 +234,22 @@ struct ActivityFeed: View {
             .onChange(of: newestAtBottom) { _, bottom in
                 pin.reset()
                 proxy.scrollTo(bottom ? Self.bottomID : Self.topID, anchor: bottom ? .bottom : .top)
+            }
+            // A tap on the Activity tab, or coming back to it.
+            .onChange(of: newestRequest) { _, _ in
+                holdingForEarlier = false
+                if newestAtBottom { pin.reset() }
+                withAnimation(Theme.Motion.chrome) {
+                    proxy.scrollTo(newestAtBottom ? Self.bottomID : Self.topID,
+                                   anchor: newestAtBottom ? .bottom : .top)
+                }
+            }
+            .onChange(of: showsNewest, initial: true) { _, shows in onAwayFromNewest(!shows) }
+            // The older rows are in and measured: back to the usual anchor.
+            .task(id: holdingForEarlier) {
+                guard holdingForEarlier else { return }
+                try? await Task.sleep(for: .seconds(1))
+                holdingForEarlier = false
             }
         }
         // A soft tick when a user pull-to-refresh lands (not the initial load).
@@ -294,11 +338,23 @@ struct ActivityFeed: View {
         }
     }
 
-    /// With the newest at the bottom, older rows go in above: let go of the
-    /// bottom so they open where the control was, instead of above the screen.
+    /// With the newest at the bottom, older rows go in above the rows being
+    /// read, which keep their place on screen: the feed lets go of the
+    /// bottom (he is reading older sessions now), holds what shows
+    /// (``FeedScrollHook``), then lists them, without the rows' animation,
+    /// which would slide what is held.
     private func showEarlier() {
-        if newestAtBottom { pin.update(atBottom: false, userScrolling: true) }
-        onShowEarlier()
+        guard newestAtBottom else {
+            onShowEarlier()
+            return
+        }
+        pin.update(atBottom: false, userScrolling: true)
+        holdingForEarlier = true
+        Task { @MainActor in
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { onShowEarlier() }
+        }
     }
 
     /// A group header above its cards: a tinted circular badge + the section
@@ -330,17 +386,99 @@ struct ActivityFeed: View {
 /// mistaken for the user scrolling away from the bottom.
 private struct FeedScrollMetrics: Equatable {
     var atBottom: Bool
+    var atTop: Bool
     var contentHeight: CGFloat
     var containerHeight: CGFloat
 
     init(_ geometry: ScrollGeometry) {
         contentHeight = geometry.contentSize.height
         containerHeight = geometry.containerSize.height
+        atTop = geometry.contentOffset.y + geometry.contentInsets.top <= BottomPin.tolerance
         atBottom = BottomPin.isAtBottom(
             contentHeight: geometry.contentSize.height,
             containerHeight: geometry.containerSize.height,
             offsetY: geometry.contentOffset.y,
             bottomInset: geometry.contentInsets.bottom
         )
+    }
+}
+
+/// What the feed asks of its scroll view: whether the system's scroll to the
+/// top (a tap on the status bar, iOS's own on the tab that shows) works, and,
+/// while `holdsRows`, that the rows on screen stay exactly where they are as
+/// content goes in above them (older sessions): everything below the top of
+/// the screen is as it was, so the end of the content is kept as far from it,
+/// in the same layout pass, whether or not SwiftUI moved the offset itself.
+struct FeedScrollHook: UIViewRepresentable {
+    let scrollsToTop: Bool
+    let holdsRows: Bool
+
+    func makeUIView(context: Context) -> Probe {
+        Probe()
+    }
+
+    func updateUIView(_ probe: Probe, context: Context) {
+        probe.update(scrollsToTop: scrollsToTop, holdsRows: holdsRows)
+    }
+
+    final class Probe: UIView {
+        private weak var scrollView: UIScrollView?
+        private var observations: [NSKeyValueObservation] = []
+        private var scrollsToTop = true
+        private var holdsRows = false
+        /// While the rows are held: from the top of the screen to the end of
+        /// the content.
+        private var heldDistance: CGFloat?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            isAccessibilityElement = false
+        }
+
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            update(scrollsToTop: scrollsToTop, holdsRows: holdsRows)
+        }
+
+        func update(scrollsToTop: Bool, holdsRows: Bool) {
+            self.scrollsToTop = scrollsToTop
+            self.holdsRows = holdsRows
+            attach()
+            guard let scrollView else { return }
+            if scrollView.scrollsToTop != scrollsToTop { scrollView.scrollsToTop = scrollsToTop }
+            if !holdsRows {
+                heldDistance = nil
+            } else if heldDistance == nil {
+                heldDistance = scrollView.contentSize.height - scrollView.contentOffset.y
+            }
+        }
+
+        /// The scroll view this one sits in.
+        private func attach() {
+            var view = superview
+            while let current = view, !(current is UIScrollView) { view = current.superview }
+            guard let found = view as? UIScrollView, found !== scrollView else { return }
+            scrollView = found
+            heldDistance = nil
+            observations = [
+                found.observe(\.contentSize, options: [.new]) { [weak self] scrollView, _ in
+                    MainActor.assumeIsolated { self?.hold(scrollView) }
+                },
+                found.observe(\.contentOffset, options: [.new]) { [weak self] scrollView, _ in
+                    MainActor.assumeIsolated { self?.hold(scrollView) }
+                },
+            ]
+        }
+
+        private func hold(_ scrollView: UIScrollView) {
+            guard let heldDistance, !scrollView.isTracking, !scrollView.isDecelerating else { return }
+            let offset = scrollView.contentSize.height - heldDistance
+            if abs(scrollView.contentOffset.y - offset) > 0.5 { scrollView.contentOffset.y = offset }
+        }
     }
 }

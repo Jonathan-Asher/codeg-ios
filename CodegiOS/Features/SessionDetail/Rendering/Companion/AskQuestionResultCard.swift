@@ -9,7 +9,7 @@ import SwiftUI
 
 /// Pre-filled selection for a read-only `AskQuestionCard` question: the chosen
 /// option labels plus any free-text "Other" answer.
-struct AskQuestionSelection {
+struct AskQuestionSelection: Equatable {
     var chosen: [String]
     var otherText: String
 }
@@ -74,7 +74,8 @@ struct AskQuestionResultCard: View {
 
     private func answered(questions: [QuestionSpec], outcome: AskOutcome?) -> some View {
         let declined = outcome?.declined ?? false
-        let picks = (outcome?.answers ?? []).flatMap { $0.selected }.filter { !$0.isEmpty }
+        // A secret question's typed answer never shows.
+        let picks = AskQuestionParse.shownPicks(outcome, questions: questions)
         let summary = declined
             ? String(localized: "Declined")
             : (picks.isEmpty ? String(localized: "No selection") : picks.joined(separator: ", "))
@@ -124,20 +125,9 @@ struct AskQuestionResultCard: View {
         .buttonStyle(.plain)
     }
 
-    /// Match each question's persisted answer (by header+question signature) to a
-    /// pre-filled selection for the read-only card.
+    /// Each question's persisted answer as the read-only card's selection.
     private func selections(questions: [QuestionSpec], outcome: AskOutcome?) -> [String: AskQuestionSelection] {
-        guard let outcome, !outcome.declined else { return [:] }
-        let sep = "\u{1f}"   // unit separator — never in agent text
-        var bySig: [String: [String]] = [:]
-        for a in outcome.answers { bySig[a.header + sep + a.question] = a.selected }
-        var out: [String: AskQuestionSelection] = [:]
-        for q in questions {
-            let values = bySig[q.header + sep + q.question] ?? []
-            let matched = AskQuestionParse.matchSelections(values: values, optionLabels: q.options.map { $0.label })
-            out[q.id] = AskQuestionSelection(chosen: matched.selected, otherText: matched.other.joined(separator: ", "))
-        }
-        return out
+        AskQuestionParse.answeredSelections(questions: questions, outcome: outcome)
     }
 
     // MARK: Fallbacks (input didn't parse, error, in-flight)

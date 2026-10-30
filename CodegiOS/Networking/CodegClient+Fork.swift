@@ -21,6 +21,11 @@ struct AcpForkToNewConversationBody: Encodable, Sendable {
     let forkFromTurnId: String
 }
 
+/// Body for `acp_fork_conversation`: fork a whole conversation, open or not.
+struct AcpForkConversationBody: Encodable, Sendable {
+    let conversationId: Int
+}
+
 extension CodegClient {
     /// For the fork calls. `acp_fork` waits for the agent's `session/fork` and
     /// the resume of the fork; `acp_fork_to_new_conversation` launches an
@@ -88,19 +93,30 @@ extension CodegClient {
         ), session: Self.forkSession)
     }
 
+    /// Fork a whole conversation into a new one (`acp_fork_conversation`), as
+    /// codeg's sidebar Fork does: at its latest finished reply, whether
+    /// anything has it open or not. The original row, its connection and
+    /// any turn on it stay as they are. The server forks in an agent
+    /// process of its own, so this waits as long as the other forks.
+    func forkConversation(conversationId: Int) async throws -> ForkToNewConversationResult {
+        try await postJSON("acp_fork_conversation", AcpForkConversationBody(conversationId: conversationId),
+                           session: Self.forkSession)
+    }
+
     /// Which fork endpoints the server has. Each is asked about a connection
-    /// that can't exist (an empty id): a server with the endpoint answers
-    /// "connection not found" and touches nothing; one without it answers
-    /// `not_implemented`. Throws when the server can't be reached, so a blip
-    /// isn't taken for an older server.
+    /// (or a conversation) that can't exist (an empty id, conversation 0): a
+    /// server with the endpoint answers "not found" and touches nothing; one
+    /// without it answers `not_implemented`. Throws when the server can't be
+    /// reached, so a blip isn't taken for an older server.
     func forkEndpoints() async throws -> ForkEndpoints {
         async let inPlace = endpointExists("acp_fork", AcpForkBody(
             connectionId: "", conversationId: nil, folderId: nil, forkFromTurnId: nil))
         async let toNew = endpointExists("acp_fork_to_new_conversation", AcpForkToNewConversationBody(
             connectionId: "", conversationId: nil, forkFromTurnId: ""))
-        let (hasInPlace, hasToNew) = try await (inPlace, toNew)
+        async let whole = endpointExists("acp_fork_conversation", AcpForkConversationBody(conversationId: 0))
+        let (hasInPlace, hasToNew, hasWhole) = try await (inPlace, toNew, whole)
         guard hasInPlace else { return .missing }
-        return .available(toNewConversation: hasToNew)
+        return .available(toNewConversation: hasToNew, wholeConversation: hasWhole)
     }
 
     private func endpointExists<Body: Encodable>(_ path: String, _ body: Body) async throws -> Bool {
@@ -135,6 +151,19 @@ extension APIError {
     var isForkNeedsIdle: Bool {
         guard case .server(_, _, let message) = self else { return false }
         return message.contains("can only fork between turns")
+    }
+
+    /// codeg's "no finished reply to fork" (`acp::fork::NO_FINISHED_REPLY`),
+    /// matched by text as codeg web's `forkRefusal` does.
+    var isForkNoFinishedReply: Bool {
+        guard case .server(_, _, let message) = self else { return false }
+        return message.contains("no finished reply to fork")
+    }
+
+    /// The agent's adapter can't fork at all (`AcpError::ForkUnsupported`).
+    var isForkUnsupported: Bool {
+        guard case .server(_, _, let message) = self else { return false }
+        return message.contains("cannot fork a conversation")
     }
 
     /// The connection the call named is gone (`AcpError::ConnectionNotFound`).

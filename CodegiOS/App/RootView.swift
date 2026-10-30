@@ -171,7 +171,7 @@ struct RootView: View {
         // glass capsule as the others rather than detaching into its own floating
         // pill — five evenly-spaced tabs make the capsule span close to the
         // conversation-list width. Settings stays last (conventional).
-        TabView(selection: $model.selectedTab) {
+        TabView(selection: tabSelection) {
             // Linear (outline) glyphs throughout — see `linearTabLabel`. iOS 26's
             // tab bar auto-fills any symbol with a `.fill` variant, which made
             // `message`/`folder`/`gearshape` read as solid color blocks; the
@@ -204,6 +204,12 @@ struct RootView: View {
                 linearTabLabel("Settings", "gearshape")
             }
         }
+    }
+
+    /// The tab bar's selection. Every tap comes through here, also one on the
+    /// tab that shows, which brings Activity to its newest end.
+    private var tabSelection: Binding<AppTab> {
+        Binding(get: { model.selectedTab }, set: { model.tapTab($0) })
     }
 
     /// A tab label that keeps its SF Symbol in the **outline** variant. iOS 26's
@@ -311,6 +317,8 @@ struct RootView: View {
                 activity: model.activity,
                 client: model.selectedClient(),
                 markedConversationID: model.markedConversationID,
+                newestRequest: model.activityNewestRequest,
+                onAwayFromNewest: { model.activityFeedAwayFromNewest = $0 },
                 onOpen: { model.open(.conversation($0)) }
             )
             .navigationDestination(for: Route.self) { route in

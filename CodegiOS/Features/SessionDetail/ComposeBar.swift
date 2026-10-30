@@ -58,6 +58,8 @@ struct ComposeBar: View {
     @State private var showPhotoPicker = false
     @State private var showFileImporter = false
     @State private var showCamera = false
+    /// Files pasted into the field or with the Paste button.
+    @State private var pasteIntake = ComposePasteIntake()
     @State private var presentedInsert: ComposeInsertModel.Source?
     /// The field's cursor / selection, so dictated text lands at the cursor.
     @State private var selection: TextSelection?
@@ -194,6 +196,9 @@ struct ComposeBar: View {
                         .foregroundStyle(Theme.textPrimary)
                         .tint(Theme.accent)
                         .focused($focused)
+                        // ⌘V and the field's Paste attach a pasted file
+                        // (a picture, a video, a PDF, any document).
+                        .background(ComposePasteHook(intake: pasteIntake, sink: pasteSink))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                         // `xl` radius clamps to a capsule while the field is one
@@ -310,6 +315,13 @@ struct ComposeBar: View {
                 }
                 Button { showFileImporter = true } label: {
                     Label("Files", systemImage: "folder")
+                }
+                .disabled(!canAttachMore)
+                // The system's Paste: what was copied in another app, without
+                // a keyboard and without the "Allow Paste" prompt. A file is
+                // attached; text goes in at the cursor.
+                PasteButton(supportedContentTypes: PasteRouting.acceptedTypes) { providers in
+                    pasteIntake.receive(providers)
                 }
                 .disabled(!canAttachMore)
             }
@@ -711,6 +723,24 @@ struct ComposeBar: View {
             return try? VideoAttachmentPrep.keep(url)
         }.value
         if let copied { onAddMedia(.file(copied)) } else { onNotice("\(url.lastPathComponent) couldn't be read.") }
+    }
+
+    /// Where pasted files and text go: the same handlers as Files.
+    private var pasteSink: ComposePasteIntake.Sink {
+        ComposePasteIntake.Sink(
+            freeSlots: { remainingSlots },
+            addPictures: onAddAttachments,
+            addMedia: onAddMedia,
+            notice: onNotice,
+            insertText: { insertPasted($0) }
+        )
+    }
+
+    /// Text from the Paste button, at the cursor (over a selection).
+    private func insertPasted(_ pasted: String) {
+        let result = PastedText.insert(pasted, into: text, selection: DictationText.utf16Range(of: selection, in: text))
+        text = result.text
+        selection = TextSelection(insertionPoint: String.Index(utf16Offset: result.cursor, in: result.text))
     }
 
     /// Camera capture is a single image and small enough to prep inline on the

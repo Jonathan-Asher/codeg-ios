@@ -12,6 +12,17 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Paste files into a message (1.3.30). A file you copied in another app (a
+  PDF, a Word document, a picture, a video, any file) pastes into the message
+  box as an attachment, with ⌘V on a keyboard or Paste in the field's menu, the
+  same way one from Files goes: a picture in the message, anything else
+  uploaded and linked. The "+" menu has Paste too, for pasting without a
+  keyboard; neither asks to allow pasting. Text pastes as before; a file
+  copied with its name or link as text is attached without the text. The
+  attachment limit and the size limits give their usual notices.
+- Secret answers (1.3.30). When the agent asks for a secret (an API key, a
+  password), what you type in the question card is masked, never corrected or
+  predicted, and the answered question shows only "••••••".
 - Select any part of a message (1.3.29). A long press on a message, yours
   or the agent's, a code block or a tool's output now offers Select Text
   beside Copy; the reply's footer offers it for the whole reply. It opens a
@@ -345,6 +356,19 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Changed
 
+- Activity keeps your place when older sessions load (1.3.30). With the
+  newest at the bottom, tapping Earlier or Show more opens the older sessions
+  above the ones you are reading, which stay exactly where they are; it no
+  longer jumps to the top.
+- Tapping the Activity tab goes to the newest session (1.3.30): to the bottom
+  with the newest at the bottom (the top otherwise), instead of the top.
+  Coming to Activity from another tab lands there too, unless you left it
+  scrolled up less than a minute ago.
+- Fork Session in a list leaves the original in place (1.3.30), as the
+  desktop's sidebar Fork does: on a codeg server that has it, the session is
+  forked into a new "[Fork] …" session that opens, and the original stays as
+  it is, also while a turn runs for Claude Code and Pi. It is greyed out for a
+  session with nothing answered yet, and says why when the agent can't fork.
 - Fork while a Pi reply is running (1.3.22). Pi forks mid-turn since pi-acp
   0.0.34-steering.3, into a new conversation as Claude Code does. The app
   follows what the server says the session's adapter can do

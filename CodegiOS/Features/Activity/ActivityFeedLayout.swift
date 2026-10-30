@@ -104,3 +104,45 @@ struct BottomPin: Equatable, Sendable {
         isPinned = true
     }
 }
+
+// MARK: - The newest end
+
+extension ActivityFeedLayout {
+    /// Whether the feed shows its newest end: the bottom (pinned there) when
+    /// the newest is at the bottom, else the top.
+    static func showsNewest(newestAtBottom: Bool, pinned: Bool, atTop: Bool) -> Bool {
+        newestAtBottom ? pinned : atTop
+    }
+}
+
+/// The Activity tab and the feed's newest end (the bottom, or the top with
+/// newest first). A tap on the tab while it shows brings the feed there,
+/// unless a session is open on the tab: then the tab bar first takes it back
+/// to the feed. Coming to the tab from another one lands there too, unless
+/// the feed was left scrolled away from it less than a minute ago: then it
+/// is where it was left.
+struct ActivityTabReturn: Equatable, Sendable {
+    /// How long a feed left scrolled away from its newest end stays there.
+    static let keepsPlaceFor: TimeInterval = 60
+
+    private(set) var leftAt: Date?
+    private(set) var leftAwayFromNewest = false
+
+    /// The tab was left, the feed showing its newest end or not.
+    mutating func left(awayFromNewest: Bool, at date: Date) {
+        leftAt = date
+        leftAwayFromNewest = awayFromNewest
+    }
+
+    /// Coming back at `date`: to the newest end?
+    func landsOnNewest(at date: Date) -> Bool {
+        guard leftAwayFromNewest, let leftAt else { return true }
+        return date.timeIntervalSince(leftAt) >= Self.keepsPlaceFor
+    }
+
+    /// A tap on the tab that shows: to the newest end, when the feed itself
+    /// shows (`stackDepth` sessions are open on the tab).
+    static func tapScrollsToNewest(stackDepth: Int) -> Bool {
+        stackDepth == 0
+    }
+}
