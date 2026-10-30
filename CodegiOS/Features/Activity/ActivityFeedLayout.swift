@@ -105,20 +105,9 @@ struct BottomPin: Equatable, Sendable {
     }
 }
 
-// MARK: - Holding the reader's place
+// MARK: - The newest end
 
 extension ActivityFeedLayout {
-    /// Whether a change in the feed's size keeps its bottom where it is (the
-    /// rows above move) rather than its top. Newest at the bottom: while the
-    /// feed is pinned to its newest row, and while older sessions go in above
-    /// the rows being read (`holdingForEarlier`), so those rows stay exactly
-    /// where they are on screen and the older ones open above them.
-    /// Otherwise the top stays, so new rows below a scrolled-up feed don't
-    /// move it.
-    static func keepsBottomOnSizeChange(newestAtBottom: Bool, pinned: Bool, holdingForEarlier: Bool) -> Bool {
-        newestAtBottom && (pinned || holdingForEarlier)
-    }
-
     /// Whether the feed shows its newest end: the bottom (pinned there) when
     /// the newest is at the bottom, else the top.
     static func showsNewest(newestAtBottom: Bool, pinned: Bool, atTop: Bool) -> Bool {

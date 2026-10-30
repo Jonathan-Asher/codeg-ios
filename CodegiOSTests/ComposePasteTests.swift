@@ -308,8 +308,10 @@ final class ComposePasteTests: XCTestCase {
         UIPasteboard.general.setItemProviders([pdfProvider()], localOnly: true, expirationDate: nil)
         message.becomeFirstResponder()
         settle(0.3)
-        XCTAssertTrue(message.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil),
-                      "Paste is offered for a file")
+        let paste = #selector(UIResponderStandardEditActions.paste(_:))
+        XCTAssertTrue(message.canPerformAction(paste, withSender: nil), "Paste is offered for a file")
+        XCTAssertFalse(fields.first?.canPerformAction(paste, withSender: nil) ?? true,
+                       "not on another field, which can't take it")
         UIApplication.shared.sendAction(#selector(UIResponderStandardEditActions.paste(_:)), to: message,
                                         from: nil, for: nil)
         let arrived = await eventually { received.media.count == 1 }

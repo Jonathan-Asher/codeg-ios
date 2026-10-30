@@ -11,21 +11,7 @@ import XCTest
 /// scroll to the top is off where the top is the oldest end.
 @MainActor
 final class ActivityNewestEndTests: XCTestCase {
-    // MARK: - Where a size change holds
-
-    func testOlderRowsGoingInKeepTheBottomWhereItIs() {
-        XCTAssertTrue(ActivityFeedLayout.keepsBottomOnSizeChange(newestAtBottom: true, pinned: true,
-                                                                 holdingForEarlier: false), "pinned to the newest row")
-        XCTAssertTrue(ActivityFeedLayout.keepsBottomOnSizeChange(newestAtBottom: true, pinned: false,
-                                                                 holdingForEarlier: true),
-                      "older rows going in above the rows being read")
-        XCTAssertFalse(ActivityFeedLayout.keepsBottomOnSizeChange(newestAtBottom: true, pinned: false,
-                                                                  holdingForEarlier: false),
-                       "scrolled up: new rows below don't move it")
-        XCTAssertFalse(ActivityFeedLayout.keepsBottomOnSizeChange(newestAtBottom: false, pinned: true,
-                                                                  holdingForEarlier: true),
-                       "newest first: older rows go in below, the top stays")
-    }
+    // MARK: - The newest end
 
     func testTheNewestEndIsTheBottomOrTheTop() {
         XCTAssertTrue(ActivityFeedLayout.showsNewest(newestAtBottom: true, pinned: true, atTop: false))
@@ -109,10 +95,11 @@ final class ActivityNewestEndTests: XCTestCase {
     @Observable
     final class Rows {
         var older = 0
+        var holding = false
     }
 
-    /// Rows of one height in a scroll view anchored as the feed is while
-    /// older sessions go in.
+    /// Rows of one height in a scroll view set up as the feed is when it is
+    /// scrolled up, its rows held while older sessions go in.
     private struct Feed: View {
         let rows: Rows
 
@@ -125,13 +112,10 @@ final class ActivityNewestEndTests: XCTestCase {
                             .frame(height: 60)
                     }
                 }
+                .background(FeedScrollHook(scrollsToTop: false, holdsRows: rows.holding))
             }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(
-                ActivityFeedLayout.keepsBottomOnSizeChange(newestAtBottom: true, pinned: false, holdingForEarlier: true)
-                    ? UnitPoint.bottom : UnitPoint.top,
-                for: .sizeChanges
-            )
+            .defaultScrollAnchor(.top, for: .sizeChanges)
         }
     }
 
@@ -147,11 +131,21 @@ final class ActivityNewestEndTests: XCTestCase {
         let offset = scroll.contentOffset.y
         let belowTheScreen = scroll.contentSize.height - offset
 
+        rows.holding = true
+        settle(0.2)
         rows.older = 20
         settle()
         XCTAssertEqual(scroll.contentSize.height - scroll.contentOffset.y, belowTheScreen, accuracy: 1,
                        "the rows on the screen stay where they are")
         XCTAssertEqual(scroll.contentOffset.y - offset, 20 * 68, accuracy: 2, "the older rows went in above")
+
+        // Held no more: rows that come in move what shows, as before.
+        rows.holding = false
+        settle(0.2)
+        let unheld = scroll.contentOffset.y
+        rows.older = 30
+        settle()
+        XCTAssertEqual(scroll.contentOffset.y, unheld, accuracy: 1)
     }
 
     private func feed(newestAtBottom: Bool) -> ActivityFeed {

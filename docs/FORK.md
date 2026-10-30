@@ -1958,8 +1958,13 @@ pastes as it always did. `Features/SessionDetail/ComposePaste.swift`:
   `UITextPasteDelegate` (`ComposeTextPasteDelegate`). For each pasted item the
   delegate asks `PasteRouting` what it is; a file is handed to the composer's
   `ComposePasteIntake` and left out of the field, text goes to the field's
-  default (or the delegate it had). The edit menu offers Paste for a file the
-  field couldn't take before, and neither shows iOS's "Allow Paste" prompt.
+  default (or the delegate it had). The text view offers Paste only for text
+  whatever it accepts, so its class gets an override of
+  `canPerformAction(_:withSender:)` (`ComposePasteOffer`) that also says yes
+  to Paste on a message field when the pasteboard's item types (which ask the
+  user nothing) hold a file; every other text view keeps its own answer. So
+  the edit menu offers Paste and ⌘V pastes for a file, and neither shows iOS's
+  "Allow Paste" prompt.
 - **The Paste button.** The "+" menu's Attach section has the system's
   `PasteButton`, for pasting without a keyboard, also without the prompt. A
   file is attached; text goes in at the cursor.
@@ -2083,9 +2088,11 @@ the list Activity polls, so nothing is fetched). What is shown survives
 opening a session and coming back, and folds again when the server changes.
 With the newest at the bottom, a tap lets go of the bottom, and since 1.3.30
 the rows being read stay exactly where they are on the screen while the older
-ones go in above them: the size-change anchor stays at the bottom for a moment
-(`ActivityFeedLayout.keepsBottomOnSizeChange`, `holdingForEarlier`), until the
-rows are in or he scrolls.
+ones go in above them (without the rows' animation). The scroll anchors
+can't do it (a size change in the middle of the content keeps the offset
+whatever the anchor), so for a moment (`holdingForEarlier`, until the rows are
+in or he scrolls) `FeedScrollHook` watches the scroll view's content size and
+moves the offset by what grew, in the same layout pass.
 
 ### Activity: the newest end from the tab (1.3.30)
 

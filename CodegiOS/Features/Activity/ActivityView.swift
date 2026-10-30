@@ -180,8 +180,9 @@ struct ActivityFeed: View {
                 .padding(.horizontal, Theme.Layout.screenHMargin)
                 .padding(.bottom, newestAtBottom ? 8 : Theme.Layout.screenBottomInset)
                 // A tap on the status bar (or iOS's own on the tab) scrolls to
-                // the top: only where the top is the newest end.
-                .background(ScrollsToTop(enabled: !newestAtBottom))
+                // the top: only where the top is the newest end. And while
+                // older sessions go in above, the rows on screen stay put.
+                .background(FeedScrollHook(scrollsToTop: !newestAtBottom, holdsRows: holdingForEarlier))
                 // Ease rows between Running ↔ Last-24h as the background poll
                 // reorders them, instead of teleporting.
                 .animation(Theme.Motion.chrome, value: rowIDs)
@@ -193,17 +194,12 @@ struct ActivityFeed: View {
             }
             // Newest at the bottom: open there (no visible jump), sit short
             // content at the bottom, and keep the bottom in place as rows
-            // change while pinned, and while older sessions go in above the
-            // rows being read, so those stay where they are. Scrolled up
-            // otherwise, a size change keeps the top in place instead.
+            // change, but only while pinned. Scrolled up, a size change keeps
+            // the top in place instead (older sessions going in above are
+            // held by ``FeedScrollHook``).
             .defaultScrollAnchor(newestAtBottom ? UnitPoint.bottom : nil, for: .initialOffset)
             .defaultScrollAnchor(newestAtBottom ? UnitPoint.bottom : nil, for: .alignment)
-            .defaultScrollAnchor(
-                ActivityFeedLayout.keepsBottomOnSizeChange(newestAtBottom: newestAtBottom, pinned: pin.isPinned,
-                                                           holdingForEarlier: holdingForEarlier)
-                    ? UnitPoint.bottom : UnitPoint.top,
-                for: .sizeChanges
-            )
+            .defaultScrollAnchor(newestAtBottom && pin.isPinned ? UnitPoint.bottom : UnitPoint.top, for: .sizeChanges)
             .onScrollPhaseChange { _, phase, context in
                 let wasUserScrolling = isUserScrolling
                 isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
@@ -344,14 +340,21 @@ struct ActivityFeed: View {
 
     /// With the newest at the bottom, older rows go in above the rows being
     /// read, which keep their place on screen: the feed lets go of the
-    /// bottom (he is reading older sessions now) and holds what shows while
-    /// the rows go in.
+    /// bottom (he is reading older sessions now), holds what shows
+    /// (``FeedScrollHook``), then lists them, without the rows' animation,
+    /// which would slide what is held.
     private func showEarlier() {
-        if newestAtBottom {
-            pin.update(atBottom: false, userScrolling: true)
-            holdingForEarlier = true
+        guard newestAtBottom else {
+            onShowEarlier()
+            return
         }
-        onShowEarlier()
+        pin.update(atBottom: false, userScrolling: true)
+        holdingForEarlier = true
+        Task { @MainActor in
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { onShowEarlier() }
+        }
     }
 
     /// A group header above its cards: a tinted circular badge + the section
@@ -400,22 +403,28 @@ private struct FeedScrollMetrics: Equatable {
     }
 }
 
-/// Turns the system's scroll to the top (a tap on the status bar, iOS's own
-/// on the tab that shows) on or off for the scroll view it sits in.
-struct ScrollsToTop: UIViewRepresentable {
-    let enabled: Bool
+/// What the feed asks of its scroll view: whether the system's scroll to the
+/// top (a tap on the status bar, iOS's own on the tab that shows) works, and,
+/// while `holdsRows`, that content growing above the rows on screen (older
+/// sessions going in) moves the offset with it, in the same layout pass, so
+/// those rows stay exactly where they are.
+struct FeedScrollHook: UIViewRepresentable {
+    let scrollsToTop: Bool
+    let holdsRows: Bool
 
     func makeUIView(context: Context) -> Probe {
         Probe()
     }
 
     func updateUIView(_ probe: Probe, context: Context) {
-        probe.enabled = enabled
-        probe.apply()
+        probe.update(scrollsToTop: scrollsToTop, holdsRows: holdsRows)
     }
 
     final class Probe: UIView {
-        var enabled = true
+        private weak var scrollView: UIScrollView?
+        private var contentSizeObservation: NSKeyValueObservation?
+        private var scrollsToTop = true
+        private var holdsRows = false
 
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -429,19 +438,31 @@ struct ScrollsToTop: UIViewRepresentable {
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            apply()
+            update(scrollsToTop: scrollsToTop, holdsRows: holdsRows)
+        }
+
+        func update(scrollsToTop: Bool, holdsRows: Bool) {
+            self.scrollsToTop = scrollsToTop
+            self.holdsRows = holdsRows
+            attach()
+            if let scrollView, scrollView.scrollsToTop != scrollsToTop { scrollView.scrollsToTop = scrollsToTop }
         }
 
         /// The scroll view this one sits in.
-        func apply() {
+        private func attach() {
             var view = superview
-            while let current = view {
-                if let scrollView = current as? UIScrollView {
-                    if scrollView.scrollsToTop != enabled { scrollView.scrollsToTop = enabled }
-                    return
-                }
-                view = current.superview
+            while let current = view, !(current is UIScrollView) { view = current.superview }
+            guard let found = view as? UIScrollView, found !== scrollView else { return }
+            scrollView = found
+            contentSizeObservation = found.observe(\.contentSize, options: [.old, .new]) { [weak self] scrollView, change in
+                guard let old = change.oldValue, let new = change.newValue else { return }
+                MainActor.assumeIsolated { self?.contentSizeChanged(scrollView, by: new.height - old.height) }
             }
+        }
+
+        private func contentSizeChanged(_ scrollView: UIScrollView, by delta: CGFloat) {
+            guard holdsRows, abs(delta) > 0.5, !scrollView.isTracking, !scrollView.isDecelerating else { return }
+            scrollView.contentOffset.y += delta
         }
     }
 }

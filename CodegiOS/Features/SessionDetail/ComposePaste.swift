@@ -516,6 +516,7 @@ final class ComposePasteProbe: UIView {
         if found.pasteConfiguration?.acceptableTypeIdentifiers != configuration.acceptableTypeIdentifiers {
             found.pasteConfiguration = configuration
         }
+        ComposePasteOffer.offer(on: found)
         textView = found
     }
 
@@ -556,5 +557,54 @@ final class ComposePasteProbe: UIView {
             queue.append(contentsOf: view.subviews)
         }
         return found
+    }
+}
+
+/// Paste offered on the message field for a file, too. The field's text view
+/// offers Paste (in its menu, and as ⌘V) only for text, whatever it accepts:
+/// its class gets an override of `canPerformAction(_:withSender:)` that also
+/// says yes to Paste on a message field when what was copied is a file the
+/// composer attaches. Everything else, and every other text view of that
+/// class, goes to the class's own answer.
+@MainActor
+enum ComposePasteOffer {
+    /// The composers' message fields.
+    private static let fields = NSHashTable<UITextView>.weakObjects()
+    /// The classes given the override.
+    private static var overridden: Set<ObjectIdentifier> = []
+
+    static func offer(on textView: UITextView) {
+        if !fields.contains(textView) { fields.add(textView) }
+        guard var target = object_getClass(textView) else { return }
+        // Key-value observing puts a class of its own in between.
+        if NSStringFromClass(target).hasPrefix("NSKVONotifying_"), let base = class_getSuperclass(target) {
+            target = base
+        }
+        let key = ObjectIdentifier(target)
+        guard !overridden.contains(key) else { return }
+        let selector = #selector(UIResponder.canPerformAction(_:withSender:))
+        guard let method = class_getInstanceMethod(target, selector) else { return }
+        typealias CanPerform = @convention(c) (AnyObject, Selector, Selector, AnyObject?) -> Bool
+        let inherited = unsafeBitCast(method_getImplementation(method), to: CanPerform.self)
+        let paste = #selector(UIResponderStandardEditActions.paste(_:))
+        let answer: @convention(block) (AnyObject, Selector, AnyObject?) -> Bool = { object, action, sender in
+            if inherited(object, selector, action, sender) { return true }
+            guard action == paste else { return false }
+            return MainActor.assumeIsolated {
+                fields.contains(object as? UITextView) && pasteboardHoldsFile()
+            }
+        }
+        let override = imp_implementationWithBlock(answer)
+        if !class_addMethod(target, selector, override, method_getTypeEncoding(method)) {
+            method_setImplementation(method, override)
+        }
+        overridden.insert(key)
+    }
+
+    /// What was copied holds a file the composer attaches, read from the
+    /// pasteboard's item types (which asks the user nothing).
+    static func pasteboardHoldsFile() -> Bool {
+        guard let items = UIPasteboard.general.types(forItemSet: nil) else { return false }
+        return items.contains { PasteRouting.kind(typeIdentifiers: $0, suggestedName: nil).isFile }
     }
 }
