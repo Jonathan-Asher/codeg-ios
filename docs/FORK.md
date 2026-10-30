@@ -2091,8 +2091,10 @@ the rows being read stay exactly where they are on the screen while the older
 ones go in above them (without the rows' animation). The scroll anchors
 can't do it (a size change in the middle of the content keeps the offset
 whatever the anchor), so for a moment (`holdingForEarlier`, until the rows are
-in or he scrolls) `FeedScrollHook` watches the scroll view's content size and
-moves the offset by what grew, in the same layout pass.
+in or he scrolls) `FeedScrollHook` keeps the end of the content as far from
+the top of the screen as it was (everything below that top is unchanged),
+watching the scroll view's content size and offset, in the same layout pass,
+whether or not SwiftUI moved the offset itself.
 
 ### Activity: the newest end from the tab (1.3.30)
 

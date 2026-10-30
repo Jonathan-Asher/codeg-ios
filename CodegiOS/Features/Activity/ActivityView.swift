@@ -405,9 +405,10 @@ private struct FeedScrollMetrics: Equatable {
 
 /// What the feed asks of its scroll view: whether the system's scroll to the
 /// top (a tap on the status bar, iOS's own on the tab that shows) works, and,
-/// while `holdsRows`, that content growing above the rows on screen (older
-/// sessions going in) moves the offset with it, in the same layout pass, so
-/// those rows stay exactly where they are.
+/// while `holdsRows`, that the rows on screen stay exactly where they are as
+/// content goes in above them (older sessions): everything below the top of
+/// the screen is as it was, so the end of the content is kept as far from it,
+/// in the same layout pass, whether or not SwiftUI moved the offset itself.
 struct FeedScrollHook: UIViewRepresentable {
     let scrollsToTop: Bool
     let holdsRows: Bool
@@ -422,9 +423,12 @@ struct FeedScrollHook: UIViewRepresentable {
 
     final class Probe: UIView {
         private weak var scrollView: UIScrollView?
-        private var contentSizeObservation: NSKeyValueObservation?
+        private var observations: [NSKeyValueObservation] = []
         private var scrollsToTop = true
         private var holdsRows = false
+        /// While the rows are held: from the top of the screen to the end of
+        /// the content.
+        private var heldDistance: CGFloat?
 
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -445,7 +449,13 @@ struct FeedScrollHook: UIViewRepresentable {
             self.scrollsToTop = scrollsToTop
             self.holdsRows = holdsRows
             attach()
-            if let scrollView, scrollView.scrollsToTop != scrollsToTop { scrollView.scrollsToTop = scrollsToTop }
+            guard let scrollView else { return }
+            if scrollView.scrollsToTop != scrollsToTop { scrollView.scrollsToTop = scrollsToTop }
+            if !holdsRows {
+                heldDistance = nil
+            } else if heldDistance == nil {
+                heldDistance = scrollView.contentSize.height - scrollView.contentOffset.y
+            }
         }
 
         /// The scroll view this one sits in.
@@ -454,15 +464,21 @@ struct FeedScrollHook: UIViewRepresentable {
             while let current = view, !(current is UIScrollView) { view = current.superview }
             guard let found = view as? UIScrollView, found !== scrollView else { return }
             scrollView = found
-            contentSizeObservation = found.observe(\.contentSize, options: [.old, .new]) { [weak self] scrollView, change in
-                guard let old = change.oldValue, let new = change.newValue else { return }
-                MainActor.assumeIsolated { self?.contentSizeChanged(scrollView, by: new.height - old.height) }
-            }
+            heldDistance = nil
+            observations = [
+                found.observe(\.contentSize, options: [.new]) { [weak self] scrollView, _ in
+                    MainActor.assumeIsolated { self?.hold(scrollView) }
+                },
+                found.observe(\.contentOffset, options: [.new]) { [weak self] scrollView, _ in
+                    MainActor.assumeIsolated { self?.hold(scrollView) }
+                },
+            ]
         }
 
-        private func contentSizeChanged(_ scrollView: UIScrollView, by delta: CGFloat) {
-            guard holdsRows, abs(delta) > 0.5, !scrollView.isTracking, !scrollView.isDecelerating else { return }
-            scrollView.contentOffset.y += delta
+        private func hold(_ scrollView: UIScrollView) {
+            guard let heldDistance, !scrollView.isTracking, !scrollView.isDecelerating else { return }
+            let offset = scrollView.contentSize.height - heldDistance
+            if abs(scrollView.contentOffset.y - offset) > 0.5 { scrollView.contentOffset.y = offset }
         }
     }
 }

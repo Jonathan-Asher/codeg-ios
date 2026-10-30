@@ -139,13 +139,12 @@ final class ActivityNewestEndTests: XCTestCase {
                        "the rows on the screen stay where they are")
         XCTAssertEqual(scroll.contentOffset.y - offset, 20 * 68, accuracy: 2, "the older rows went in above")
 
-        // Held no more: rows that come in move what shows, as before.
+        // Held no more: he scrolls freely.
         rows.holding = false
         settle(0.2)
-        let unheld = scroll.contentOffset.y
-        rows.older = 30
-        settle()
-        XCTAssertEqual(scroll.contentOffset.y, unheld, accuracy: 1)
+        scroll.setContentOffset(CGPoint(x: 0, y: offset), animated: false)
+        settle(0.3)
+        XCTAssertEqual(scroll.contentOffset.y, offset, accuracy: 1)
     }
 
     private func feed(newestAtBottom: Bool) -> ActivityFeed {
