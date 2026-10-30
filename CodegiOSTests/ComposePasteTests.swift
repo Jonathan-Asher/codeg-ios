@@ -81,6 +81,10 @@ final class ComposePasteTests: XCTestCase {
                        .file(typeIdentifier: "com.adobe.pdf", name: "Report.pdf"))
         XCTAssertEqual(kind(["com.adobe.pdf", "public.file-url"]),
                        .file(typeIdentifier: "com.adobe.pdf", name: "Pasted document.pdf"))
+        XCTAssertEqual(kind(["public.file-url", "com.adobe.pdf"]),
+                       .file(typeIdentifier: "com.adobe.pdf", name: "Pasted document.pdf"),
+                       "a file's address before the file")
+        XCTAssertEqual(kind(["public.file-url"]), .text, "an address alone: the field decides")
         // A document named as a file, even beside text.
         XCTAssertEqual(kind(["org.openxmlformats.wordprocessingml.document", "public.utf8-plain-text"],
                             name: "Brief.docx"),

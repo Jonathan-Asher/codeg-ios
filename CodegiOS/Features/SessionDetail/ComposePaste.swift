@@ -80,8 +80,11 @@ enum PasteRouting {
     private static let generalTypes: Set<UTType> = [.item, .content, .data, .text, .compositeContent]
 
     /// Text as an app copies it: plain or rich text, a link, a web archive.
+    /// Not a file's own address, which comes beside the file: the file's
+    /// type decides.
     private static func isTextual(_ type: UTType) -> Bool {
-        type.conforms(to: .text) || type.conforms(to: .url)
+        if type.conforms(to: .fileURL) { return false }
+        return type.conforms(to: .text) || type.conforms(to: .url)
             || type.conforms(to: .rtfd) || type.conforms(to: .flatRTFD) || type.conforms(to: .webArchive)
     }
 
@@ -91,7 +94,7 @@ enum PasteRouting {
     }
 
     private static func isDocument(_ type: UTType) -> Bool {
-        guard !generalTypes.contains(type), !isTextual(type) else { return false }
+        guard !generalTypes.contains(type), !type.conforms(to: .url), !isTextual(type) else { return false }
         return type.conforms(to: .data) || type.conforms(to: .content)
     }
 
