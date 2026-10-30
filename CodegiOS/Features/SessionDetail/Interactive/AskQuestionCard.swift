@@ -162,6 +162,12 @@ struct AskQuestionCard: View {
                     .foregroundStyle(Theme.textSecondary)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Color.primary.opacity(0.06), in: Capsule())
+                if question.isSecret {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textTertiary)
+                        .accessibilityLabel(Text("Secret answer"))
+                }
                 if pending.questions.count > 1, !question.header.isEmpty {
                     Text(verbatim: question.header)
                         .font(.caption.weight(.semibold))
@@ -268,7 +274,9 @@ struct AskQuestionCard: View {
             .buttonStyle(.plain)
             .disabled(submitting)
 
-            if selected {
+            if selected, question.isSecret {
+                secretAnswerField(question)
+            } else if selected {
                 TextField("Type your answer…", text: otherBinding(question.id), axis: .vertical)
                     .font(.subheadline)
                     .lineLimit(1...3)
@@ -279,6 +287,32 @@ struct AskQuestionCard: View {
                     .disabled(submitting)
             }
         }
+    }
+
+    /// A secret's answer (an API key, a password): masked as it is typed,
+    /// never corrected, predicted or capitalized. Answered, the card shows
+    /// only that there was one.
+    @ViewBuilder
+    private func secretAnswerField(_ question: QuestionSpec) -> some View {
+        Group {
+            if readOnly {
+                Text(verbatim: AskQuestionParse.hiddenAnswer)
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(Text("Hidden answer"))
+            } else {
+                SecureField("Type your answer…", text: otherBinding(question.id))
+                    .font(.subheadline)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .privacySensitive()
+            }
+        }
+        .padding(8)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
+        .hairlineBorder(Theme.Radius.sm)
+        .disabled(submitting)
     }
 
     private func indicator(selected: Bool, multi: Bool) -> some View {

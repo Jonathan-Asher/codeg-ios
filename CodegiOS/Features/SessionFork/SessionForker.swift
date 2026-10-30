@@ -73,6 +73,14 @@ final class ForkCapabilities {
         endpointsByServer[TranscriptCache.serverKey(for: client)] = .missing
     }
 
+    /// The server turned out not to fork whole conversations after all.
+    func noteWholeConversationMissing(client: CodegClient) {
+        let key = TranscriptCache.serverKey(for: client)
+        if case .available(let toNew, true)? = endpointsByServer[key] {
+            endpointsByServer[key] = .available(toNewConversation: toNew, wholeConversation: false)
+        }
+    }
+
     /// Check the server's fork endpoints unless that is known. A check that
     /// couldn't reach the server leaves it unknown, to be tried again.
     @discardableResult
@@ -158,14 +166,22 @@ struct SessionForker {
     /// Fork `target` at `point`. `resolveConnection` gives a live connection
     /// id (the session screen's own); without one the forker finds or resumes
     /// it. `onConnection` hears the connection the fork ran on.
+    /// `wholeConversation` (a list row's Fork Session) forks the whole
+    /// conversation into a new one where the server can
+    /// (`acp_fork_conversation`), leaving the original as it is, with no
+    /// connection of the phone's own.
     func fork(
         _ target: ForkTarget,
         at point: ForkPoint,
+        wholeConversation: Bool = false,
         resolveConnection: (() async throws -> String)? = nil,
         onConnection: ((String) -> Void)? = nil
     ) async throws -> ForkOutcome {
         let endpoints = await capabilities.probeIfNeeded(client: client)
         if endpoints == .missing { throw ForkError.serverTooOld }
+        if wholeConversation, endpoints.forksWholeConversation, let outcome = try await forkWholeConversation(target) {
+            return outcome
+        }
         var retried = false
         while true {
             do {
@@ -196,6 +212,30 @@ struct SessionForker {
     }
 
     // MARK: - Steps
+
+    /// codeg's sidebar Fork (`acp_fork_conversation`): the whole conversation,
+    /// at its latest finished reply, into a new `[Fork] …` conversation; the
+    /// original row stays as it is. The server's refusals say why, as the
+    /// desktop says them; an agent that can't fork is remembered. Nil when
+    /// the server turns out not to have it, so the fork goes the older way.
+    private func forkWholeConversation(_ target: ForkTarget) async throws -> ForkOutcome? {
+        do {
+            let result = try await client.forkConversation(conversationId: target.conversationID)
+            return .newConversation(result, originalID: target.conversationID)
+        } catch let error as APIError {
+            if error.isEndpointMissing {
+                capabilities.noteWholeConversationMissing(client: client)
+                return nil
+            }
+            if error.isForkNeedsIdle { throw ForkError.betweenTurnsOnly }
+            if error.isForkNoFinishedReply { throw ForkError.noFinishedReply }
+            if error.isForkUnsupported {
+                capabilities.note(agent: target.agentType, forks: false, client: client)
+                throw ForkError.agentCannotFork(target.agentType.displayName)
+            }
+            throw ForkError.failed(error.serverMessage)
+        }
+    }
 
     private func connection(for target: ForkTarget, resolve: (() async throws -> String)?,
                             fresh: Bool) async throws -> String {
@@ -251,7 +291,7 @@ struct SessionForker {
         func intoNewConversation() async throws -> ForkOutcome {
             guard SessionForkRules.forksWhileRunning(target.agentType, adapter: adapterForksWhileRunning)
             else { throw ForkError.betweenTurnsOnly }
-            if case .available(let toNew) = endpoints, !toNew { throw ForkError.betweenTurnsOnly }
+            if case .available(let toNew, _) = endpoints, !toNew { throw ForkError.betweenTurnsOnly }
             let reply: String
             switch point {
             case .reply(let id):

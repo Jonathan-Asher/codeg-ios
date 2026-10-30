@@ -83,9 +83,10 @@ enum AskQuestionParse {
             let question = (q["question"] as? String) ?? ""
             if question.isEmpty && options.isEmpty { continue }      // empty noise
             let multi = (CompanionJSON.bool(q["multiSelect"]) == true) || (CompanionJSON.bool(q["multi_select"]) == true)
+            let secret = (CompanionJSON.bool(q["isSecret"]) == true) || (CompanionJSON.bool(q["is_secret"]) == true)
             out.append(QuestionSpec(id: "q\(i)", question: question,
                                     header: (q["header"] as? String) ?? "",
-                                    multiSelect: multi, options: options))
+                                    multiSelect: multi, options: options, isSecret: secret))
         }
         return out
     }
@@ -128,6 +129,54 @@ enum AskQuestionParse {
             }
         }
         return AskOutcome(declined: false, answers: answers)
+    }
+
+    /// What an answered view shows in place of a secret question's typed
+    /// answer.
+    static let hiddenAnswer = "••••••"
+
+    /// The picks the answered capsule lists, in order. A secret question's
+    /// typed answer is hidden (its offered options picked show as they
+    /// are); so is that of an answer that can't be told apart from a secret
+    /// question's.
+    static func shownPicks(_ outcome: AskOutcome?, questions: [QuestionSpec]) -> [String] {
+        let answers = outcome?.answers ?? []
+        guard questions.contains(where: \.isSecret) else {
+            return answers.flatMap(\.selected).filter { !$0.isEmpty }
+        }
+        return answers.flatMap { answer -> [String] in
+            let values = answer.selected.filter { !$0.isEmpty }
+            let question = questions.first { $0.header == answer.header && $0.question == answer.question }
+                ?? questions.first { !answer.question.isEmpty && $0.question == answer.question }
+            if let question, !question.isSecret { return values }
+            let labels = (question.map { [$0] } ?? questions).flatMap(\.options).map(\.label)
+            return hidingTyped(values, optionLabels: labels)
+        }
+    }
+
+    /// Match each question's persisted answer (by header+question signature)
+    /// to a pre-filled selection for the read-only card. A secret's typed
+    /// answer is never put in the card, only that there was one.
+    static func answeredSelections(questions: [QuestionSpec], outcome: AskOutcome?) -> [String: AskQuestionSelection] {
+        guard let outcome, !outcome.declined else { return [:] }
+        let sep = "\u{1f}"   // unit separator — never in agent text
+        var bySig: [String: [String]] = [:]
+        for a in outcome.answers { bySig[a.header + sep + a.question] = a.selected }
+        var out: [String: AskQuestionSelection] = [:]
+        for q in questions {
+            let values = bySig[q.header + sep + q.question] ?? []
+            let matched = matchSelections(values: values, optionLabels: q.options.map { $0.label })
+            let other = q.isSecret && !matched.other.isEmpty ? hiddenAnswer : matched.other.joined(separator: ", ")
+            out[q.id] = AskQuestionSelection(chosen: matched.selected, otherText: other)
+        }
+        return out
+    }
+
+    /// A secret question's picks: the offered options as they are, anything
+    /// typed hidden.
+    static func hidingTyped(_ values: [String], optionLabels: [String]) -> [String] {
+        let matched = matchSelections(values: values, optionLabels: optionLabels)
+        return matched.selected + (matched.other.isEmpty ? [] : [hiddenAnswer])
     }
 
     /// Partition raw picks into chosen offered-option labels (`selected`) and

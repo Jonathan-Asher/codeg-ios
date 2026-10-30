@@ -51,7 +51,8 @@ final class SessionActions {
             agentForks: capabilities.agentForks(summary.agentType, client: client),
             adapterForksWhileRunning: capabilities.agentForksWhileRunning(summary.agentType, client: client),
             turnRunning: SessionForkRules.turnRunning(summary),
-            forking: false
+            forking: false,
+            hasAgentSession: !(summary.externalId ?? "").isEmpty
         )
         return sessionAvailability(availability, conversationID: summary.id)
     }
@@ -77,13 +78,15 @@ final class SessionActions {
     // MARK: - Forking
 
     /// Fork a session from its list row: the whole session between turns, the
-    /// latest finished reply while a turn runs. The fork opens on top of the
-    /// list.
+    /// latest finished reply while a turn runs. On a server that forks whole
+    /// conversations it goes into a new `[Fork] …` conversation and the
+    /// original row stays as it is, as codeg's sidebar Fork does. The fork
+    /// opens on top of the list.
     func fork(_ summary: ConversationSummary) {
         guard let app, let client = app.selectedClient() else { return }
         let folder = app.activity.folders.first { $0.id == summary.folderId }
         let target = ForkTarget(summary: summary, workingDir: folder?.path)
-        start(target, at: .latest, origin: .list, title: summary.title, client: client,
+        start(target, at: .latest, origin: .list, title: summary.title, client: client, wholeConversation: true,
               onError: { [weak self] message in
             self?.alert = SessionActionAlert(title: String(localized: "Couldn’t Fork the Session"), message: message)
         })
@@ -99,6 +102,7 @@ final class SessionActions {
         origin: ForkOrigin,
         title: String? = nil,
         client: CodegClient,
+        wholeConversation: Bool = false,
         resolveConnection: (() async throws -> String)? = nil,
         onConnection: ((String) -> Void)? = nil,
         onError: @escaping (String) -> Void
@@ -112,7 +116,7 @@ final class SessionActions {
             var connection: String?
             do {
                 let outcome = try await SessionForker(client: client, capabilities: capabilities).fork(
-                    target, at: point, resolveConnection: resolveConnection,
+                    target, at: point, wholeConversation: wholeConversation, resolveConnection: resolveConnection,
                     onConnection: { conn in
                         connection = conn
                         onConnection?(conn)

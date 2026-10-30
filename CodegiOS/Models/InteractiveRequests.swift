@@ -30,6 +30,26 @@ struct QuestionSpec: Decodable, Hashable, Sendable, Identifiable {
     let header: String
     let multiSelect: Bool
     let options: [QuestionOption]
+    /// The answer is a secret (an API key, a password; codex marks them,
+    /// Rust `is_secret`): the card masks what is typed, and no answered
+    /// view shows it. Absent on the wire unless true.
+    var isSecret: Bool = false
+}
+
+extension QuestionSpec {
+    private enum CodingKeys: String, CodingKey {
+        case id, question, header, multiSelect, options, isSecret
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        question = try c.decode(String.self, forKey: .question)
+        header = try c.decode(String.self, forKey: .header)
+        multiSelect = try c.decode(Bool.self, forKey: .multiSelect)
+        options = try c.decode([QuestionOption].self, forKey: .options)
+        isSecret = (try? c.decodeIfPresent(Bool.self, forKey: .isSecret)) ?? false
+    }
 }
 
 /// One question's answer: the per-question id plus the chosen option label
