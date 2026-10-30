@@ -137,7 +137,7 @@ final class ComposePasteTests: XCTestCase {
         var text: [String] = []
     }
 
-    private func intake(freeSlots: Int = 10) -> (ComposePasteIntake, Received) {
+    private func makeIntake(freeSlots: Int = 10) -> (ComposePasteIntake, Received) {
         let received = Received()
         let intake = ComposePasteIntake()
         intake.sink = ComposePasteIntake.Sink(
@@ -160,7 +160,7 @@ final class ComposePasteTests: XCTestCase {
     }
 
     func testAPastedPDFIsCopiedUnderItsNameAndUploaded() async {
-        let (intake, received) = intake()
+        let (intake, received) = makeIntake()
         intake.receive([pdfProvider()])
         let arrived = await eventually { received.media.count == 1 }
         XCTAssertTrue(arrived)
@@ -172,7 +172,7 @@ final class ComposePasteTests: XCTestCase {
     }
 
     func testOnePasteSharesTheFreeSlots() async {
-        let (intake, received) = intake(freeSlots: 2)
+        let (intake, received) = makeIntake(freeSlots: 2)
         intake.receive([pdfProvider(name: "a.pdf"), pdfProvider(name: "b.pdf"), pdfProvider(name: "c.pdf")])
         let arrived = await eventually { received.media.count == 2 && !received.notices.isEmpty }
         XCTAssertTrue(arrived)
@@ -182,7 +182,7 @@ final class ComposePasteTests: XCTestCase {
     }
 
     func testThePasteButtonsTextGoesInAtTheCursor() async {
-        let (intake, received) = intake()
+        let (intake, received) = makeIntake()
         intake.receive([NSItemProvider(object: "a copied line" as NSString)])
         let arrived = await eventually { !received.text.isEmpty }
         XCTAssertTrue(arrived)
@@ -212,7 +212,7 @@ final class ComposePasteTests: XCTestCase {
     }
 
     func testTheFieldTakesTheFileAndLeavesOutItsName() async {
-        let (intake, received) = intake()
+        let (intake, received) = makeIntake()
         let delegate = ComposeTextPasteDelegate()
         delegate.intake = intake
         let field = UITextView()
@@ -289,7 +289,7 @@ final class ComposePasteTests: XCTestCase {
     }
 
     func testTheMessageFieldPastesAPDFItsTextViewWouldNotTake() async throws {
-        let (intake, received) = intake()
+        let (intake, received) = makeIntake()
         let window = try host(Fields(intake: intake, sink: intake.sink))
         defer { window.isHidden = true }
         settle()

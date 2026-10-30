@@ -1943,6 +1943,76 @@ for where its window counts back from
 for a turn not held, the last user turn is the anchor as before. Test:
 `InsertPlacementTests.testAReattachedReplySplitByAMessageShowsItsFirstHalfOnce`.
 
+### Pasting files into a message (1.3.30)
+
+A file copied in another app (Files, Mail, Photos, Safari, a chat) pastes
+into the message field as an attachment, the same way one picked in Files
+goes: a picture rides in the prompt, a video, an audio file or any other
+document (PDF, Word, a spreadsheet, an archive) is uploaded and linked. Text
+pastes as it always did. `Features/SessionDetail/ComposePaste.swift`:
+
+- **⌘V and the field's Paste.** The field is SwiftUI's `TextField`, whose
+  text view SwiftUI makes; `ComposePasteHook` sits behind it, finds that text
+  view (the editable one under it, nearest first) and gives it a
+  `pasteConfiguration` that takes any file beside text, and a
+  `UITextPasteDelegate` (`ComposeTextPasteDelegate`). For each pasted item the
+  delegate asks `PasteRouting` what it is; a file is handed to the composer's
+  `ComposePasteIntake` and left out of the field, text goes to the field's
+  default (or the delegate it had). The edit menu offers Paste for a file the
+  field couldn't take before, and neither shows iOS's "Allow Paste" prompt.
+- **The Paste button.** The "+" menu's Attach section has the system's
+  `PasteButton`, for pasting without a keyboard, also without the prompt. A
+  file is attached; text goes in at the cursor.
+- **What an item is** (`PasteRouting.kind`), by its types, richest first, and
+  the name it came with: a named file carrying the type its name says (a file
+  from Files or Mail) is that file; otherwise the first type that is text or a
+  picture, video, audio file or PDF decides, so a file copied with its name or
+  link as text is the file, and rich text (HTML, RTF, a web archive) is text;
+  a document type with nothing that reads as text is a file, but the format a
+  word processor or a spreadsheet puts above a selection's text is its own,
+  and that pastes as text. In one paste, text beside a file is left out.
+- **The file** is loaded with `loadFileRepresentation` at once (what is
+  pasted can be read during the paste) and copied into the app's folder under
+  its name, the extension made to match what was loaded, or "Pasted image.png"
+  and the like; then `PickedFileRoute` routes it, as for Files.
+- **Limits.** The items of one paste arrive together and share the free
+  attachment slots in order (`PasteBudget`); what doesn't fit is said ("You
+  can attach up to 10 files."). The picture budget and the server's document
+  limit (20 MB) give their usual notices.
+
+Tests: `ComposePasteTests` (routing, names, slots, the delegate, and on the
+simulator a PDF pasted into a hosted `TextField` with the hook).
+
+### Secret answers (1.3.30)
+
+A question whose answer is a secret (codex marks API keys and the like;
+`QuestionSpec.is_secret` on the wire, `isSecret` in the transcript's record)
+has a lock beside its kind, and its free-text answer is a `SecureField`
+(masked, no autocorrection, prediction or capitalization). Answered, the
+capsule lists "••••••" for what was typed (the options picked show as they
+are), and the expanded card gets only that there was an answer
+(`AskQuestionParse.shownPicks`, `answeredSelections`), so the secret never
+reaches the transcript's views; nothing logs it. An answer that can't be
+matched to a question of a set holding a secret is hidden too. The
+"Waiting for you" list and notifications never ask for a secret (1.3.27).
+Tests: `SecretQuestionTests`.
+
+### Fork Session from a list, into a new conversation (1.3.30)
+
+On a server with `acp_fork_conversation` (codeg fork, the desktop's sidebar
+Fork), a list row's Fork Session posts it with the row's id and opens the
+`[Fork] …` conversation it returns, refreshing the lists; the original row,
+its connection and any turn on it stay as they are, and nothing is resumed
+on the phone. `forkEndpoints()` checks for it with conversation 0 (a server
+with it answers "not found"). Its refusals read as the desktop's, matched by
+text: "can only fork between turns", "no finished reply to fork", and
+"cannot fork a conversation", which also marks the agent as one that can't
+fork. The item is greyed out for a row with no agent session (`external_id`)
+and while a turn runs on an agent that forks only between turns (Claude Code
+and Pi with the forked adapter fork while one runs). On an older server, and
+for the open session's own Fork Session, the fork goes as before. Tests in
+`SessionForkTests`.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one
@@ -2011,8 +2081,25 @@ recent of them under an "Earlier" header, and "Show 20 more" continues
 (`ActivityModel.earlier`, `earlierShown`; the conversations are already in
 the list Activity polls, so nothing is fetched). What is shown survives
 opening a session and coming back, and folds again when the server changes.
-With the newest at the bottom, a tap lets go of the bottom so the older rows
-open where the card was.
+With the newest at the bottom, a tap lets go of the bottom, and since 1.3.30
+the rows being read stay exactly where they are on the screen while the older
+ones go in above them: the size-change anchor stays at the bottom for a moment
+(`ActivityFeedLayout.keepsBottomOnSizeChange`, `holdingForEarlier`), until the
+rows are in or he scrolls.
+
+### Activity: the newest end from the tab (1.3.30)
+
+A tap on the Activity tab while it shows brings the feed to its newest end
+(the bottom, or the top newest-first), unless a session is open on the tab:
+the tab bar then first goes back to the feed. The tab bar's selection goes
+through `AppModel.tapTab`, which sees a tap on the selected tab, and bumps
+`activityNewestRequest`; the feed scrolls on it. Newest at the bottom, the
+system's own scroll to the top (iOS's on that tap, and a tap on the status
+bar) is turned off for the feed's scroll view (`ScrollsToTop`), so the two
+don't fight. Coming to Activity from another tab lands on the newest end too,
+unless the feed was left scrolled away from it less than a minute ago
+(`ActivityTabReturn`); then it is where it was left. Tests:
+`ActivityNewestEndTests` (with the anchoring checked on the simulator).
 
 ### Archived folders (1.3.8)
 
