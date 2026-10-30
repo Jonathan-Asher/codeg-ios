@@ -208,9 +208,9 @@ final class ComposePasteTests: XCTestCase {
             itemProvider = provider
         }
 
-        func setStringResult(_ string: String) { result = "string" }
-        func setAttributedStringResult(_ string: NSAttributedString) { result = "attributed" }
-        func setAttachmentResult(_ textAttachment: NSTextAttachment) { result = "attachment" }
+        func setResult(string: String) { result = "string" }
+        func setResult(attributedString: NSAttributedString) { result = "attributed" }
+        func setResult(attachment: NSTextAttachment) { result = "attachment" }
         func setNoResult() { result = "no result" }
         func setDefaultResult() { result = "default" }
     }
