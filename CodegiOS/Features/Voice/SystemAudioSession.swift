@@ -8,8 +8,17 @@ final class SystemAudioSession: AudioSessionDriver {
     /// Standby: the iPhone's microphone, AirPods stay in A2DP, other apps'
     /// audio keeps playing.
     static let standbyOptions: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers]
+    /// Talk: the speaker unless something is plugged in, AirPods' microphone
+    /// (HFP) allowed.
+    static let talkOptions: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .allowBluetoothHFP]
+    /// Talk's IO buffer: 10 ms, so the speech ducks within a frame or two of
+    /// a voice starting.
+    static let talkIOBufferDuration: TimeInterval = 0.01
 
     private var session: AVAudioSession { .sharedInstance() }
+    /// How Talk keeps its speech out of the microphone, for the next
+    /// `configure(for: .talk)`.
+    private var talkEcho: TalkEchoMode = .voiceProcessing
 
     func configure(for use: AudioSessionUse) throws {
         switch use {
@@ -21,7 +30,28 @@ final class SystemAudioSession: AudioSessionDriver {
             try session.setCategory(.playback, mode: .spokenAudio, options: [])
         case .media:
             try session.setCategory(.playback, mode: .moviePlayback, options: [])
+        case .talk:
+            try configureTalk()
         }
+    }
+
+    func prepareTalk(echo: TalkEchoMode) {
+        talkEcho = echo
+    }
+
+    private func configureTalk() throws {
+        let mode = TalkEchoPolicy.sessionMode(for: talkEcho)
+        if session.category != .playAndRecord || session.categoryOptions != Self.talkOptions || session.mode != mode {
+            try session.setCategory(.playAndRecord, mode: mode, options: Self.talkOptions)
+        }
+        try? session.setPreferredIOBufferDuration(Self.talkIOBufferDuration)
+        // Asked for before the session goes active, and only on the built-in
+        // microphone and speaker (where TalkEchoPolicy picks it); off
+        // otherwise, so it never stays on under voice processing. Unsupported
+        // hardware refuses, which changes nothing.
+        try? session.setPrefersEchoCancelledInput(talkEcho == .echoCancelledInput)
+        // The earcons and haptics play while the microphone records.
+        try? session.setAllowHapticsAndSystemSoundsDuringRecording(true)
     }
 
     private func configureRecording(options: AVAudioSession.CategoryOptions) throws {

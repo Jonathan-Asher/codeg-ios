@@ -51,10 +51,12 @@ extension Notification.Name {
 /// Reads agent replies aloud.
 ///
 /// With the BlueTTS models downloaded (``VoiceModelStore``), text goes
-/// through `BlueTTS.synthesizeStream` sentence by sentence and every chunk is
-/// queued on an `AVAudioPlayerNode`, so speech starts after the first
-/// sentence. Without them it falls back to `AVSpeechSynthesizer`, with the
-/// Hebrew (Carmit) or English system voice per span of text.
+/// through `BlueTTS.synthesizeStream` sentence by sentence (on the voice
+/// ``VoiceEngineHost`` shares with Talk) and every chunk is queued on an
+/// `AVAudioPlayerNode`, so speech starts after the first sentence. Without
+/// them it falls back to `AVSpeechSynthesizer`, with the Hebrew (Carmit) or
+/// English system voice per span of text. While Talk holds the audio, it
+/// stops and doesn't start.
 ///
 /// The audio session is `.playback` / `.spokenAudio`, and the app declares the
 /// `audio` background mode, so reading continues with the screen locked. Now
@@ -67,6 +69,8 @@ final class ReadAloudPlayer: NSObject {
     /// Posted ``Notification/Name/readAloudWillClaimAudio`` and not yet the
     /// matching release.
     @ObservationIgnored private var claimsAudio = false
+    /// Talk has the audio (between its claim and its release).
+    @ObservationIgnored private var talkActive = false
 
     enum State: Equatable {
         case idle
@@ -85,9 +89,7 @@ final class ReadAloudPlayer: NSObject {
 
     private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "codeg", category: "read-aloud")
 
-    // BlueTTS path
-    private var tts: BlueTTS?
-    private var ttsVoiceDirectory: URL?
+    // BlueTTS path (the voice itself is ``VoiceEngineHost``'s)
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
     private var format: AVAudioFormat?
@@ -111,6 +113,10 @@ final class ReadAloudPlayer: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(engineConfigurationChanged(_:)),
             name: .AVAudioEngineConfigurationChange, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(talkWillClaimAudio(_:)), name: .talkWillClaimAudio, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(talkDidReleaseAudio(_:)), name: .talkDidReleaseAudio, object: nil)
     }
 
     // MARK: - Public
@@ -127,6 +133,10 @@ final class ReadAloudPlayer: NSObject {
     }
 
     func speak(id: String, title: String, text: String) {
+        guard !talkActive else {
+            lastError = "Talk is using the audio."
+            return
+        }
         // Keep the audio claimed from the reply being replaced, if any.
         stopPlayback(releaseAudio: false)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -215,17 +225,19 @@ final class ReadAloudPlayer: NSObject {
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         RemoteCommandRouter.shared.release(self)
+        // The voice (~900 MB in memory) goes after a quiet spell: the host
+        // drops it 180 s after its last lease.
+        VoiceEngineHost.shared.release(.readAloud)
         scheduleUnload()
     }
 
-    /// Drop the loaded model (~900 MB in memory) after a quiet spell.
+    /// Drop the playback engine after the same quiet spell.
     private func scheduleUnload() {
         unloadTask?.cancel()
-        guard tts != nil else { return }
+        guard engine != nil else { return }
         unloadTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(180))
             guard !Task.isCancelled, let self, self.state == .idle else { return }
-            self.tts = nil
             self.engine = nil
             self.player = nil
         }
@@ -237,10 +249,14 @@ final class ReadAloudPlayer: NSObject {
         state = .preparing
         pendingBuffers = 0
         synthesisDone = false
-        let tts: BlueTTS
+        var options = SynthesisOptions()
+        options.voice = VoicePrefs.voice
+        options.speed = VoicePrefs.speed
+        let stream: AsyncThrowingStream<AudioChunk, Error>
         do {
-            tts = try loadTTS()
             try prepareEngine()
+            VoiceEngineHost.shared.acquire(.readAloud)
+            stream = try VoiceEngineHost.shared.synthesizeStream(text, options: options)
         } catch {
             log.error("BlueTTS unavailable: \(error.localizedDescription, privacy: .public)")
             // Fall back to the system voice rather than saying nothing.
@@ -248,12 +264,9 @@ final class ReadAloudPlayer: NSObject {
             speakWithSystemVoice(text)
             return
         }
-        var options = SynthesisOptions()
-        options.voice = VoicePrefs.voice
-        options.speed = VoicePrefs.speed
         synthesisTask = Task { [weak self] in
             do {
-                for try await chunk in tts.synthesizeStream(text, options: options) {
+                for try await chunk in stream {
                     guard let self, self.generation == gen, !Task.isCancelled else { return }
                     self.enqueue(chunk.samples, sampleRate: chunk.sampleRate, generation: gen)
                 }
@@ -271,18 +284,6 @@ final class ReadAloudPlayer: NSObject {
                 }
             }
         }
-    }
-
-    private func loadTTS() throws -> BlueTTS {
-        if let tts { return tts }
-        var configuration = BlueTTSConfiguration()
-        configuration.defaultVoice = VoicePrefs.voice
-        let phonemizer = try EspeakPhonemizer()
-        let tts = BlueTTS(modelDirectory: VoiceModelStore.shared.modelsDirectory,
-                          englishPhonemizer: phonemizer,
-                          configuration: configuration)
-        self.tts = tts
-        return tts
     }
 
     private func prepareEngine() throws {
@@ -439,6 +440,29 @@ final class ReadAloudPlayer: NSObject {
             } catch {
                 self.fail(AudioErrorText(error).message("Reading aloud stopped when the audio route changed"))
             }
+        }
+    }
+
+    /// Talk takes the audio: stop reading, and don't start until it lets go.
+    /// Posted on the main thread, before Talk changes the session.
+    @objc nonisolated private func talkWillClaimAudio(_ note: Notification) {
+        Self.onMain {
+            self.talkActive = true
+            self.stop()
+        }
+    }
+
+    @objc nonisolated private func talkDidReleaseAudio(_ note: Notification) {
+        Self.onMain { self.talkActive = false }
+    }
+
+    /// Run `work` on the main actor now when on the main thread (a claim must
+    /// land before the session changes), else as soon as it can.
+    nonisolated private static func onMain(_ work: @escaping @MainActor () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { work() }
+        } else {
+            Task { @MainActor in work() }
         }
     }
 

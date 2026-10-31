@@ -116,6 +116,9 @@ struct OutboxMessage: Codable, Hashable, Sendable {
     var images: [Image]
     var holdUntilTurnEnd: Bool
     var failure: SendFailure?
+    /// Said in Talk: it goes out marked spoken. Nil for a typed message (and
+    /// in a file written before Talk).
+    var spoken: Bool? = nil
 }
 
 /// A conversation's unsent messages on disk: the queue above the message bar

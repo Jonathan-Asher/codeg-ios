@@ -111,11 +111,20 @@ private struct UserNodeBody: View {
             if let media {
                 MediaGroupView(group: media)
             }
-            if sentDuringTurn {
-                Label("Sent during the turn", systemImage: "arrow.turn.down.right")
-                    .labelStyle(.titleAndIcon)
-                    .font(.caption2)
-                    .foregroundStyle(Theme.textTertiary)
+            if sentDuringTurn || turn.spoken {
+                HStack(spacing: 10) {
+                    if sentDuringTurn {
+                        Label("Sent during the turn", systemImage: "arrow.turn.down.right")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    // Said in Talk rather than typed.
+                    if turn.spoken {
+                        Label("Spoken", systemImage: "mic.fill")
+                            .labelStyle(.titleAndIcon)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(Theme.textTertiary)
             }
         }
         .padding(.horizontal, 14)

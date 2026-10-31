@@ -8,35 +8,47 @@ import Observation
 /// An iOS client never counts as "someone at the desk" (the phone is where
 /// alerts go when the user is away), only as looking at the session it shows.
 /// The report rides its own event socket, declared iOS with the
-/// `codeg-client.ios` subprotocol, opened only while a session is on screen
-/// and the app is in the foreground. It repeats every 25 s (the server drops
-/// reports older than 90 s) and says `visible: false` before closing.
+/// `codeg-client.ios` subprotocol, opened while a session is on screen and the
+/// app is in the foreground, or while the person talks with it in Talk (then
+/// also with the screen locked: `talking`, which the server keeps quiet about).
+/// It repeats every 25 s (the server drops reports older than 90 s) and says
+/// `visible: false` (and, to a server with Talk, no `talking`) before closing.
 @MainActor
 final class SessionPresenceReporter {
     private let baseURL: URL
     private let token: String
+    private let makeStream: @MainActor () -> EventStream
     private var stream: EventStream?
     private var consumer: Task<Void, Never>?
     private var heartbeat: Task<Void, Never>?
     private var reconnect: Task<Void, Never>?
     private var conversationID: Int?
     private var looking = false
+    private var talking = false
     private var ready = false
 
-    private static let heartbeatInterval: Duration = .seconds(25)
+    /// At most 30 s apart, as the server wants; it drops reports after 90 s.
+    static let heartbeatInterval: Duration = .seconds(25)
 
-    init(baseURL: URL, token: String) {
+    /// `makeStream` opens the socket (a scripted one in the tests).
+    init(baseURL: URL, token: String, makeStream: (@MainActor () -> EventStream)? = nil) {
         self.baseURL = baseURL
         self.token = token
+        self.makeStream = makeStream ?? { EventStream(baseURL: baseURL, token: token) }
     }
 
     /// `looking`: the session's screen is visible and the app is active.
-    func update(conversationID: Int?, looking: Bool) {
-        let want = looking && conversationID != nil
-        let changed = want != self.looking || conversationID != self.conversationID
+    /// `talking`: the person talks with the session in Talk (the screen may
+    /// be locked); the socket stays open for it.
+    func update(conversationID: Int?, looking: Bool, talking: Bool = false) {
+        let wantLooking = looking && conversationID != nil
+        let wantTalking = talking && conversationID != nil
+        let changed = wantLooking != self.looking || wantTalking != self.talking
+            || conversationID != self.conversationID
         self.conversationID = conversationID
-        self.looking = want
-        if want {
+        self.looking = wantLooking
+        self.talking = wantTalking
+        if wantLooking || wantTalking {
             if stream == nil { open() } else if changed { report() }
         } else if stream != nil {
             report()
@@ -46,6 +58,7 @@ final class SessionPresenceReporter {
 
     func stop() {
         looking = false
+        talking = false
         if stream != nil {
             report()
             close()
@@ -58,7 +71,7 @@ final class SessionPresenceReporter {
         reconnect?.cancel()
         reconnect = nil
         ready = false
-        let newStream = EventStream(baseURL: baseURL, token: token)
+        let newStream = makeStream()
         stream = newStream
         newStream.start()
         consumer = Task { [weak self] in
@@ -97,7 +110,12 @@ final class SessionPresenceReporter {
     private func report() {
         guard ready, let stream else { return }
         let ids = looking ? conversationID.map { [$0] } ?? [] : []
-        stream.reportPresence(visible: looking, focused: looking, idleSecs: 0, conversationIds: ids)
+        // Only a server that took `set_conversation_talk_mode` reads it.
+        let talkingIDs: [Int]? = TalkServerSupport.shared.accepts(baseURL)
+            ? (talking ? conversationID.map { [$0] } ?? [] : [])
+            : nil
+        stream.reportPresence(visible: looking, focused: looking, idleSecs: 0, conversationIds: ids,
+                              talking: talkingIDs)
     }
 
     private func startHeartbeat() {
@@ -112,11 +130,11 @@ final class SessionPresenceReporter {
     }
 
     private func scheduleReconnect() {
-        guard looking else { return }
+        guard looking || talking else { return }
         reconnect?.cancel()
         reconnect = Task { [weak self] in
             try? await Task.sleep(for: .seconds(5))
-            guard !Task.isCancelled, let self, self.looking, self.stream == nil else { return }
+            guard !Task.isCancelled, let self, self.looking || self.talking, self.stream == nil else { return }
             self.open()
         }
     }

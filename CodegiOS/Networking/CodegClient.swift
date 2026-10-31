@@ -275,21 +275,24 @@ struct CodegClient: Sendable {
     /// Send a prompt to a live connection. The reply streams over the WebSocket.
     /// Returns whether the server already had this message (the same
     /// `clientMessageId` accepted before, so it was not sent again); an older
-    /// server answers with no body, which reads as false.
+    /// server answers with no body, which reads as false. `spoken`: the
+    /// message was said in Talk (sent as `spoken: true`; nil sends nothing).
     @discardableResult
     func prompt(
         connectionId: String,
         blocks: [PromptInputBlock],
         folderId: Int?,
         conversationId: Int?,
-        clientMessageId: String?
+        clientMessageId: String?,
+        spoken: Bool? = nil
     ) async throws -> Bool {
         let data = try await send("acp_prompt", body: PromptBody(
             connectionId: connectionId,
             blocks: blocks,
             folderId: folderId,
             conversationId: conversationId,
-            clientMessageId: clientMessageId
+            clientMessageId: clientMessageId,
+            spoken: spoken
         ))
         return (try? CodegJSON.decoder.decode(PromptAccepted.self, from: data))?.duplicate ?? false
     }
@@ -422,15 +425,18 @@ struct CodegClient: Sendable {
     /// "no active turn" message when the turn already ended
     /// (``APIError/isNoActiveTurn``): the caller then sends it as a prompt.
     /// Returns the note the server recorded (its id and whether the agent has
-    /// it), or nil when the answer carries none (an older server).
+    /// it), or nil when the answer carries none (an older server). `spoken`:
+    /// said in Talk, as for ``prompt(connectionId:blocks:folderId:conversationId:clientMessageId:spoken:)``.
     @discardableResult
     func submitSessionFeedback(connectionId: String, text: String,
-                               blocks: [PromptInputBlock]?, clientId: String? = nil) async throws -> FeedbackNoteSnapshot? {
+                               blocks: [PromptInputBlock]?, clientId: String? = nil,
+                               spoken: Bool? = nil) async throws -> FeedbackNoteSnapshot? {
         let data = try await send("submit_session_feedback", body: SubmitFeedbackBody(
             connectionId: connectionId,
             text: text,
             blocks: (blocks?.isEmpty ?? true) ? nil : blocks,
-            clientId: clientId
+            clientId: clientId,
+            spoken: spoken
         ), session: Self.steeringSession)
         guard let note = try? CodegJSON.decoder.decode(FeedbackNoteSnapshot.self, from: data), !note.id.isEmpty
         else { return nil }

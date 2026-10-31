@@ -179,6 +179,10 @@ struct MessageTurn: Identifiable, Hashable, Sendable, Codable {
     /// was never reconciled) has `nil`. The transcript window's prefix
     /// fingerprint is computed from it (`TranscriptFingerprint`).
     let serverMillis: Int64?
+    /// The user said this message in Talk rather than typing it (the server's
+    /// `spoken`, set where the message carried Talk's hidden note). The
+    /// message card shows a microphone for it. False from an older server.
+    let spoken: Bool
 
     init(
         id: String,
@@ -189,7 +193,8 @@ struct MessageTurn: Identifiable, Hashable, Sendable, Codable {
         durationMs: Int? = nil,
         model: String? = nil,
         completedAt: Date? = nil,
-        serverMillis: Int64? = nil
+        serverMillis: Int64? = nil,
+        spoken: Bool = false
     ) {
         self.id = id
         self.role = role
@@ -200,10 +205,11 @@ struct MessageTurn: Identifiable, Hashable, Sendable, Codable {
         self.model = model
         self.completedAt = completedAt
         self.serverMillis = serverMillis
+        self.spoken = spoken
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, blocks, timestamp, usage, durationMs, model, completedAt
+        case id, role, blocks, timestamp, usage, durationMs, model, completedAt, spoken
     }
 
     init(from decoder: Decoder) throws {
@@ -225,6 +231,7 @@ struct MessageTurn: Identifiable, Hashable, Sendable, Codable {
         durationMs = try c.decodeIfPresent(Int.self, forKey: .durationMs)
         model = try c.decodeIfPresent(String.self, forKey: .model)
         completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
+        spoken = ((try? c.decodeIfPresent(Bool.self, forKey: .spoken)) ?? nil) ?? false
     }
 
     /// Written only to the on-device transcript cache, in the shape the
@@ -240,5 +247,6 @@ struct MessageTurn: Identifiable, Hashable, Sendable, Codable {
         try c.encodeIfPresent(durationMs, forKey: .durationMs)
         try c.encodeIfPresent(model, forKey: .model)
         try c.encodeIfPresent(completedAt, forKey: .completedAt)
+        if spoken { try c.encode(true, forKey: .spoken) }
     }
 }
