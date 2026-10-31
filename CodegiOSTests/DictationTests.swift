@@ -116,7 +116,7 @@ final class SpeechModelManifestTests: XCTestCase {
     func testBundledManifestIsValid() throws {
         let manifest = SpeechModelCatalog.manifest
         XCTAssertEqual(manifest.problems(), [])
-        XCTAssertEqual(manifest.release, "models-v1")
+        XCTAssertEqual(manifest.release, "models-v2")
 
         let hebrew = try XCTUnwrap(SpeechModelCatalog.model(id: SpeechModelCatalog.hebrewID))
         XCTAssertFalse(hebrew.detectsLanguage)
@@ -176,6 +176,115 @@ final class SpeechModelManifestTests: XCTestCase {
         XCTAssertTrue(problems.contains { $0.contains("https") }, "\(problems)")
         XCTAssertTrue(problems.contains { $0.contains("size 0") }, "\(problems)")
         XCTAssertTrue(problems.contains { $0.contains("languageID lid.bin") }, "\(problems)")
+    }
+
+    /// The models-v1 whisper models stay as they were: no engine field (so
+    /// whisper), no parts, their files in models-v1.
+    func testWhisperModelsAreUnchanged() throws {
+        for id in [SpeechModelCatalog.hebrewID, SpeechModelCatalog.multilingualID] {
+            let model = try XCTUnwrap(SpeechModelCatalog.model(id: id))
+            XCTAssertNil(model.engine, id)
+            XCTAssertEqual(model.engineKind, .whisper, id)
+            XCTAssertNil(model.parts, id)
+            for file in model.files {
+                XCTAssertTrue(file.url.absoluteString.hasPrefix(
+                    "https://github.com/Jonathan-Asher/codeg-ios/releases/download/models-v1/"), file.url.absoluteString)
+            }
+        }
+        XCTAssertEqual(SpeechModelCatalog.models(engine: .whisper).map(\.id),
+                       [SpeechModelCatalog.hebrewID, SpeechModelCatalog.multilingualID])
+    }
+
+    /// Talk's live transcriber: the four Zipformer parts from models-v2,
+    /// pinned, plus the same Silero VAD file voice typing uses.
+    func testStreamingZipformerIsPinned() throws {
+        let model = try XCTUnwrap(SpeechModelCatalog.model(id: SpeechModelCatalog.hebrewStreamingID))
+        XCTAssertEqual(model.engineKind, .transducer)
+        XCTAssertEqual(model.license, "CC-BY-4.0")
+        XCTAssertEqual(model.languages, ["he"])
+        let parts = try XCTUnwrap(model.parts)
+        XCTAssertEqual(Set(parts.keys), Set(SpeechModelManifest.transducerParts))
+        XCTAssertEqual(model.part("encoder"), model.weights)
+        XCTAssertEqual(model.part("tokens"), "zipformer2-66m-streaming-he-tokens.txt")
+        for key in SpeechModelManifest.transducerParts {
+            let name = try XCTUnwrap(model.part(key))
+            let file = try XCTUnwrap(model.files.first { $0.path == name }, key)
+            XCTAssertTrue(file.url.absoluteString.hasPrefix(
+                "https://github.com/Jonathan-Asher/codeg-ios/releases/download/models-v2/"), file.url.absoluteString)
+            XCTAssertEqual(file.url.lastPathComponent, name)
+        }
+        let encoder = try XCTUnwrap(model.files.first { $0.path == model.weights })
+        XCTAssertEqual(encoder.size, 70_478_964)
+        XCTAssertEqual(encoder.sha256, "6c6febcb74a09435315a1d872a6539f6e7fc2c333533f14c74edc0e85c49ffcd")
+        XCTAssertLessThan(model.totalBytes, 80_000_000)
+
+        // The VAD is voice typing's file: same name, size and checksum.
+        let vad = try XCTUnwrap(model.vad)
+        let hebrew = try XCTUnwrap(SpeechModelCatalog.model(id: SpeechModelCatalog.hebrewID))
+        XCTAssertEqual(model.files.first { $0.path == vad }, hebrew.files.first { $0.path == vad })
+
+        XCTAssertEqual(model.requiredPaths, [model.weights,
+                                             "zipformer2-66m-streaming-he-decoder.int8.onnx",
+                                             "zipformer2-66m-streaming-he-joiner.int8.onnx",
+                                             "zipformer2-66m-streaming-he-tokens.txt", vad])
+        XCTAssertEqual(SpeechModelCatalog.models(engine: .transducer).map(\.id), [SpeechModelCatalog.hebrewStreamingID])
+    }
+
+    func testSmartTurnIsPinned() throws {
+        let model = try XCTUnwrap(SpeechModelCatalog.model(id: SpeechModelCatalog.smartTurnID))
+        XCTAssertEqual(model.engineKind, .turn)
+        XCTAssertEqual(model.license, "BSD-2-Clause")
+        XCTAssertNil(model.parts)
+        XCTAssertNil(model.vad)
+        XCTAssertEqual(model.weights, "smart-turn-v3.2-cpu.onnx")
+        let file = try XCTUnwrap(model.files.first)
+        XCTAssertEqual(model.files.count, 1)
+        XCTAssertEqual(file.url.absoluteString,
+                       "https://github.com/Jonathan-Asher/codeg-ios/releases/download/models-v2/smart-turn-v3.2-cpu.onnx")
+        XCTAssertEqual(file.size, 8_679_182)
+        XCTAssertEqual(file.sha256, "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f")
+        XCTAssertEqual(model.requiredPaths, [model.weights])
+        XCTAssertEqual(SpeechModelCatalog.models(engine: .turn).map(\.id), [SpeechModelCatalog.smartTurnID])
+    }
+
+    /// Each Talk model downloads into its own directory, with its own session.
+    func testTalkModelsHaveTheirOwnPacks() throws {
+        let ids = [SpeechModelCatalog.hebrewID, SpeechModelCatalog.hebrewStreamingID, SpeechModelCatalog.smartTurnID]
+        let packs = try ids.map { SpeechModelCatalog.pack(for: try XCTUnwrap(SpeechModelCatalog.model(id: $0))) }
+        XCTAssertEqual(Set(packs.map(\.sessionIdentifier)).count, 3)
+        XCTAssertEqual(packs.map { $0.directory.lastPathComponent }, ids)
+        XCTAssertEqual(Set(packs.map { $0.directory.deletingLastPathComponent().lastPathComponent }), ["SpeechToText"])
+    }
+
+    func testEngineAndPartsProblemsAreReported() throws {
+        let file = { (name: String) in
+            "{\"path\": \"\(name)\", \"url\": \"https://example.com/\(name)\", \"size\": 1, \"sha256\": \"\(String(repeating: "a", count: 64))\"}"
+        }
+        let json = """
+        {"schema": 1, "release": "x", "models": [
+          {"id": "t", "title": "T", "summary": "", "languages": ["he"], "detectsLanguage": false,
+           "license": "CC-BY-4.0", "source": "", "engine": "transducer", "weights": "e.onnx",
+           "parts": {"encoder": "e.onnx", "decoder": "d.onnx", "tokens": "missing.txt", "extra": "e.onnx"},
+           "files": [\(file("e.onnx")), \(file("d.onnx"))]},
+          {"id": "w", "title": "W", "summary": "", "languages": ["he"], "detectsLanguage": false,
+           "license": "MIT", "source": "", "weights": "w.bin", "parts": {"encoder": "w.bin"},
+           "files": [\(file("w.bin"))]},
+          {"id": "u", "title": "U", "summary": "", "languages": ["he"], "detectsLanguage": false,
+           "license": "MIT", "source": "", "engine": "tts", "weights": "u.bin", "files": [\(file("u.bin"))]},
+          {"id": "s", "title": "S", "summary": "", "languages": ["auto"], "detectsLanguage": false,
+           "license": "BSD-2-Clause", "source": "", "engine": "turn", "weights": "s.onnx", "files": [\(file("s.onnx"))]}
+        ]}
+        """
+        let manifest = try SpeechModelManifest.decode(Data(json.utf8))
+        let problems = manifest.problems()
+        XCTAssertTrue(problems.contains("t: no joiner part"), "\(problems)")
+        XCTAssertTrue(problems.contains("t: tokens missing.txt is not one of its files"), "\(problems)")
+        XCTAssertTrue(problems.contains("t: unknown part extra"), "\(problems)")
+        XCTAssertTrue(problems.contains("w: parts on a whisper model"), "\(problems)")
+        XCTAssertTrue(problems.contains("u: unknown engine tts"), "\(problems)")
+        XCTAssertFalse(problems.contains { $0.hasPrefix("s:") }, "\(problems)")
+        XCTAssertEqual(manifest.models[3].engineKind, .turn)
+        XCTAssertNil(manifest.models[2].engineKind)
     }
 
     func testChecksumAcceptsTheFileAndRejectsACorruptOne() async throws {
