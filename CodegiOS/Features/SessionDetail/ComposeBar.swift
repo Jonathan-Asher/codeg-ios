@@ -49,6 +49,10 @@ struct ComposeBar: View {
     /// Tests and previews: the id this composer's dictation runs under,
     /// shared with ``DictationController`` and ``CameraTalkController``.
     var dictationOwnerOverride: UUID? = nil
+    /// The session's conversation: while Talk runs for it, the Camera Control
+    /// is Talk's (a press stops the speech and listens, holding it is push
+    /// to talk).
+    var talkConversationID: Int? = nil
 
     @FocusState private var focused: Bool
     /// Bumped on each send tap to fire a light "sent" impact immediately (rather
@@ -611,6 +615,10 @@ struct ComposeBar: View {
         let action = cameraPress.handle(phase, from: source, at: now)
         if action != .none {
             CameraTalkController.log.info("Camera Control \(phase.rawValue, privacy: .public) (\(source.rawValue, privacy: .public)) -> \(String(describing: action), privacy: .public)")
+        }
+        if action != .none, TalkCenter.shared.cameraPress(action, conversationID: talkConversationID) {
+            if action == .start { cameraPressHaptic &+= 1 } else { cameraReleaseHaptic &+= 1 }
+            return
         }
         switch action {
         case .none:

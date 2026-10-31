@@ -11,6 +11,18 @@ protocol RemoteControllable: AnyObject {
     /// Seek to `seconds`; false when it can't seek (read aloud).
     func remoteSeek(to seconds: TimeInterval) -> Bool
     var supportsRemoteSeeking: Bool { get }
+    /// Next and previous track (an AirPods double and triple press). Talk
+    /// stops the speech and says the last reply again; the others don't
+    /// take them.
+    func remoteNextTrack()
+    func remotePreviousTrack()
+    var supportsTrackCommands: Bool { get }
+}
+
+extension RemoteControllable {
+    func remoteNextTrack() {}
+    func remotePreviousTrack() {}
+    var supportsTrackCommands: Bool { false }
 }
 
 /// The one set of `MPRemoteCommandCenter` targets, routed to whoever plays
@@ -30,14 +42,20 @@ final class RemoteCommandRouter {
     func claim(_ controllable: RemoteControllable) {
         install()
         current = controllable
-        MPRemoteCommandCenter.shared().changePlaybackPositionCommand.isEnabled = controllable.supportsRemoteSeeking
+        let center = MPRemoteCommandCenter.shared()
+        center.changePlaybackPositionCommand.isEnabled = controllable.supportsRemoteSeeking
+        center.nextTrackCommand.isEnabled = controllable.supportsTrackCommands
+        center.previousTrackCommand.isEnabled = controllable.supportsTrackCommands
     }
 
     /// `controllable` is done; the commands go nowhere until the next claim.
     func release(_ controllable: RemoteControllable) {
         guard current === controllable else { return }
         current = nil
-        MPRemoteCommandCenter.shared().changePlaybackPositionCommand.isEnabled = false
+        let center = MPRemoteCommandCenter.shared()
+        center.changePlaybackPositionCommand.isEnabled = false
+        center.nextTrackCommand.isEnabled = false
+        center.previousTrackCommand.isEnabled = false
     }
 
     private func install() {
@@ -62,6 +80,14 @@ final class RemoteCommandRouter {
             return Self.route { _ = $0.remoteSeek(to: position) }
         }
         center.changePlaybackPositionCommand.isEnabled = false
+        center.nextTrackCommand.addTarget { _ in
+            Self.route { $0.remoteNextTrack() }
+        }
+        center.previousTrackCommand.addTarget { _ in
+            Self.route { $0.remotePreviousTrack() }
+        }
+        center.nextTrackCommand.isEnabled = false
+        center.previousTrackCommand.isEnabled = false
     }
 
     /// Remote command handlers come on the main thread; should one ever not,

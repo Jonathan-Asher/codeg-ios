@@ -51,6 +51,7 @@ struct SessionDetailView: View {
     @AppStorage(MessageEditPreferences.keepOriginalKey) private var keepOriginalOnEdit = false
 
     private var cameraTalk: CameraTalkController { CameraTalkController.shared }
+    private var talkCenter: TalkCenter { TalkCenter.shared }
 
     init(server: ServerProfile, client: CodegClient, model: SessionDetailViewModel, lease: SessionLease?,
          onOpenSession: ((NewSessionRequest) -> Void)? = nil) {
@@ -95,6 +96,12 @@ struct SessionDetailView: View {
         // the title. Shown once loaded; for an editable draft its sheet also
         // hosts the Agent + Folder pickers, otherwise just Mode/config.
         if case .loaded = model.phase {
+            // Talk: a hands-free voice conversation with this session.
+            if model.conversationID != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    TalkToolbarButton(isActive: talkCenter.isActive(model.conversationID), action: startTalk)
+                }
+            }
             // Walkie-talkie: hold the Camera Control to talk to this agent.
             if CameraTalkController.isSupported {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -201,6 +208,20 @@ struct SessionDetailView: View {
             model.loadIfNeeded()
             // Whether this server's fork takes an edit mode ("Edit Message").
             await ForkCapabilities.shared.probeEditModesIfNeeded(client: client)
+        }
+        .sheet(isPresented: talkSheetShown) {
+            if let talk = talkCenter.controller, talk.conversationID == model.conversationID {
+                TalkSheet(talk: talk, stats: model.sessionStats, onEnd: { talkCenter.end() })
+            }
+        }
+        .sheet(isPresented: talkModelsShown) {
+            TalkModelsSheet(onStart: { talkCenter.modelsReady() }, onCancel: { talkCenter.modelsCancelled() })
+        }
+        .alert("Talk", isPresented: Binding(get: { talkCenter.problem != nil },
+                                           set: { if !$0 { talkCenter.clearProblem() } })) {
+            Button("OK", role: .cancel) { talkCenter.clearProblem() }
+        } message: {
+            Text(verbatim: talkCenter.problem ?? "")
         }
         .sheet(item: $editing) { session in
             MessageEditorSheet(
@@ -350,6 +371,24 @@ struct SessionDetailView: View {
             onConnection: { model.adoptForkConnection($0) },
             onError: { model.notice = $0 }
         )
+    }
+
+    // MARK: - Talk
+
+    /// Talk runs for this session: its sheet is up (until Talk ends).
+    private var talkSheetShown: Binding<Bool> {
+        Binding(get: { model.conversationID != nil && talkCenter.controller?.conversationID == model.conversationID },
+                set: { _ in })
+    }
+
+    private var talkModelsShown: Binding<Bool> {
+        Binding(get: { model.conversationID != nil && talkCenter.modelsRequestedFor == model.conversationID },
+                set: { shown in if !shown { talkCenter.modelsCancelled() } })
+    }
+
+    private func startTalk() {
+        if talkCenter.isActive(model.conversationID) { return }
+        talkCenter.start(model: model, client: client, serverProfileID: server.id, lease: lease)
     }
 
     private func toggleCameraTalk() {
@@ -589,7 +628,8 @@ struct SessionDetailView: View {
                     insertModel: model.insertModel,
                     dictationContext: DictationContext(folder: model.folder?.name, session: model.summary?.title),
                     dictationRefiner: client,
-                    onFocusChange: { composeFocused = $0 }
+                    onFocusChange: { composeFocused = $0 },
+                    talkConversationID: model.conversationID
                 )
             }
             .animation(.snappy(duration: 0.26), value: composeFocused)

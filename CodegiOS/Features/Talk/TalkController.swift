@@ -89,6 +89,9 @@ final class TalkController {
         }
     }
 
+    /// Talk speaks Hebrew (the sheet's status follows it).
+    private(set) var speaksHebrew = true
+
     // MARK: - Configuration
 
     /// Talk ends after this long with nothing said and nothing running.
@@ -1224,6 +1227,7 @@ final class TalkController {
     private func syncUI() {
         let state = machine.state
         phase = state.phase
+        if speaksHebrew != state.voice.isHebrew { speaksHebrew = state.voice.isHebrew }
         ask = state.ask
         handsFree = state.handsFree
         mute = hardMuted ? .hard : (state.muted ? .soft : .none)
@@ -1292,6 +1296,92 @@ final class TalkController {
             if tasks.isEmpty { return }
         }
     }
+
+    #if DEBUG
+    /// The sheet's states for the screenshot tests, without a microphone.
+    enum ScreenshotState: String, CaseIterable {
+        case listening, hearing, speaking, asking, background, softMuted, error
+    }
+
+    func showForScreenshot(_ shot: ScreenshotState) {
+        started = true
+        title = "Fix the flaky build"
+        naturalVoice = true
+        speaksHebrew = true
+        heardText = ""
+        heardIsFinal = false
+        spokenLog = []
+        currentSpokenID = nil
+        ask = nil
+        mute = .none
+        backgroundOutstanding = 0
+        awaitingBackground = false
+        fastMode = false
+        errorMessage = nil
+        canReportCutOff = false
+        inputLevel = 0
+        outputLevel = 0
+        let lines = [
+            SpokenLine(id: SpeechUnit.ID(reply: "t1", index: 0), text: "בדקתי את הלוגים של ה-CI."),
+            SpokenLine(id: SpeechUnit.ID(reply: "t1", index: 1), text: "הבדיקות של ה-API נופלות כי חסר משתנה סביבה."),
+            SpokenLine(id: SpeechUnit.ID(reply: "t1", index: 2), text: "שמתי את השגיאה על המסך."),
+        ]
+        switch shot {
+        case .listening:
+            status = .listening
+            phase = .listening
+            inputLevel = 0.08
+            heardText = "תבדוק למה הבילד נופל"
+            heardIsFinal = true
+            spokenLog = lines
+        case .hearing:
+            status = .hearing
+            phase = .hearing
+            inputLevel = 0.7
+            heardText = "תוסיף את המשתנה ל-staging ותריץ שוב"
+        case .speaking:
+            status = .speaking
+            phase = .speaking(ducked: false)
+            outputLevel = 0.6
+            heardText = "תבדוק למה הבילד נופל"
+            heardIsFinal = true
+            spokenLog = lines
+            currentSpokenID = lines[1].id
+            canReportCutOff = true
+        case .asking:
+            let options = [PermissionOption(optionId: "allow", name: "Allow", kind: "allow_once"),
+                           PermissionOption(optionId: "always", name: "Always allow", kind: "allow_always"),
+                           PermissionOption(optionId: "deny", name: "Reject", kind: "reject_once")]
+            let asked = TalkAsk(id: "permission:r1", source: .permission(requestId: "r1"), kind: .permission,
+                                channel: .permissionOption, prompt: "אני רוצה למחוק את תיקיית הבילד. לאשר?",
+                                voice: .hebrew(.masculine), choices: SpokenPrompts.permissionChoices(options))
+            status = .asking
+            phase = .asking(asked, attempt: 0)
+            ask = asked
+            spokenLog = [SpokenLine(id: SpeechUnit.ID(reply: "ask:r1", index: 0), text: asked.prompt)]
+            currentSpokenID = nil
+        case .background:
+            status = .working
+            phase = .agentWorking
+            backgroundOutstanding = 2
+            awaitingBackground = true
+            fastMode = true
+            heardText = "תריץ את כל הבדיקות ברקע"
+            heardIsFinal = true
+            spokenLog = [SpokenLine(id: SpeechUnit.ID(reply: "t2", index: 0), text: "אני מתחיל לעבוד על זה ברקע."),
+                         SpokenLine(id: SpeechUnit.ID(reply: "t2:background", index: 0), text: "העבודה ממשיכה ברקע.")]
+        case .softMuted:
+            status = .listening
+            phase = .listening
+            mute = .soft
+            spokenLog = lines
+        case .error:
+            errorMessage = "Talk couldn't start the microphone: a call is using the audio."
+            status = .failed(errorMessage!)
+            phase = .off
+        }
+    }
+    #endif
 
     // MARK: - Helpers
 

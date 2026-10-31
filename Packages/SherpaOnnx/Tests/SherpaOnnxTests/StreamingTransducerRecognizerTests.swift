@@ -74,6 +74,22 @@ struct RecognizerTests {
         #expect(recognizer.acceptedSeconds > 0)
     }
 
+    /// A one-off pass decodes on a stream of its own: the utterance being fed
+    /// goes on where it was.
+    @Test(.enabled(if: modelDir != nil))
+    func aOneOffPassLeavesTheUtteranceAlone() throws {
+        let recognizer = try StreamingTransducerRecognizer(files: Self.files(), threads: 2)
+        let silence = [Float](repeating: 0, count: 1_600)
+        for _ in 0..<10 { recognizer.accept(samples: silence) }
+        #expect(recognizer.transcribeOnce(samples: [Float](repeating: 0, count: 16_000)) == "")
+        #expect(recognizer.transcribeOnce(samples: []) == "")
+        #expect(abs(recognizer.acceptedSeconds - 1.0) < 1e-9)
+        #expect(!recognizer.isFinished)
+        recognizer.accept(samples: silence)
+        #expect(abs(recognizer.acceptedSeconds - 1.1) < 1e-9)
+        #expect(recognizer.inputFinished() == "")
+    }
+
     /// Two threads hammering one recognizer: calls serialize, nothing crashes.
     @Test(.enabled(if: modelDir != nil))
     func callsFromSeveralThreadsSerialize() async throws {

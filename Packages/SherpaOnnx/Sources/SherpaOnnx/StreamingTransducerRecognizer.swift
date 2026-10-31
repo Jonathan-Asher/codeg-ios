@@ -178,6 +178,22 @@ public final class StreamingTransducerRecognizer: @unchecked Sendable {
         }
     }
 
+    /// Decodes `samples` (16 kHz mono) on a stream of its own, with the tail
+    /// padding, and returns the text. The utterance being fed is left as it
+    /// is. Talk uses it to check a voice that talks over the speech, and the
+    /// last words at a pause.
+    public func transcribeOnce(samples: [Float]) -> String {
+        engine.withLock {
+            guard !samples.isEmpty, let once = SherpaOnnxCreateOnlineStream(recognizer) else { return "" }
+            defer { SherpaOnnxDestroyOnlineStream(once) }
+            feed(samples, into: once)
+            let padding = Int(tailPaddingSeconds * Double(Self.sampleRate))
+            if padding > 0 { feed([Float](repeating: 0, count: padding), into: once) }
+            SherpaOnnxOnlineStreamInputFinished(once)
+            return decodeReady(once)
+        }
+    }
+
     /// Starts a new utterance: a fresh stream (encoder state, decoder context
     /// and text all cleared).
     public func reset() {
@@ -202,16 +218,24 @@ public final class StreamingTransducerRecognizer: @unchecked Sendable {
     // MARK: - Engine (callers hold `engine`)
 
     private func feed(_ samples: [Float]) {
+        feed(samples, into: stream)
+    }
+
+    private func feed(_ samples: [Float], into target: OpaquePointer) {
         samples.withUnsafeBufferPointer { p in
-            SherpaOnnxOnlineStreamAcceptWaveform(stream, Int32(Self.sampleRate), p.baseAddress, Int32(p.count))
+            SherpaOnnxOnlineStreamAcceptWaveform(target, Int32(Self.sampleRate), p.baseAddress, Int32(p.count))
         }
     }
 
     private func decodeReady() -> String {
-        while SherpaOnnxIsOnlineStreamReady(recognizer, stream) == 1 {
-            SherpaOnnxDecodeOnlineStream(recognizer, stream)
+        decodeReady(stream)
+    }
+
+    private func decodeReady(_ target: OpaquePointer) -> String {
+        while SherpaOnnxIsOnlineStreamReady(recognizer, target) == 1 {
+            SherpaOnnxDecodeOnlineStream(recognizer, target)
         }
-        guard let result = SherpaOnnxGetOnlineStreamResult(recognizer, stream) else { return "" }
+        guard let result = SherpaOnnxGetOnlineStreamResult(recognizer, target) else { return "" }
         defer { SherpaOnnxDestroyOnlineRecognizerResult(result) }
         guard let text = result.pointee.text else { return "" }
         // SentencePiece word starts ("▁") come out as spaces.
