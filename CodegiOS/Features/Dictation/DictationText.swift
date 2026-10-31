@@ -1,5 +1,4 @@
 import Foundation
-import SwiftUI
 
 /// Pure text handling for dictation: cleaning whisper's output, inserting it
 /// at the cursor, and the prompt that biases whisper toward the session's
@@ -50,14 +49,6 @@ enum DictationText {
             inserted += " "
         }
         return (String(before) + inserted + String(after), cursor)
-    }
-
-    /// A text field's selection as UTF-16 offsets, or `nil` (append) when
-    /// there is none or it no longer fits the text.
-    static func utf16Range(of selection: TextSelection?, in text: String) -> Range<Int>? {
-        guard let selection, case .selection(let range) = selection.indices,
-              range.lowerBound >= text.startIndex, range.upperBound <= text.endIndex else { return nil }
-        return range.lowerBound.utf16Offset(in: text)..<range.upperBound.utf16Offset(in: text)
     }
 
     private static func characterAligned(_ index: String.Index, in text: String) -> String.Index {

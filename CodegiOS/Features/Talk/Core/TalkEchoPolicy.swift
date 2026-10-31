@@ -1,4 +1,4 @@
-import AVFoundation
+import Foundation
 
 /// How Talk keeps the agent's own speech out of what the microphone hears,
 /// per audio route. Pure.
@@ -14,6 +14,9 @@ import AVFoundation
 ///   own speech out of its microphone.
 /// - The Lab can force any of them to compare them (`override`, which Talk
 ///   passes to ``TalkAudioIO/start(preferring:)`` from its settings).
+///
+/// The audio session's modes and routes are the iPhone's own, in
+/// TalkEchoPolicy+Session.swift.
 enum TalkEchoPolicy {
     /// The echo mode for a route.
     static func choose(route: TalkRoute, echoCancelledInputAvailable: Bool,
@@ -27,31 +30,6 @@ enum TalkEchoPolicy {
         case .wired, .other:
             return .voiceProcessing
         }
-    }
-
-    /// The session mode each echo mode needs: echo-cancelled input works only
-    /// in `.default`, voice processing belongs with `.voiceChat`.
-    static func sessionMode(for echo: TalkEchoMode) -> AVAudioSession.Mode {
-        switch echo {
-        case .voiceProcessing: return .voiceChat
-        case .echoCancelledInput, .none: return .default
-        }
-    }
-
-    /// What kind of route the session is on now.
-    static func route(_ description: AVAudioSessionRouteDescription) -> TalkRoute {
-        route(inputs: description.inputs.map(\.portType), outputs: description.outputs.map(\.portType))
-    }
-
-    /// The route from its port types: a Bluetooth headset (HFP) on either
-    /// side, the built-in microphone with the built-in speaker (or receiver),
-    /// a wired headset, or something else (CarPlay, USB, AirPlay, nothing).
-    static func route(inputs: [AVAudioSession.Port], outputs: [AVAudioSession.Port]) -> TalkRoute {
-        if inputs.contains(.bluetoothHFP) || outputs.contains(.bluetoothHFP) { return .bluetoothHFP }
-        let builtInOut = outputs.contains(.builtInSpeaker) || outputs.contains(.builtInReceiver)
-        if inputs.contains(.builtInMic), builtInOut || outputs.isEmpty { return .builtIn }
-        if inputs.contains(.headsetMic) || outputs.contains(.headphones) { return .wired }
-        return .other
     }
 
     // MARK: - Names

@@ -764,7 +764,7 @@ final class TalkLab {
 
     func refreshDevice() {
         let session = AVAudioSession.sharedInstance()
-        let environment = TalkReportEnvironment.device
+        let environment = TalkReportEnvironment.current.device
         var snapshot = DeviceSnapshot()
         snapshot.model = environment["model"] ?? "?"
         snapshot.system = environment["os"] ?? "?"

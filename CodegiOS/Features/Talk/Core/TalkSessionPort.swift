@@ -37,8 +37,9 @@ enum SpokenSendRoute: Sendable, Equatable {
     case queued
 }
 
-/// The session as Talk drives it: the open session's model
-/// (``SessionDetailViewModel``) under the names it already has.
+/// The session as Talk drives it. In the app, the open session's model
+/// (``SessionDetailViewModel``, SessionDetailViewModel+Talk.swift), under
+/// the names it already has.
 @MainActor
 protocol TalkSessionPort: AnyObject {
     /// Told what the session says and does. Setting it replays the current
@@ -61,7 +62,8 @@ protocol TalkSessionPort: AnyObject {
 
     // The session as the screen shows it.
     var conversationID: Int? { get }
-    var summary: ConversationSummary? { get }
+    /// The session's title, nil while it has none (blank counts as none).
+    var talkTitle: String? { get }
     var isInFlight: Bool { get }
     var awaitingBackground: Bool { get }
     var backgroundOutstanding: Int { get }
@@ -76,5 +78,3 @@ protocol TalkSessionPort: AnyObject {
     func answerPlanApproval(decision: PlanApprovalDecision, feedback: String?) async -> Bool
     func cancel()
 }
-
-extension SessionDetailViewModel: TalkSessionPort {}
