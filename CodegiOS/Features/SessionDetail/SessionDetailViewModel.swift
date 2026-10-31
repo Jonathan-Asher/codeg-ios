@@ -214,7 +214,31 @@ final class SessionDetailViewModel {
     /// can resolve a worktree's root and locate a registered target folder by id.
     private(set) var allFolders: [FolderDetail] = []
     /// True once a draft's first send begins — locks the agent/folder pickers.
-    private(set) var hasStartedFirstSend = false
+    private(set) var hasStartedFirstSend = false {
+        didSet {
+            // What was shown when it went is what it goes to: a fetch of the
+            // lists landing meanwhile doesn't move it to another default.
+            guard hasStartedFirstSend, !oldValue, folder != nil else { return }
+            folderPicked = true
+            if selectedAgent != nil { agentPicked = true }
+        }
+    }
+    /// Where a new session's choices are kept between launches: the agents and
+    /// folders the server last offered and each agent's option lists
+    /// (``DraftCatalogStore``). A draft opens with them, so nothing waits for
+    /// the server. Nil keeps nothing (most tests).
+    @ObservationIgnored var draftCatalog: DraftCatalogStore? = .shared
+    /// The user chose the draft's agent (or the request named it) / its
+    /// folder: kept while the server still offers it. Unchosen ones follow the
+    /// defaults of the server's latest lists.
+    @ObservationIgnored private var agentPicked = false
+    @ObservationIgnored private var folderPicked = false
+    /// The saved lists were shown.
+    @ObservationIgnored private var didSeedDraft = false
+    /// The draft's lists are being fetched (`refreshDraftLists()`).
+    @ObservationIgnored private var draftListsTask: Task<Void, Never>?
+    /// The last fetch of the draft's lists got all of them.
+    @ObservationIgnored private var draftListsFresh = false
 
     /// Compose-bar text.
     var draft: String = ""
@@ -489,8 +513,9 @@ final class SessionDetailViewModel {
         case .new(let request):
             self.newRequest = request
             // Agent/folder are chosen in-page (from the agent button in the
-            // navigation bar); their defaults are resolved in `load()` from the
-            // server's folder + agent lists, honoring any preselected folder.
+            // navigation bar). Their defaults come from the lists saved from
+            // the last load at once (`seedDraftLists()`), then from the
+            // server's in `load()`, honoring any preselected folder.
         }
         // Initialize both child models BEFORE wiring any closures: the closures
         // below capture `self`, which Swift only allows once every stored property
@@ -517,6 +542,13 @@ final class SessionDetailViewModel {
             guard let self, !self.agentOptions.isSheetShown else { return }
             self.notice = message
         }
+        // A new session's options are picked before it connects, from the
+        // lists last seen for the agent on this server; every session's live
+        // lists are kept for that.
+        agentOptions.picksWaitForConnect = { [weak self] in self?.optionsWaitForConnect ?? false }
+        agentOptions.savedOptions = { [weak self] in self?.savedAgentOptions }
+        agentOptions.sessionAgent = { [weak self] in self?.summary?.agentType ?? self?.selectedAgent }
+        agentOptions.onPickBeforeConnect = { [weak self] in self?.agentPicked = true }
 
         // Quick messages + experts are connection-independent catalog reads.
         // Slash commands come from the cheap by-conversation snapshot (empty until
@@ -560,14 +592,31 @@ final class SessionDetailViewModel {
         self.init(client: client, mode: .existing(conversationID: conversationID),
                   makeEventStream: makeEventStream, transcriptCache: transcriptCache,
                   readingPositions: readingPositions, connectivity: connectivity, linkStatus: linkStatus)
+        // Tests keep no option lists on disk unless they bring a store.
+        draftCatalog = nil
     }
 
     /// A brand-new task: `load()` immediately fires the first prompt composed
     /// in the new-task sheet, and the screen adopts the conversation id the
     /// server links — so the very first reply streams like any other turn.
+    /// Its pickers open on the lists `draftCatalog` kept from the last load.
     convenience init(client: CodegClient, newSession request: NewSessionRequest,
-                     transcriptCache: TranscriptCache? = .shared) {
+                     transcriptCache: TranscriptCache? = .shared,
+                     draftCatalog: DraftCatalogStore? = .shared) {
         self.init(client: client, mode: .new(request), transcriptCache: transcriptCache)
+        self.draftCatalog = draftCatalog
+        seedDraftLists()
+    }
+
+    /// A new task whose event sockets come from `makeEventStream` (the unit
+    /// tests' scripted sockets), keeping its lists in `draftCatalog`.
+    convenience init(client: CodegClient, newSession request: NewSessionRequest,
+                     draftCatalog: DraftCatalogStore?,
+                     makeEventStream: @escaping @MainActor (CodegClient) -> any SessionEventStream,
+                     connectivity: ConnectivityMonitor? = nil) {
+        self.init(client: client, mode: .new(request), makeEventStream: makeEventStream, connectivity: connectivity)
+        self.draftCatalog = draftCatalog
+        seedDraftLists()
     }
 
     /// Show what the session list already knows (title, agent, status) while
@@ -597,6 +646,25 @@ final class SessionDetailViewModel {
     /// The draft's agent/folder are still editable: a new session whose first
     /// send hasn't started yet (after that the conversation is being created).
     var isDraftEditable: Bool { isNewSession && !hasStartedFirstSend }
+
+    /// The agent button (agent, folder, mode and options) is in the navigation
+    /// bar: once the session loaded, and from the start for a new session,
+    /// whose choices don't wait for the server.
+    var showsAgentButton: Bool { phase == .loaded || isDraftEditable }
+
+    /// A new session with no connection, whose next connect starts its agent
+    /// session afresh (it has no agent session id yet): an option picked now
+    /// is kept as the agent's preference and goes with the connect
+    /// (`preferredSelectors`), and the options sheet shows the lists last seen
+    /// for the agent instead of starting it on the server to read them.
+    var optionsWaitForConnect: Bool {
+        isNewSession && connectionID == nil && summary?.externalId == nil
+    }
+
+    /// This server's saved option lists (``DraftCatalogStore``).
+    private var savedAgentOptions: SavedAgentOptions? {
+        draftCatalog.map { SavedAgentOptions(store: $0, serverKey: cacheServerKey) }
+    }
 
     /// The agent identity for UI + connection purposes: the loaded summary's
     /// (existing / linked), else the draft's chosen agent.
@@ -648,8 +716,8 @@ final class SessionDetailViewModel {
             phase = .loaded
             guard !didLoadDraftOptions else { return }
             didLoadDraftOptions = true
-            if selectedAgent == nil, let agent = request.agent { selectedAgent = agent }
-            await loadDraftOptions(preselectedFolderID: request.preselectedFolderID)
+            seedDraftLists()
+            await refreshDraftLists().value
             // An edited first message: the new conversation starts with it.
             if let prompt = request.initialPrompt, !hasStartedFirstSend {
                 startSend(text: prompt.text, attachments: prompt.images.enumerated().compactMap {
@@ -894,9 +962,53 @@ final class SessionDetailViewModel {
         await refreshOnForeground()
     }
 
+    // MARK: - Draft lists (new session only)
+
+    /// Show the lists the server gave the last draft at once (``DraftCatalog``),
+    /// with the defaults they give, so the pickers don't wait for the server;
+    /// `refreshDraftLists()` replaces them.
+    private func seedDraftLists() {
+        guard case .new(let request) = mode, !didSeedDraft else { return }
+        didSeedDraft = true
+        // The agent the request names (an edited first message keeps its
+        // session's) is a choice like the user's.
+        if request.agent != nil { agentPicked = true }
+        let saved = draftCatalog?.catalog(serverKey: cacheServerKey)
+        if let agents = saved?.agents, !agents.isEmpty { availableAgents = agents }
+        if let all = saved?.allFolders { allFolders = all }
+        if let open = saved?.openFolders { availableFolders = DraftChoices.offeredFolders(open) }
+        // A preselected folder the saved lists don't have yet (a worktree just
+        // opened) comes with the server's: nothing else stands in for it.
+        let preselectedKnown = request.preselectedFolderID.map { id in
+            (availableFolders + allFolders).contains { $0.id == id }
+        } ?? true
+        folder = preselectedKnown ? DraftChoices.folder(keeping: nil, preselectedID: request.preselectedFolderID,
+                                                        offered: availableFolders, all: allFolders) : nil
+        currentBranch = folder?.gitBranch
+        // The request's agent is checked against the server's lists, not the
+        // saved ones, which may predate it.
+        selectedAgent = request.agent ?? DraftChoices.agent(keeping: nil, folder: folder, available: saved?.agents)
+        if let agent = selectedAgent { insertModel.agentType = agent }
+    }
+
+    /// Fetch the draft's lists, one fetch at a time. A first message sent
+    /// meanwhile waits for it (`draftTarget()`).
+    @discardableResult
+    private func refreshDraftLists() -> Task<Void, Never> {
+        if let running = draftListsTask { return running }
+        let preselected = newRequest?.preselectedFolderID
+        let task = Task { [weak self] in
+            await self?.loadDraftOptions(preselectedFolderID: preselected)
+            self?.draftListsTask = nil
+        }
+        draftListsTask = task
+        return task
+    }
+
     /// Populate the draft's folder/agent lists and pick sensible defaults
     /// (preselected folder → most-recent folder; its default agent → first
-    /// installed). Failures leave the full `AgentType` fallback in place.
+    /// installed). A list that fails keeps the one shown (saved, or the full
+    /// `AgentType` fallback).
     private func loadDraftOptions(preselectedFolderID: Int?) async {
         // The picker lists top-level open folders only (a new session shouldn't
         // target a worktree directly). The full set resolves a preselected folder
@@ -904,34 +1016,83 @@ final class SessionDetailViewModel {
         // draft in.
         async let openReq = client.listOpenFolders()
         async let allReq = client.listFolders()
-
         // Narrow agents to what the server actually has installed + enabled.
-        if let agents = try? await client.listAgents() {
-            let usable = agents.filter { $0.available && $0.enabled }
-                .sorted { $0.sortOrder < $1.sortOrder }
-                .map(\.agentType)
-            var deduped: [AgentType] = []
-            for agent in usable where !deduped.contains(agent) { deduped.append(agent) }
-            if !deduped.isEmpty { availableAgents = deduped }
-        }
+        let agents = (try? await client.listAgents()).map(DraftChoices.usableAgents)
+        let open = try? await openReq
+        let all = try? await allReq
+        adoptDraftLists(agents: agents, open: open, all: all, preselectedFolderID: preselectedFolderID)
+    }
 
-        let open = (try? await openReq) ?? []
-        let all = (try? await allReq) ?? []
-        allFolders = all
-        availableFolders = FolderVisibility.filterTopLevel(open)
-            .sorted { $0.lastOpenedAt > $1.lastOpenedAt }
-        if folder == nil {
-            folder = all.first { $0.id == preselectedFolderID } ?? availableFolders.first
+    /// Take the server's lists (nil: that one failed), keep them for the next
+    /// draft, and settle the choices on them: a picked agent or folder stays
+    /// while the server still offers it, anything else falls back to the
+    /// defaults, as on a draft's first load.
+    private func adoptDraftLists(agents fetched: [AgentType]?, open: [FolderDetail]?, all: [FolderDetail]?,
+                                 preselectedFolderID: Int?) {
+        let agents = fetched?.isEmpty == false ? fetched : nil
+        if let agents { availableAgents = agents }
+        if let all { allFolders = all }
+        if let open { availableFolders = DraftChoices.offeredFolders(open) }
+        draftListsFresh = fetched != nil && open != nil && all != nil
+        draftCatalog?.update(serverKey: cacheServerKey) { saved in
+            if let agents { saved.agents = agents }
+            if let open { saved.openFolders = open }
+            if let all { saved.allFolders = all.filter { $0.kind != .chat } }
         }
-        currentBranch = folder?.gitBranch
-        if selectedAgent == nil {
-            if let preferred = folder?.defaultAgentType, availableAgents.contains(preferred) {
-                selectedAgent = preferred
-            } else {
-                selectedAgent = availableAgents.first
+        // Once the conversation exists, its agent and folder are settled.
+        guard conversationID == nil else { return }
+        let previousFolder = folder
+        let previousAgent = selectedAgent
+        if open != nil || all != nil {
+            folder = DraftChoices.folder(keeping: folderPicked ? folder : nil, preselectedID: preselectedFolderID,
+                                         offered: availableFolders, all: allFolders)
+            // The branch the folder is on now, unless one was chosen meanwhile.
+            if folder?.id != previousFolder?.id || currentBranch == previousFolder?.gitBranch {
+                currentBranch = folder?.gitBranch
             }
         }
+        // A folder the user picked doesn't change the agent (as before); a
+        // default folder brings its default agent.
+        selectedAgent = DraftChoices.agent(keeping: agentPicked || folderPicked ? selectedAgent : nil,
+                                           folder: folder, available: availableAgents)
         if let agent = selectedAgent { insertModel.agentType = agent }
+        if selectedAgent != previousAgent || folder?.id != previousFolder?.id {
+            resetDraftConnection()
+            if agentOptions.isSheetShown {
+                agentOptions.prepare(agentType: agentTypeForUI, workingDir: folder?.path)
+            }
+        }
+    }
+
+    /// Whether a new session's first message can start: it has a folder and
+    /// an agent, or the lists that choose them are coming (asked for again
+    /// when the last fetch failed), and it waits for them.
+    private func draftCanStartSend() -> Bool {
+        if folder != nil, selectedAgent != nil { return true }
+        guard isNewSession, conversationID == nil else { return false }
+        if draftListsTask == nil, !draftListsFresh { refreshDraftLists() }
+        return draftListsTask != nil
+    }
+
+    /// The folder and agent a new session's first message creates it with,
+    /// once the draft's lists are in (fetched again first when the last fetch
+    /// failed). A message sent before then waits here, as "connecting".
+    private func draftTarget() async throws -> (folderID: Int, agent: AgentType) {
+        if draftListsTask == nil, !draftListsFresh { refreshDraftLists() }
+        do {
+            while draftListsTask != nil { try await Task.sleep(for: .milliseconds(50)) }
+        } catch {
+            // Stopped while it waited: the draft can be changed again.
+            if conversationID == nil { hasStartedFirstSend = false }
+            throw error
+        }
+        guard let folderID = folder?.id, let agent = selectedAgent else {
+            // Without the lists it waits for the server, like any message;
+            // with them it needs a folder picked.
+            if !draftListsFresh { throw APIError.transport("Couldn't reach the server to set up the session.") }
+            throw DraftSetupError()
+        }
+        return (folderID, agent)
     }
 
     // MARK: - Draft selection (new session only)
@@ -939,7 +1100,9 @@ final class SessionDetailViewModel {
     /// Change the draft's agent before the first send. A different agent needs a
     /// different connection, so any one resolved by the options sheet is dropped.
     func selectAgent(_ agent: AgentType) {
-        guard isDraftEditable, agent != selectedAgent else { return }
+        guard isDraftEditable else { return }
+        agentPicked = true
+        guard agent != selectedAgent else { return }
         selectedAgent = agent
         insertModel.agentType = agent
         resetDraftConnection()
@@ -948,7 +1111,9 @@ final class SessionDetailViewModel {
     /// Change the draft's folder before the first send. The folder is the agent's
     /// working dir, so a change likewise invalidates any resolved connection.
     func selectFolder(_ newFolder: FolderDetail) {
-        guard isDraftEditable, newFolder.id != folder?.id else { return }
+        guard isDraftEditable else { return }
+        folderPicked = true
+        guard newFolder.id != folder?.id else { return }
         folder = newFolder
         currentBranch = newFolder.gitBranch
         resetDraftConnection()
@@ -1275,7 +1440,7 @@ final class SessionDetailViewModel {
         // A draft (no linked summary yet) needs a folder + agent before it can
         // connect; lock the pickers the moment its first send begins.
         if summary == nil {
-            guard folder != nil, selectedAgent != nil else {
+            guard draftCanStartSend() else {
                 notice = "Pick a folder and agent first."
                 return false
             }
@@ -1543,7 +1708,17 @@ final class SessionDetailViewModel {
     /// `connect` so a fresh session starts with their saved selections (mirrors
     /// the web client). Empty/nil values are omitted by the request encoder.
     private var preferredSelectors: SelectorPrefs {
-        SelectorPrefsStore.prefs(for: agentTypeForUI)
+        var prefs = SelectorPrefsStore.prefs(for: agentTypeForUI)
+        // A new session starts as its options sheet said: what it showed as
+        // chosen goes too (the saved picks are among it).
+        if isNewSession, summary?.externalId == nil,
+           let shown = agentOptions.selectionsShown(for: agentTypeForUI) {
+            if let mode = shown.modeId { prefs.modeId = mode }
+            if let values = shown.configValues {
+                prefs.configValues = (prefs.configValues ?? [:]).merging(values) { _, shown in shown }
+            }
+        }
+        return prefs
     }
 
     private func resolveConnection() async throws -> String {
@@ -1558,14 +1733,35 @@ final class SessionDetailViewModel {
            )?.connectionId {
             return found
         }
+        let picked = SelectorPrefsStore.prefs(for: agentTypeForUI)
         let prefs = preferredSelectors
-        return try await client.connect(
+        let sessionID = summary?.externalId
+        let conn = try await client.connect(
             agentType: agentTypeForUI,
             workingDir: folder?.path,
-            sessionId: summary?.externalId,
+            sessionId: sessionID,
             preferredModeId: prefs.modeId,
             preferredConfigValues: prefs.configValues
         )
+        if sessionID == nil {
+            connectionID = conn
+            await applySelectorsPickedWhileConnecting(pickedBefore: picked, connectionID: conn)
+        }
+        return conn
+    }
+
+    /// A new session's options picked while its connect was on its way went
+    /// with no connect: set them now, before the first prompt (the server
+    /// applies them in order).
+    private func applySelectorsPickedWhileConnecting(pickedBefore sent: SelectorPrefs, connectionID conn: String) async {
+        let now = SelectorPrefsStore.prefs(for: agentTypeForUI)
+        if let mode = now.modeId, mode != sent.modeId {
+            try? await client.setMode(connectionId: conn, modeId: mode)
+        }
+        for (id, value) in (now.configValues ?? [:]).sorted(by: { $0.key < $1.key })
+        where sent.configValues?[id] != value {
+            try? await client.setConfigOption(connectionId: conn, configId: id, valueId: value)
+        }
     }
 
     /// Resolve a live chat connection for out-of-band actions — currently applying
@@ -1576,6 +1772,10 @@ final class SessionDetailViewModel {
     /// connection the server has since garbage-collected. The result is cached so
     /// the next send reuses the same connection.
     func resolveConnectionForOptions() async throws -> String {
+        // A new session's first prompt isn't linked to its conversation yet,
+        // so the server can't find its connection by it: it is the one the
+        // send just made.
+        if draftCreatedConversationID != nil, let conn = connectionID { return conn }
         if let id = conversationID,
            let found = try await client.findConnection(
                conversationId: id,
@@ -1626,7 +1826,9 @@ final class SessionDetailViewModel {
     /// row was already created). On failure it throws into `runSend`'s `catch`,
     /// which rolls the optimistic send back.
     private func ensureConversationCreated(firstPromptText text: String) async throws {
-        guard conversationID == nil, let folderId = folder?.id, let agent = selectedAgent else { return }
+        guard conversationID == nil else { return }
+        // Sent before the draft's lists came: it goes once they have.
+        let (folderId, agent) = try await draftTarget()
         let id = try await client.createConversation(
             folderId: folderId,
             agentType: agent,

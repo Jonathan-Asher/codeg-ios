@@ -99,7 +99,7 @@ struct AgentOptionsButton: View {
 
 /// Sheet content: the draft's Agent/Folder pickers (new session only) above the
 /// agent's auto-loaded Mode/config selectors.
-private struct AgentOptionsSheet: View {
+struct AgentOptionsSheet: View {
     let isBusy: Bool
     let cardWaiting: Bool
     let options: AgentOptionsModel
@@ -110,6 +110,16 @@ private struct AgentOptionsSheet: View {
     var dismissSheet: () -> Void = {}
 
     @Environment(\.dismiss) private var dismiss
+
+    init(isBusy: Bool, cardWaiting: Bool, options: AgentOptionsModel, newSession: NewSessionAgentConfig?,
+         branch: SessionBranchConfig?, dismissSheet: @escaping () -> Void = {}) {
+        self.isBusy = isBusy
+        self.cardWaiting = cardWaiting
+        self.options = options
+        self.newSession = newSession
+        self.branch = branch
+        self.dismissSheet = dismissSheet
+    }
 
     var body: some View {
         NavigationStack {
@@ -140,6 +150,12 @@ private struct AgentOptionsSheet: View {
                             hint(Text("This agent has no configurable options."))
                         case .loaded:
                             selectors
+                            if options.waitsForConnect {
+                                // Nothing is sent yet: the connect carries them.
+                                hint(Text("The session starts with these."))
+                            }
+                        case .atConnect:
+                            atConnectCard
                         }
 
                         if let notice = options.errorNotice {
@@ -392,6 +408,25 @@ private struct AgentOptionsSheet: View {
             Text(message)
                 .font(.caption)
                 .foregroundStyle(Theme.textSecondary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+        .hairlineBorder(Theme.Radius.md)
+    }
+
+    /// A new session's agent whose options haven't been seen on this server:
+    /// they show once it connects. Reading them now starts the agent on the
+    /// server, so only when asked.
+    private var atConnectCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("This agent's modes and models show here once the session starts. You can send your first message now.")
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Load Options Now") { options.load() }
+                .buttonStyle(.glass)
+                .tint(Theme.accent)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)

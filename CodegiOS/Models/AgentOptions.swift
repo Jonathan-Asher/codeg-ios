@@ -13,7 +13,10 @@ import Foundation
 /// Responses are decoded with `.convertFromSnakeCase`, so wire keys like
 /// `config_options` arrive here already camelCased — properties are spelled in
 /// camelCase and must NOT carry snake_case `CodingKeys` (that would double-convert).
-struct AgentOptionsSnapshot: Hashable, Sendable, Decodable {
+///
+/// Encodable (camelCase, as decoded) so the lists last seen for an agent can
+/// be kept between launches (``DraftCatalog``).
+struct AgentOptionsSnapshot: Hashable, Sendable, Codable {
     let modes: SessionModeState?
     let configOptions: [SessionConfigOption]
 
@@ -27,6 +30,12 @@ struct AgentOptionsSnapshot: Hashable, Sendable, Decodable {
         // Rust always serializes the Vec, but default to empty defensively so a
         // server that omits it can't fail the whole decode.
         configOptions = try c.decodeIfPresent([SessionConfigOption].self, forKey: .configOptions) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(modes, forKey: .modes)
+        try c.encode(configOptions, forKey: .configOptions)
     }
 
     /// Direct initializer for previews / tests.
@@ -44,7 +53,7 @@ struct AgentOptionsSnapshot: Hashable, Sendable, Decodable {
 
 /// Mode state for the session (Rust `SessionModeStateInfo`): the current mode id
 /// plus the list of selectable modes.
-struct SessionModeState: Hashable, Sendable, Decodable {
+struct SessionModeState: Hashable, Sendable, Codable {
     let currentModeId: String
     let availableModes: [SessionModeInfo]
 }
@@ -95,7 +104,7 @@ struct SessionSnapshot: Hashable, Sendable, Decodable {
 
 /// One selectable agent mode (Rust `SessionModeInfo`), e.g. Claude's
 /// "default" / "plan" modes.
-struct SessionModeInfo: Hashable, Sendable, Decodable, Identifiable {
+struct SessionModeInfo: Hashable, Sendable, Codable, Identifiable {
     let id: String
     let name: String
     let description: String?
@@ -103,7 +112,7 @@ struct SessionModeInfo: Hashable, Sendable, Decodable, Identifiable {
 
 /// One configurable option (Rust `SessionConfigOptionInfo`), e.g. a model
 /// selector. `kind` carries the concrete control (currently only `select`).
-struct SessionConfigOption: Hashable, Sendable, Decodable, Identifiable {
+struct SessionConfigOption: Hashable, Sendable, Codable, Identifiable {
     let id: String
     let name: String
     let description: String?
@@ -114,7 +123,7 @@ struct SessionConfigOption: Hashable, Sendable, Decodable, Identifiable {
 /// The control behind a `SessionConfigOption` (Rust `SessionConfigKindInfo`,
 /// internally tagged by `type`). Only `select` is modeled; unknown future kinds
 /// decode to `.unknown` rather than throwing.
-enum SessionConfigKind: Hashable, Sendable, Decodable {
+enum SessionConfigKind: Hashable, Sendable, Codable {
     case select(currentValue: String, options: [SessionConfigSelectOption], groups: [SessionConfigSelectGroup])
     case unknown(type: String)
 
@@ -134,6 +143,19 @@ enum SessionConfigKind: Hashable, Sendable, Decodable {
             )
         default:
             self = .unknown(type: type)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .select(let currentValue, let options, let groups):
+            try c.encode("select", forKey: .type)
+            try c.encode(currentValue, forKey: .currentValue)
+            try c.encode(options, forKey: .options)
+            try c.encode(groups, forKey: .groups)
+        case .unknown(let type):
+            try c.encode(type, forKey: .type)
         }
     }
 
@@ -167,7 +189,7 @@ enum SessionConfigKind: Hashable, Sendable, Decodable {
 }
 
 /// One choice in a `select` config option (Rust `SessionConfigSelectOptionInfo`).
-struct SessionConfigSelectOption: Hashable, Sendable, Decodable, Identifiable {
+struct SessionConfigSelectOption: Hashable, Sendable, Codable, Identifiable {
     let value: String
     let name: String
     let description: String?
@@ -176,7 +198,7 @@ struct SessionConfigSelectOption: Hashable, Sendable, Decodable, Identifiable {
 }
 
 /// A named grouping of select options (Rust `SessionConfigSelectGroupInfo`).
-struct SessionConfigSelectGroup: Hashable, Sendable, Decodable, Identifiable {
+struct SessionConfigSelectGroup: Hashable, Sendable, Codable, Identifiable {
     let group: String
     let name: String
     let options: [SessionConfigSelectOption]

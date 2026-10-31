@@ -36,8 +36,9 @@ struct CachedTranscript: Codable, Sendable {
 /// file per conversation under a folder per server endpoint and token. The
 /// files are bounded by a size cap with least-recently-used eviction, and a
 /// server whose URL or token changes (or that is removed) loses its folder.
-/// The server's folder also holds its session lists (``ServerSnapshotCache``),
-/// which eviction leaves alone.
+/// The server's folder also holds its session lists (``ServerSnapshotCache``)
+/// and what a new session offers (``DraftCatalogStore``), which eviction
+/// leaves alone.
 ///
 /// Everything is written with complete file protection (``ProtectedFiles``):
 /// the files are attorney-client conversations, unreadable while the phone
@@ -194,8 +195,10 @@ actor TranscriptCache {
         guard let walker = fileManager.enumerator(at: root, includingPropertiesForKeys: keys) else { return [] }
         var out: [FileEntry] = []
         for case let url as URL in walker {
-            // The session lists have their own cap and are never evicted.
-            guard url.lastPathComponent != ServerSnapshotCache.fileName else { continue }
+            // The session lists have their own cap and are never evicted, nor
+            // is the small draft catalog (``DraftCatalogStore``).
+            guard url.lastPathComponent != ServerSnapshotCache.fileName,
+                  url.lastPathComponent != DraftCatalogStore.fileName else { continue }
             guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
             out.append(FileEntry(url: url, size: values.fileSize ?? 0,
                                  used: values.contentModificationDate ?? .distantPast))

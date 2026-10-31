@@ -20,7 +20,8 @@ struct SelectorPrefs: Codable, Equatable, Sendable {
 /// intrinsic to the agent; a value the current server doesn't know is simply
 /// ignored on connect.
 enum SelectorPrefsStore {
-    private static let key = "codeg.selectorPrefs.v1"
+    /// The `UserDefaults` key (tests save and restore it).
+    static let key = "codeg.selectorPrefs.v1"
 
     /// All persisted prefs, keyed by `AgentType.rawValue`.
     static func all() -> [String: SelectorPrefs] {
