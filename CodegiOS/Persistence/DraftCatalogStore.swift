@@ -31,7 +31,7 @@ struct DraftCatalog: Codable, Equatable, Sendable {
 /// then kept in memory; a change is written in the background.
 @MainActor
 final class DraftCatalogStore {
-    static let shared = DraftCatalogStore()
+    nonisolated static let shared = DraftCatalogStore()
     nonisolated static let fileName = "draft-catalog.json"
 
     private let root: URL
@@ -40,7 +40,7 @@ final class DraftCatalogStore {
     private var catalogs: [String: DraftCatalog] = [:]
     private let writer = DispatchQueue(label: "codeg.draft-catalog", qos: .utility)
 
-    init(root: URL? = nil, files: any SavedFileStore = ProtectedFiles()) {
+    nonisolated init(root: URL? = nil, files: any SavedFileStore = ProtectedFiles()) {
         self.root = root ?? TranscriptCache.defaultRoot
         self.files = files
     }

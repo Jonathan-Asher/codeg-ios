@@ -44,13 +44,13 @@ final class DraftPresetsTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    static let alpha = FolderDetail(id: 1, name: "alpha", path: "/work/alpha", gitBranch: "main",
+    nonisolated static let alpha = FolderDetail(id: 1, name: "alpha", path: "/work/alpha", gitBranch: "main",
                                     defaultAgentType: nil, lastOpenedAt: Date(timeIntervalSince1970: 2_000),
                                     sortOrder: 0, color: "blue")
-    static let beta = FolderDetail(id: 2, name: "beta", path: "/work/beta", gitBranch: "dev",
+    nonisolated static let beta = FolderDetail(id: 2, name: "beta", path: "/work/beta", gitBranch: "dev",
                                    defaultAgentType: .pi, lastOpenedAt: Date(timeIntervalSince1970: 1_000),
                                    sortOrder: 1, color: "green")
-    static let gamma = FolderDetail(id: 3, name: "gamma", path: "/work/gamma", gitBranch: "main",
+    nonisolated static let gamma = FolderDetail(id: 3, name: "gamma", path: "/work/gamma", gitBranch: "main",
                                     defaultAgentType: .pi, lastOpenedAt: Date(timeIntervalSince1970: 3_000),
                                     sortOrder: 2, color: "inherit")
 
@@ -136,7 +136,8 @@ final class DraftPresetsTests: XCTestCase {
     }
 
     private func makeDraft(_ request: NewSessionRequest = NewSessionRequest(),
-                           factory: StreamFactory = StreamFactory([])) -> SessionDetailViewModel {
+                           factory: StreamFactory? = nil) -> SessionDetailViewModel {
+        let factory = factory ?? StreamFactory([])
         let model = SessionDetailViewModel(client: server.client, newSession: request, draftCatalog: store) { _ in
             factory.make()
         }
