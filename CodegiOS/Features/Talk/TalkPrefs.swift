@@ -3,11 +3,22 @@ import Foundation
 /// How echo is kept out of what Talk hears (the Lab's override; Automatic
 /// picks per route: echo-cancelled input on the built-in mic and speaker
 /// where iOS offers it, voice processing otherwise, nothing on AirPods).
-enum TalkEchoMode: String, CaseIterable, Equatable, Sendable {
+enum TalkEchoSetting: String, CaseIterable, Equatable, Sendable {
     case automatic
     case echoCancelledInput
     case voiceProcessing
     case off
+
+    /// What ``TalkAudioIO/start(preferring:)`` takes: nil lets
+    /// ``TalkEchoPolicy`` choose per route.
+    var preferredMode: TalkEchoMode? {
+        switch self {
+        case .automatic: return nil
+        case .echoCancelledInput: return .echoCancelledInput
+        case .voiceProcessing: return .voiceProcessing
+        case .off: return TalkEchoMode.none
+        }
+    }
 }
 
 /// Settings › Voice › Talk, kept in UserDefaults under `codeg.talk.*`.
@@ -57,8 +68,8 @@ struct TalkPrefs {
     }
 
     /// The Lab's echo override.
-    var echoMode: TalkEchoMode {
-        get { defaults.string(forKey: Self.echoModeKey).flatMap(TalkEchoMode.init) ?? .automatic }
+    var echoMode: TalkEchoSetting {
+        get { defaults.string(forKey: Self.echoModeKey).flatMap(TalkEchoSetting.init) ?? .automatic }
         nonmutating set { defaults.set(newValue.rawValue, forKey: Self.echoModeKey) }
     }
 
