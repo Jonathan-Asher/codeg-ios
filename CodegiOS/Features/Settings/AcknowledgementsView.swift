@@ -1,7 +1,7 @@
 import SherpaOnnx
 import SwiftUI
 
-/// One third-party component the app ships or downloads, with its licence.
+/// One third-party component the app ships or downloads, with its license.
 struct Acknowledgement: Identifiable, Hashable {
     enum License: String {
         case mit = "MIT"
@@ -10,7 +10,7 @@ struct Acknowledgement: Identifiable, Hashable {
         case apache2 = "Apache-2.0"
         case ccBy4 = "CC-BY-4.0"
         case gpl3 = "GPL-3.0-or-later"
-        case none = "No licence declared"
+        case none = "No license declared"
     }
 
     let name: String
@@ -20,14 +20,14 @@ struct Acknowledgement: Identifiable, Hashable {
     /// Copyright lines, also printed above an MIT or BSD text.
     let copyright: String
     let url: String
-    /// Changes made to it, for licences that ask for them (CC BY 4.0 §3(a)(1)(B)).
+    /// Changes made to it, for licenses that ask for them (CC BY 4.0 §3(a)(1)(B)).
     var changes: String? = nil
 
     var id: String { name }
 }
 
 /// About › Acknowledgements: the open-source code in the app and the models it
-/// downloads, with their licences. The same list, with sources, is in
+/// downloads, with their licenses. The same list, with sources, is in
 /// THIRD_PARTY_NOTICES.md; the models' provenance is in each release's
 /// NOTICE.txt.
 struct AcknowledgementsView: View {
@@ -106,7 +106,7 @@ struct AcknowledgementsView: View {
                         copyright: "Copyright 2005-2024 Google LLC", url: "https://www.openfst.org"),
         Acknowledgement(name: "simple-sentencepiece", detail: "0.7.", license: .apache2,
                         copyright: "Copyright 2024 Wei Kang", url: "https://github.com/pkufool/simple-sentencepiece"),
-        Acknowledgement(name: "utf8proc", detail: "2.12.0. Its Unicode data is under the Unicode licence.", license: .mit,
+        Acknowledgement(name: "utf8proc", detail: "2.12.0. Its Unicode data is under the Unicode license.", license: .mit,
                         copyright: "Copyright (c) 2014-2021 Steven G. Johnson, Jiahao Chen, Tony Kelman, Jonas Fonseca, and other contributors\nCopyright (c) 2009, 2013 Public Software Group e. V., Berlin, Germany",
                         url: "https://github.com/JuliaStrings/utf8proc"),
         Acknowledgement(name: "JSON for Modern C++", detail: "3.12.0.", license: .mit,
@@ -127,7 +127,7 @@ struct AcknowledgementsView: View {
                         copyright: "Copyright (c) 2020-present Silero Team", url: "https://github.com/snakers4/silero-vad"),
         Acknowledgement(name: "RenikudPlus", detail: "Hebrew pronunciation for BlueTTS.", license: .apache2,
                         copyright: "notmax123", url: "https://huggingface.co/notmax123/RenikudPlus"),
-        Acknowledgement(name: "BlueTTS 2.5", detail: "The voice model. Its authors declare no licence.", license: .none,
+        Acknowledgement(name: "BlueTTS 2.5", detail: "The voice model. Its authors declare no license.", license: .none,
                         copyright: "notmax123", url: "https://huggingface.co/notmax123/BlueTTS2.5-onnx"),
     ]
 }
@@ -178,7 +178,7 @@ private struct AcknowledgementCard: View {
     private var licenseText: some View {
         if let link = LicenseTexts.link(item.license) {
             Link(destination: link) {
-                Text("Licence text").font(.caption.weight(.semibold))
+                Text("License text").font(.caption.weight(.semibold))
             }
             .tint(Theme.accent)
         } else if let text = LicenseTexts.text(item.license, copyright: item.copyright) {
@@ -190,13 +190,13 @@ private struct AcknowledgementCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 4)
             } label: {
-                Text("Licence text").font(.caption.weight(.semibold)).foregroundStyle(Theme.accent)
+                Text("License text").font(.caption.weight(.semibold)).foregroundStyle(Theme.accent)
             }
         }
     }
 }
 
-/// Licence texts: MIT and BSD bodies under the component's copyright, the
+/// License texts: MIT and BSD bodies under the component's copyright, the
 /// Apache-2.0 text bundled with the app, links for CC BY 4.0 and the GPL.
 enum LicenseTexts {
     static func link(_ license: Acknowledgement.License) -> URL? {

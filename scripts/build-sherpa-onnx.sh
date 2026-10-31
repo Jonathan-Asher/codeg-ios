@@ -206,7 +206,7 @@ check_symbols() {
   if ! grep -qx '_OrtGetApiBase' <<<"$undefined"; then
     die "$name: the archive does not reference _OrtGetApiBase"
   fi
-  echo "[$name] ONNX Runtime symbols it needs from the app: $(grep -E '^_Ort' <<<"$undefined" | tr '\n' ' ')"
+  echo "[$name] ONNX Runtime symbols it needs from the app: $(grep -E '^_Ort' <<<"$undefined" | sort -u | tr '\n' ' ')"
   echo "[$name] no _Ort*, onnxruntime::, espeak or piper definitions: ok"
 }
 

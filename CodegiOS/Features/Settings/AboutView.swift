@@ -135,7 +135,7 @@ struct AboutView: View {
         }
     }
 
-    /// The open-source code and the models the app uses, with their licences.
+    /// The open-source code and the models the app uses, with their licenses.
     private var acknowledgementsCard: some View {
         GlassCard(padding: 0) {
             NavigationLink {
