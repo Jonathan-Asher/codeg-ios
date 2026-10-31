@@ -357,6 +357,16 @@ final class TalkMachineTests: XCTestCase {
             askID: "permission:r1", optionId: "no", feedback: "תריץ קודם את הלינטר"))])
     }
 
+    func testWordsStartedBeforeAPromptAreForTheSession() {
+        var driver = TalkMachineDriver.listening()
+        driver.send(.speechStarted)
+        XCTAssertEqual(driver.send(.ask(permission)), [], "asked once the person is done")
+        driver.send(.commit)
+        let effects = driver.finish("תבדוק גם את הלוגים")
+        XCTAssertEqual(effects.first, .sendAction(.sendSpoken("תבדוק גם את הלוגים")))
+        XCTAssertEqual(spoken(effects), ["אני רוצה להריץ את הבדיקות. לאשר?"])
+    }
+
     func testAnUnclearAnswerIsAskedAgainThenLeftOnTheScreen() {
         var driver = TalkMachineDriver.listening()
         let ask = permission

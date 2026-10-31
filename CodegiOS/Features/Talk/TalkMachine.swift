@@ -229,9 +229,11 @@ struct TalkState: Equatable, Sendable {
         return false
     }
 
-    /// What the router needs for the utterance being routed.
+    /// What the router needs for the utterance being routed. An ask counts
+    /// once its prompt was said (or begun): words that started before it
+    /// are for the session.
     var routeContext: TalkRouteContext {
-        TalkRouteContext(ask: ask, askAttempt: askAttempt, speechHeld: !held.isEmpty,
+        TalkRouteContext(ask: askSpoken ? ask : nil, askAttempt: askAttempt, speechHeld: !held.isEmpty,
                          confirmingCancel: confirmingCancel, muted: muted)
     }
 }
