@@ -510,6 +510,17 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- Talk reports its timings again (1.4.1). A Talk that ended with the iPhone
+  locked (pocket mode, by voice or after 10 quiet minutes) sent no
+  telemetry and left the session in Talk mode on the server: the app
+  stopped its audio first, and iOS suspended it before anything went. Talk
+  now keeps its reports on the iPhone and holds a few seconds of background
+  time before the audio stops; the reports go to the session's server, and
+  only there, while Talk mode is turned off, and any that didn't go
+  (offline, the server down) go the next time the app comes to the front.
+  A long Talk's reports are cut into parts small enough for the server,
+  which refused a part over 1 MiB as it stores it.
+
 - A reply split by a message you sent into the turn no longer shows its
   first half twice after the app reconnects to the running turn (1.3.29).
   The copy of the reply the agent had saved so far is now hidden from the

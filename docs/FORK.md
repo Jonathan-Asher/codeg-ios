@@ -3357,10 +3357,25 @@ transcript won and both texts; for the Talk, barge-in candidates,
 confirmations and rejections, voice onsets heard while speaking and the
 speech's length per route and echo mode, memory and thermal samples, memory
 warnings and errors; and "You cut me off" taps. When Talk ends it goes to
-the session's server as `talk_lab` reports through
-`report_client_diagnostic` (JSON only, transcripts but never audio, each
-report under 1 MiB, split into parts when needed); Settings › Voice › Talk
-› Share Talk telemetry turns it off.
+the session's server, and only there, as `talk_lab` reports through
+`report_client_diagnostic` (JSON only, transcripts but never audio);
+Settings › Voice › Talk › Share Talk telemetry turns it off.
+
+How the reports get there (1.4.1). With the iPhone locked, the audio is all
+that keeps the app running, and iOS suspends it as soon as the audio stops.
+1.4.0 stopped it first, so a Talk that ended in the pocket (by voice or
+after 10 quiet minutes) sent nothing and left the session in Talk mode. Now
+`release()` takes background time (`TalkSystem.beginBackgroundWork`) and
+keeps the reports (`TalkBackend.keep`) before the audio stops; they go while
+Talk mode is turned off, and the time is given back once both are done.
+`TalkReportStore` keeps them in `Application Support/TalkReports/`, a folder
+per server (not backed up, 30 per server, 14 days): one the server took or
+refused for what it is goes, anything else (offline, server down) stays and
+goes at the next Talk's end or when the app comes to the front, to that
+server only. codeg holds a report to 1 MiB as it stores it, pretty-printed
+in an envelope, about twice the JSON sent, so a part is cut by that size
+(`TalkTelemetry.storedSize`); 1.4.0 cut parts at 600 KiB of JSON, which a
+long Talk's could pass once stored.
 
 The Lab (Settings › Voice › Talk › Lab): record a sentence and see whisper's
 and the Zipformer's text side by side with their times (and Smart Turn's

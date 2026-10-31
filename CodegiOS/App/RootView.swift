@@ -134,8 +134,11 @@ struct RootView: View {
             }
         }
         // Down time only counts toward "Offline" while the app is in front.
+        // Coming to the front (launch too) sends the Talk reports a Talk's end
+        // kept: it ended offline, or iOS suspended the app before they went.
         .onChange(of: scenePhase, initial: true) { _, phase in
             LinkStatus.shared.setVisible(phase == .active)
+            if phase == .active { TalkReportStore.sendAllKeptSoon() }
         }
     }
 

@@ -16,6 +16,9 @@ extension TalkStartError {
     static let modelsMissing = TalkStartError("Talk's models aren't on this iPhone yet. Download them in Settings › Voice › Talk.")
 }
 
+/// The time a Talk's end takes once the audio stops: a `beginBackgroundTask`.
+extension BackgroundTime: TalkBackgroundWork {}
+
 // MARK: - Listening
 
 /// The streaming Zipformer, kept with the speech engines
@@ -352,6 +355,10 @@ final class LiveTalkSystem: TalkSystem {
     }
 
     var reportEnvironment: TalkReportEnvironment { .current }
+
+    func beginBackgroundWork(_ name: String) -> TalkBackgroundWork {
+        BackgroundTime(name: name)
+    }
 }
 
 /// The Lock Screen's and the AirPods' commands for Talk: play/pause (a stem
@@ -387,6 +394,9 @@ final class LiveTalkBackend: TalkBackend {
     private let holder = UUID()
     private weak var pending: PendingItemsStore?
     private var holding = false
+    /// Reports with no server to keep them for (no profile id): they go at
+    /// the end or not at all.
+    private var unkept: [Data] = []
 
     init(client: CodegClient, conversationID: Int, serverProfileID: UUID?, lease: SessionLease?,
          pending: PendingItemsStore?) {
@@ -450,8 +460,26 @@ final class LiveTalkBackend: TalkBackend {
         await pending?.refresh()
     }
 
-    func upload(report: Data) async throws {
-        guard let body = DiagnosticsUploader.wrap(report) else { return }
-        try await client.reportClientDiagnostic(body)
+    /// On disk, under this server (``TalkReportStore``).
+    func keep(reports: [Data]) {
+        guard let serverProfileID else {
+            unkept.append(contentsOf: reports)
+            return
+        }
+        TalkReportStore.shared.keep(reports, for: serverProfileID)
+    }
+
+    func sendKeptReports() async {
+        let client = client
+        guard let serverProfileID else {
+            let reports = unkept
+            unkept = []
+            for report in reports {
+                guard let body = DiagnosticsUploader.wrap(report) else { continue }
+                _ = try? await client.reportClientDiagnostic(body)
+            }
+            return
+        }
+        await TalkReportStore.shared.send(for: serverProfileID) { body in try await client.reportClientDiagnostic(body) }
     }
 }
