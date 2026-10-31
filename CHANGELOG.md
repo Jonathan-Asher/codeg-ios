@@ -12,6 +12,41 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Talk (1.4.0): a hands-free voice conversation with a session, in Hebrew
+  with English terms where they're natural. Tap the Talk button at the top
+  of a session (with the agent avatar), speak, and pause: a soft tick plays
+  and what you said is sent; the reply is spoken while it streams, in short
+  sentences, with code and details left on the screen. Talk over the speech
+  to interrupt it (your words go into the running turn; the work isn't
+  cancelled). Say "עצור" to stop the speech, "תחזור" to hear the last reply
+  again, "תמשיך" to go on, "השתק" and "תקשיב" to mute and unmute, "סיים
+  שיחה" to end, "בטל את הסוכן" to cancel the work (after "are you sure?").
+  Permissions, questions and plans, also from sub-agents, are asked out
+  loud and answered by voice or with big buttons; secret questions only
+  say they're waiting. Long work goes to the background and its result is
+  spoken when it lands. Pocket mode: lock the iPhone and keep talking
+  through AirPods; the Lock Screen shows Talk with the session, a stem press
+  mutes and unmutes, a double press stops the speech, a triple press repeats.
+  A call pauses Talk and it resumes after. Mute by voice keeps listening on
+  the iPhone for "תקשיב"; the Mute button turns the microphone off until you
+  tap it. With Camera Control to talk on, a press of the Camera Control
+  stops the speech and listens, and holding it is push to talk. Push to
+  talk can also replace hands-free in Settings › Voice › Talk, with the
+  patience, interrupting by speaking, a status phrase while the agent
+  works, the agent's language and how it addresses you (the server's
+  settings), the models and the Lab. The first Talk asks for its models:
+  live Hebrew transcription (73 MB) and end of turn (9 MB) are required,
+  the natural voice is BlueTTS (575 MB, otherwise the iPhone's voices), and
+  voice typing's whisper model gives better English terms. Talk ends after
+  10 quiet minutes with nothing running. Everything is heard and spoken on
+  the iPhone; each Talk's timings and transcripts (never audio) go to your
+  codeg server for tuning, unless Share Talk telemetry is off. Needs a codeg
+  server with Talk (fork.216 or later).
+- The Talk Lab (1.4.0), in Settings › Voice › Talk: compare whisper and
+  the live transcriber on your own sentences, time the voice's first
+  audio, test echo on the current route with each echo mode, and see what
+  this iPhone offers.
+
 - Paste files into a message (1.3.30). A file you copied in another app (a
   PDF, a Word document, a picture, a video, any file) pastes into the message
   box as an attachment, with ⌘V on a keyboard or Paste in the field's menu, the

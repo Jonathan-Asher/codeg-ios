@@ -72,6 +72,7 @@ struct SessionDetailView: View {
 
     var body: some View {
         screen
+            .modifier(TalkSessionSheets(conversationID: model.conversationID, stats: model.sessionStats))
             .alert("Camera Control to talk", isPresented: $showCameraTalkIntro) {
                 Button("Turn On") { Task { await enableCameraTalk() } }
                 Button("Cancel", role: .cancel) { }
@@ -208,20 +209,6 @@ struct SessionDetailView: View {
             model.loadIfNeeded()
             // Whether this server's fork takes an edit mode ("Edit Message").
             await ForkCapabilities.shared.probeEditModesIfNeeded(client: client)
-        }
-        .sheet(isPresented: talkSheetShown) {
-            if let talk = talkCenter.controller, talk.conversationID == model.conversationID {
-                TalkSheet(talk: talk, stats: model.sessionStats, onEnd: { talkCenter.end() })
-            }
-        }
-        .sheet(isPresented: talkModelsShown) {
-            TalkModelsSheet(onStart: { talkCenter.modelsReady() }, onCancel: { talkCenter.modelsCancelled() })
-        }
-        .alert("Talk", isPresented: Binding(get: { talkCenter.problem != nil },
-                                           set: { if !$0 { talkCenter.clearProblem() } })) {
-            Button("OK", role: .cancel) { talkCenter.clearProblem() }
-        } message: {
-            Text(verbatim: talkCenter.problem ?? "")
         }
         .sheet(item: $editing) { session in
             MessageEditorSheet(
@@ -374,17 +361,6 @@ struct SessionDetailView: View {
     }
 
     // MARK: - Talk
-
-    /// Talk runs for this session: its sheet is up (until Talk ends).
-    private var talkSheetShown: Binding<Bool> {
-        Binding(get: { model.conversationID != nil && talkCenter.controller?.conversationID == model.conversationID },
-                set: { _ in })
-    }
-
-    private var talkModelsShown: Binding<Bool> {
-        Binding(get: { model.conversationID != nil && talkCenter.modelsRequestedFor == model.conversationID },
-                set: { shown in if !shown { talkCenter.modelsCancelled() } })
-    }
 
     private func startTalk() {
         if talkCenter.isActive(model.conversationID) { return }

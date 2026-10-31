@@ -873,6 +873,68 @@ final class TalkControllerTests: XCTestCase {
         XCTAssertEqual(h.spoken, ["ועכשיו משהו חדש."])
     }
 
+    func testALongReplyIsLeftOnTheScreenAfterNinetySeconds() async {
+        let h = TalkHarness()
+        await h.start()
+        let sentence = String(repeating: "מילה ", count: 60).trimmingCharacters(in: .whitespaces) + "."
+        let text = Array(repeating: sentence, count: 8).joined(separator: " ")
+        await h.reply(text)
+        while !h.audio.queued.isEmpty { await h.playAll() }
+        XCTAssertEqual(h.spoken.last, SpokenPrompts.restOnScreen(.hebrew(.masculine)))
+        XCTAssertLessThan(h.spoken.count, 8)
+    }
+
+    func testSpeakProgressSaysAPhraseWhileTheAgentWorks() async {
+        let h = TalkHarness()
+        TalkPrefs(defaults: h.defaults).speakProgress = true
+        await h.start()
+        h.port.isInFlight = true
+        await h.advance(25)
+        XCTAssertEqual(h.spoken.first, SpokenPrompts.stillWorking(.hebrew(.masculine)))
+    }
+
+    func testAPlanIsApprovedByVoice() async {
+        let h = TalkHarness()
+        await h.start()
+        h.port.pendingPlanApproval = PendingPlanApproval(approvalId: "a1", toolCallId: "t1",
+                                                         planMarkdown: "Add a retry around the upload. Then test it.")
+        h.controller.talkPendingChanged()
+        await h.settle()
+        XCTAssertTrue(h.spoken.last?.hasPrefix("יש תוכנית:") ?? false)
+        await h.playAll()
+        await h.say("מאשר")
+        XCTAssertEqual(h.port.planAnswers, [.approve])
+    }
+
+    func testASecretQuestionIsOnlyAnnounced() async {
+        let h = TalkHarness()
+        await h.start()
+        h.port.pendingQuestion = PendingQuestion(questionId: "q2", questions: [
+            QuestionSpec(id: "key", question: "API key?", header: "Key", multiSelect: false, options: [],
+                         isSecret: true),
+        ])
+        h.controller.talkPendingChanged()
+        await h.settle()
+        XCTAssertEqual(h.spoken.last, SpokenPrompts.secretWaiting(.hebrew(.masculine)))
+        XCTAssertNil(h.controller.ask, "never asked or listened for")
+        await h.playAll()
+        await h.say("הסיסמה היא אחת שתיים שלוש")
+        XCTAssertTrue(h.port.questionAnswers.isEmpty)
+    }
+
+    func testCancellingTheAgentAsksFirst() async {
+        let h = TalkHarness()
+        await h.start()
+        h.port.isInFlight = true
+        h.controller.refreshSession()
+        await h.say("בטל את הסוכן")
+        XCTAssertEqual(h.port.cancels, 0)
+        XCTAssertEqual(h.spoken.last, SpokenPrompts.confirmCancel(.hebrew(.masculine)))
+        await h.playAll()
+        await h.say("כן")
+        XCTAssertEqual(h.port.cancels, 1)
+    }
+
     func testTelemetrySplitsIntoReportsUnderTheLimit() {
         var telemetry = TalkTelemetry(conversationID: 1, origin: 0, settings: TalkTelemetry.Settings(
             handsFree: true, patience: "normal", interruptBySpeaking: true, smartTurn: "shadow",

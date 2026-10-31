@@ -45,7 +45,8 @@ final class ZipformerEngine: SpeechEngineAttachment {
 
     /// The loaded one, or a new one from the downloaded model (off the main
     /// thread: it takes a fraction of a second).
-    static func shared(host: SpeechEngineHost = .shared) async throws -> StreamingTransducerRecognizer {
+    static func shared(host: SpeechEngineHost? = nil) async throws -> StreamingTransducerRecognizer {
+        let host = host ?? .shared
         if let engine = host.attachment(key) as? ZipformerEngine, let recognizer = engine.recognizer { return recognizer }
         guard let model = TalkModels.zipformerParts() else { throw TalkStartError.modelsMissing }
         let recognizer = try await Task.detached(priority: .userInitiated) {
@@ -72,7 +73,8 @@ final class SmartTurnEngine: SpeechEngineAttachment {
 
     func unload() { classifier = nil }
 
-    static func shared(host: SpeechEngineHost = .shared) async -> SmartTurnClassifier? {
+    static func shared(host: SpeechEngineHost? = nil) async -> SmartTurnClassifier? {
+        let host = host ?? .shared
         if let engine = host.attachment(key) as? SmartTurnEngine, let classifier = engine.classifier { return classifier }
         guard let url = TalkModels.smartTurnURL() else { return nil }
         let classifier = try? await Task.detached(priority: .userInitiated) {
@@ -330,11 +332,11 @@ final class LiveTalkSystem: TalkSystem {
     private let remote = TalkRemoteControl()
     private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "codeg", category: "talk")
 
-    init(folder: String?, session: String?, speech: SpeechEngineHost = .shared, voice: VoiceEngineHost = .shared) {
+    init(folder: String?, session: String?, speech: SpeechEngineHost? = nil, voice: VoiceEngineHost? = nil) {
         self.folder = folder
         self.session = session
-        self.speech = speech
-        self.voice = voice
+        self.speech = speech ?? .shared
+        self.voice = voice ?? .shared
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil,
                                             queue: .main) { [weak self] _ in

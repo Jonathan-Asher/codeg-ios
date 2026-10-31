@@ -210,7 +210,10 @@ final class SentenceSpeaker {
         let gen = generation
         let duration = chunk.duration
         audio.schedule(chunk.samples, sampleRate: chunk.sampleRate) { [weak self] in
-            MainActor.assumeIsolated { self?.played(serial: serial, duration: duration, generation: gen) }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.played(serial: serial, duration: duration, generation: gen)
+            }
         }
         if index == 0, wasQuiet, !items[0].announced { announceFirst() }
     }

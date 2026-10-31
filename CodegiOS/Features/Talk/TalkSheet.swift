@@ -325,6 +325,47 @@ private extension TalkChoice.Meaning {
     }
 }
 
+/// Talk's sheets on a session's screen: the Talk sheet while Talk runs for
+/// it (until Talk ends), the first-run model download, and why a start
+/// didn't happen.
+struct TalkSessionSheets: ViewModifier {
+    let conversationID: Int?
+    let stats: SessionStats?
+
+    private var center: TalkCenter { TalkCenter.shared }
+
+    private var talkShown: Binding<Bool> {
+        Binding(get: { conversationID != nil && center.controller?.conversationID == conversationID },
+                set: { _ in })
+    }
+
+    private var modelsShown: Binding<Bool> {
+        Binding(get: { conversationID != nil && center.modelsRequestedFor == conversationID },
+                set: { shown in if !shown { center.modelsCancelled() } })
+    }
+
+    private var problemShown: Binding<Bool> {
+        Binding(get: { center.problem != nil }, set: { if !$0 { center.clearProblem() } })
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: talkShown) {
+                if let talk = center.controller, talk.conversationID == conversationID {
+                    TalkSheet(talk: talk, stats: stats, onEnd: { center.end() })
+                }
+            }
+            .sheet(isPresented: modelsShown) {
+                TalkModelsSheet(onStart: { center.modelsReady() }, onCancel: { center.modelsCancelled() })
+            }
+            .alert("Talk", isPresented: problemShown) {
+                Button("OK", role: .cancel) { center.clearProblem() }
+            } message: {
+                Text(verbatim: center.problem ?? "")
+            }
+    }
+}
+
 /// The Talk button at the top of a session: starts Talk, or opens its sheet
 /// when it runs. Filled while Talk runs for this session.
 struct TalkToolbarButton: View {

@@ -1121,7 +1121,8 @@ final class TalkController {
             echoMode = audio.echoMode
             telemetry.event("route", "\(Self.name(newRoute)) \(Self.name(echoMode))", at: now)
             // The engine was rebuilt: what was queued is gone. The sentence
-            // being said starts again.
+            // being said starts again. The VAD starts afresh on the new input.
+            engines?.vad.reset()
             if machine.state.isSpeaking { speaker?.respeak() }
         case .mediaServicesReset:
             telemetry.event("media_services_reset", nil, at: now)
@@ -1143,6 +1144,7 @@ final class TalkController {
         do {
             try startAudio()
             interruptionRetries = 0
+            engines?.vad.reset()
             send(.resumed)
         } catch {
             interruptionRetries += 1
