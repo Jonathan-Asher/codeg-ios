@@ -16,13 +16,19 @@ protocol SpeechActivity {
 /// starts an utterance with the audio just before speech was detected;
 /// `accept` returns the partial text when it changed; `flushTail` decodes
 /// what is buffered at a pause without ending the utterance; `finish` ends
-/// it and returns the final text.
-protocol LiveTranscriber: AnyObject {
+/// it and returns the final text. `transcribeOnce` decodes a clip on a
+/// stream of its own (the check of a voice talking over the speech) and
+/// leaves the utterance alone.
+///
+/// The calls are CPU work: Talk makes them in order on its own queue
+/// (``TalkWorker``), never on the main thread.
+protocol LiveTranscriber: AnyObject, Sendable {
     func begin(preRoll: [Float])
     func accept(_ samples: [Float]) -> String?
     func flushTail() -> String
     func finish() -> String
     func reset()
+    func transcribeOnce(_ clip: [Float]) -> String
 }
 
 /// The more accurate transcription of a whole utterance (16 kHz mono),
@@ -38,9 +44,19 @@ protocol TurnEndClassifier {
     func probability(last8s: [Float]) async -> Float?
 }
 
-/// Speech for one unit, as 44.1 kHz mono samples in chunks.
-protocol Synthesizer {
-    func synthesize(_ unit: SpeechUnit) -> AsyncThrowingStream<[Float], Error>
+/// A piece of synthesized speech: mono samples at their own rate.
+struct SpeechChunk: Sendable, Equatable {
+    var samples: [Float]
+    var sampleRate: Double
+
+    var duration: TimeInterval { sampleRate > 0 ? Double(samples.count) / sampleRate : 0 }
+}
+
+/// Speech for one unit, in chunks (the first can be short, so the first
+/// sound comes sooner).
+@MainActor
+protocol Synthesizer: AnyObject {
+    func synthesize(_ unit: SpeechUnit) -> AsyncThrowingStream<SpeechChunk, Error>
 }
 
 /// Monotonic seconds. Tests drive a fake one.
@@ -51,6 +67,66 @@ protocol TalkClock: Sendable {
 /// The clock Talk runs on: seconds since the device booted.
 struct SystemTalkClock: TalkClock {
     func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+}
+
+/// Runs Talk's CPU work (the live transcriber) in the order it was handed
+/// over, off the main thread. The work is queued at once, so what the main
+/// actor hands over in order runs in that order.
+protocol TalkWorker: Sendable {
+    func enqueue(_ work: @escaping @Sendable () -> Void)
+}
+
+extension TalkWorker {
+    /// Queue `work` now; its result arrives through the promise.
+    func submit<T: Sendable>(_ work: @escaping @Sendable () -> T) -> TalkPromise<T> {
+        let promise = TalkPromise<T>()
+        enqueue { promise.fulfill(work()) }
+        return promise
+    }
+}
+
+/// Talk's queue in the app: one serial queue at user-initiated priority.
+final class SerialTalkWorker: TalkWorker, @unchecked Sendable {
+    private let queue = DispatchQueue(label: "io.ashurov.codeg.talk.worker", qos: .userInitiated)
+
+    func enqueue(_ work: @escaping @Sendable () -> Void) {
+        queue.async(execute: work)
+    }
+}
+
+/// A value computed on a ``TalkWorker``, awaited later.
+final class TalkPromise<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: T?
+    private var waiting: [CheckedContinuation<T, Never>] = []
+
+    func fulfill(_ value: T) {
+        lock.lock()
+        guard result == nil else {
+            lock.unlock()
+            return
+        }
+        result = value
+        let waiters = waiting
+        waiting = []
+        lock.unlock()
+        for waiter in waiters { waiter.resume(returning: value) }
+    }
+
+    var value: T {
+        get async {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if let result {
+                    lock.unlock()
+                    continuation.resume(returning: result)
+                } else {
+                    waiting.append(continuation)
+                    lock.unlock()
+                }
+            }
+        }
+    }
 }
 
 /// One piece of speech: a sentence of the agent's reply, or a short cue

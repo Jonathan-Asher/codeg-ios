@@ -94,6 +94,11 @@ enum TalkEvent: Equatable, Sendable {
     case pushToTalk(pressed: Bool)
     /// A tap on the orb (or the Camera Control) while Talk speaks.
     case tapInterrupt
+    /// An action from a control instead of words: the Skip button, a choice
+    /// button, the AirPods' "previous" (repeat). Speech in progress stops
+    /// first (a reply's rest is kept, as when talked over). Ignored while
+    /// the person has the floor.
+    case perform(TalkAction)
     // Listening (EndOfTurnPolicy)
     case speechStarted
     case pause
@@ -357,6 +362,15 @@ private struct Reducer {
             if state.speaking == .prompt { state.askSpoken = true }
             state.phase = .listening
             settle()
+
+        case .perform(let action):
+            guard running, !state.userHasFloor else { return }
+            if state.isSpeaking {
+                let kind = state.speaking
+                stopSpeaking(holding: true)
+                if kind == .prompt { state.askSpoken = true }
+            }
+            apply(action)
 
         case .speechStarted:
             guard state.handsFree else { return }

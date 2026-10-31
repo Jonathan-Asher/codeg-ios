@@ -465,6 +465,11 @@ enum SpokenPrompts {
         hebrew ? "העבודה ממשיכה ברקע." : "It's running in the background."
     }
 
+    /// Said now and then while the agent works (Speak progress).
+    static func stillWorking(_ voice: TalkVoice) -> String {
+        voice.isHebrew ? "העבודה עוד נמשכת." : "Still working on it."
+    }
+
     /// The reply ran past what is read aloud.
     static func restOnScreen(_ voice: TalkVoice) -> String {
         voice.isHebrew ? "את השאר שמתי על המסך." : "The rest is on the screen."

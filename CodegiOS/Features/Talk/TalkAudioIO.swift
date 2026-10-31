@@ -76,6 +76,9 @@ protocol TalkAudioIO: AnyObject {
     /// Stop the speech now and drop what is queued.
     func stopSpeech()
     func play(_ earcon: Earcon)
+    /// The Mute button: no microphone frame comes until it is lifted (the
+    /// app's input is muted as well), while the speech goes on playing.
+    func setInputMuted(_ muted: Bool)
 }
 
 // MARK: - Frames
@@ -214,6 +217,8 @@ final class TalkAudioEngine: TalkAudioIO {
     /// Posted ``Notification/Name/talkWillClaimAudio`` and not yet the release.
     private var claimed = false
     private var ducked = false
+    /// The Mute button is on: the tap drops every frame.
+    private var inputMuted = false
     /// Bumped when queued speech is dropped, so its completions are ignored.
     private var speechGeneration = 0
     private var pendingSpeech = 0
@@ -263,6 +268,7 @@ final class TalkAudioEngine: TalkAudioIO {
     }
 
     func stop() {
+        if inputMuted { setInputMuted(false) }
         wantsRunning = false
         interrupted = false
         routeCheck?.cancel()
@@ -361,6 +367,7 @@ final class TalkAudioEngine: TalkAudioIO {
             }
             guard let converter = MicrophoneConverter(inputFormat: tapFormat) else { throw TalkAudioError.noInput }
             let tap = TalkMicTap(converter: converter, sink: frameSink)
+            tap.setMuted(inputMuted)
             let block = Self.tapBlock(tap)
             try AVFAudioGuard.run("install Talk's microphone tap") {
                 input.installTap(onBus: 0, bufferSize: 1024, format: tapFormat, block: block)
@@ -475,6 +482,20 @@ final class TalkAudioEngine: TalkAudioIO {
         guard let player = speechPlayer else { return }
         // A stopped player needs `play()` again: `schedule` does it.
         try? AVFAudioGuard.run("stop Talk's speech") { player.stop() }
+    }
+
+    func setInputMuted(_ muted: Bool) {
+        inputMuted = muted
+        tap?.setMuted(muted)
+        if voiceProcessingOn, let input {
+            input.isVoiceProcessingInputMuted = muted
+        }
+        do {
+            try AVAudioApplication.shared.setInputMuted(muted)
+        } catch {
+            Self.log.notice("The app's input mute didn't change: \(error.localizedDescription, privacy: .public)")
+        }
+        Breadcrumbs.add("talk.audio.input_muted", muted ? "on" : "off")
     }
 
     func play(_ earcon: Earcon) {
@@ -689,6 +710,7 @@ final class TalkMicTap: @unchecked Sendable {
     private let lock = NSLock()
     private var assembler = MicFrameAssembler()
     private var closed = false
+    private var muted = false
 
     init(converter: MicrophoneConverter, sink: AsyncStream<MicFrame>.Continuation) {
         self.converter = converter
@@ -701,13 +723,22 @@ final class TalkMicTap: @unchecked Sendable {
             ? AVAudioTime.seconds(forHostTime: time.hostTime)
             : ProcessInfo.processInfo.systemUptime - Double(converted.samples.count) / MicrophoneConverter.sampleRate
         lock.lock()
-        guard !closed else {
+        guard !closed, !muted else {
             lock.unlock()
             return
         }
         let frames = assembler.append(converted.samples, startingAt: start)
         lock.unlock()
         for frame in frames { sink.yield(frame) }
+    }
+
+    /// The Mute button: frames are dropped (and the half-filled one with
+    /// them, so the next frame starts fresh) until it is lifted.
+    func setMuted(_ on: Bool) {
+        lock.lock()
+        muted = on
+        if on { assembler.reset() }
+        lock.unlock()
     }
 
     /// The engine is going: nothing more is yielded.

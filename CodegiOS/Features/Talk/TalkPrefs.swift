@@ -30,6 +30,7 @@ struct TalkPrefs {
     static let speakProgressKey = "codeg.talk.speakProgress"
     static let smartTurnActiveKey = "codeg.talk.smartTurnActive"
     static let echoModeKey = "codeg.talk.lab.echoMode"
+    static let shareTelemetryKey = "codeg.talk.shareTelemetry"
 
     let defaults: UserDefaults
 
@@ -65,6 +66,14 @@ struct TalkPrefs {
     var smartTurnActive: Bool {
         get { defaults.bool(forKey: Self.smartTurnActiveKey) }
         nonmutating set { defaults.set(newValue, forKey: Self.smartTurnActiveKey) }
+    }
+
+    /// Send each Talk's telemetry (timings, end-of-turn traces, what was
+    /// heard and said as text, never audio) to the session's codeg server
+    /// as a `talk_lab` report (on by default).
+    var shareTelemetry: Bool {
+        get { defaults.object(forKey: Self.shareTelemetryKey) as? Bool ?? true }
+        nonmutating set { defaults.set(newValue, forKey: Self.shareTelemetryKey) }
     }
 
     /// The Lab's echo override.

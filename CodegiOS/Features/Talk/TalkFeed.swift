@@ -105,6 +105,20 @@ struct TalkFeed: Sendable {
         return units
     }
 
+    /// Background turns written before Talk started: what they hold is taken
+    /// as heard, and only what they gain from now on is spoken. A turn
+    /// already followed is left as it is.
+    mutating func takeAsHeard(backgroundTurns turns: [MessageTurn]) {
+        for turn in turns where turn.role == .assistant && background[turn.id] == nil {
+            var stream = Stream(reply: turn.id, options: options)
+            stream.takeAsHeard(Self.spokenText(of: turn))
+            background[turn.id] = stream
+        }
+    }
+
+    /// Whether a background turn is followed already.
+    func follows(backgroundTurn id: String) -> Bool { background[id] != nil }
+
     /// A turn's text blocks, each a finished paragraph.
     static func spokenText(of turn: MessageTurn) -> String {
         var text = ""
