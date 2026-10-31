@@ -544,6 +544,7 @@ final class TalkController {
         telemetry.end(at: clock.now())
         telemetry.event("end", nil, at: clock.now())
         let report = prefs.shareTelemetry ? telemetry : nil
+        let environment = system.reportEnvironment
         let conversationID = conversationID
         let backend = backend
         // The server's Talk mode goes off, then the session is let go.
@@ -551,7 +552,7 @@ final class TalkController {
             try? await backend.setTalkMode(conversationID: conversationID, enabled: false)
             backend.holdSession(false)
             if let report {
-                for data in report.reports(app: TalkReportEnvironment.app, device: TalkReportEnvironment.device) {
+                for data in report.reports(app: environment.app, device: environment.device) {
                     try? await backend.upload(report: data)
                 }
             }
@@ -1070,7 +1071,7 @@ final class TalkController {
         if backgroundOutstanding != port.backgroundOutstanding { backgroundOutstanding = port.backgroundOutstanding }
         if awaitingBackground != port.awaitingBackground { awaitingBackground = port.awaitingBackground }
         if running || awaitingBackground || backgroundOutstanding > 0 { lastActivity = max(lastActivity, clock.now()) }
-        if let summary = port.summary, let name = summary.trimmedTitle, name != title {
+        if let name = port.talkTitle, name != title {
             title = name
             system.setNowPlaying(title: nowPlayingTitle)
         }
@@ -1534,25 +1535,5 @@ extension TalkController: TalkRemoteTarget {
 
     func remoteRepeat() {
         send(.perform(.repeatLast))
-    }
-}
-
-/// The app and device a `talk_lab` report names.
-enum TalkReportEnvironment {
-    static var app: [String: String] {
-        let info = Bundle.main.infoDictionary ?? [:]
-        return ["version": info["CFBundleShortVersionString"] as? String ?? "?",
-                "build": info["CFBundleVersion"] as? String ?? "?",
-                "bundleId": Bundle.main.bundleIdentifier ?? "?"]
-    }
-
-    static var device: [String: String] {
-        var system = utsname()
-        uname(&system)
-        let model = withUnsafeBytes(of: &system.machine) { raw in
-            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
-        }
-        let version = ProcessInfo.processInfo.operatingSystemVersion
-        return ["model": model, "os": "iOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"]
     }
 }

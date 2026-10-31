@@ -245,6 +245,9 @@ final class FakeTalkSystem: TalkSystem {
         remote = target
         remoteSet = target != nil
     }
+
+    var reportEnvironment = TalkReportEnvironment(app: ["version": "1.0", "build": "1"],
+                                                  device: ["model": "Test1,1", "os": "Test 1.0"])
 }
 
 @MainActor
@@ -291,7 +294,7 @@ final class FakeTalkPort: TalkSessionPort {
     var sent: [String] = []
     var sendRoute: SpokenSendRoute = .prompt
     var conversationID: Int? = 42
-    var summary: ConversationSummary?
+    var talkTitle: String?
     var isInFlight = false
     var awaitingBackground = false
     var backgroundOutstanding = 0
@@ -352,7 +355,7 @@ final class TalkHarness {
         let prefs = TalkPrefs(defaults: defaults)
         prefs.handsFree = handsFree
         prefs.shareTelemetry = true
-        port.summary = Self.summary(title: "Fix the build")
+        port.talkTitle = "Fix the build"
         controller = TalkController(conversationID: 42, title: "Fix the build", port: port, dependencies: TalkDependencies(
             audio: audio, system: system, backend: backend, clock: clock, scheduler: scheduler,
             worker: TalkInlineWorker(), prefs: prefs))
@@ -361,20 +364,6 @@ final class TalkHarness {
 
     deinit {
         UserDefaults.standard.removePersistentDomain(forName: suite)
-    }
-
-    /// A session summary as the server sends it.
-    static func summary(title: String) -> ConversationSummary? {
-        #if TALK_HARNESS
-        return ConversationSummary(id: 42, title: title)
-        #else
-        let json = """
-        {"id": 42, "folder_id": 1, "title": "\(title)", "agent_type": "claude_code", "status": "in_progress",
-         "external_id": "ext-42", "message_count": 4, "created_at": "2026-10-31T08:00:00Z",
-         "updated_at": "2026-10-31T08:20:00Z", "turn_state": null, "talk_mode": true}
-        """
-        return try? CodegJSON.decoder.decode(ConversationSummary.self, from: Data(json.utf8))
-        #endif
     }
 
     var live: FakeLiveTranscriber { system.live }

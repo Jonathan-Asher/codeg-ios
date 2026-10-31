@@ -1,7 +1,8 @@
 import Foundation
 
 // What ``TalkController`` runs on. The app's implementations are in
-// TalkLive.swift; the tests drive fakes.
+// TalkLive.swift, TalkAudioEngine.swift and TalkEngineAdapters.swift; the
+// tests drive fakes.
 
 /// The engines one Talk listens and speaks with.
 struct TalkEngineSet {
@@ -10,7 +11,7 @@ struct TalkEngineSet {
     /// Smart Turn; nil when it didn't load (Talk goes on without it).
     var turn: TurnEndClassifier?
     var synthesizer: Synthesizer
-    /// BlueTTS speaks; false: the iPhone's own voices.
+    /// BlueTTS speaks; false: the system's own voices.
     var naturalVoice: Bool
 }
 
@@ -21,8 +22,6 @@ struct TalkStartError: LocalizedError, Equatable {
     init(_ message: String) { self.message = message }
 
     var errorDescription: String? { message }
-
-    static let modelsMissing = TalkStartError("Talk's models aren't on this iPhone yet. Download them in Settings › Voice › Talk.")
 }
 
 /// What happened to the app around Talk.
@@ -64,6 +63,9 @@ protocol TalkSystem: AnyObject {
     func setNowPlaying(title: String?)
     /// Who gets the Lock Screen's and the AirPods' commands; nil lets go.
     func setRemoteTarget(_ target: TalkRemoteTarget?)
+
+    /// The app and device the Talk's `talk_lab` reports name.
+    var reportEnvironment: TalkReportEnvironment { get }
 }
 
 /// The Lock Screen and AirPods commands, as Talk takes them.

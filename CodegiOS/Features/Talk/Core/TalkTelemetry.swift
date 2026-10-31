@@ -294,3 +294,13 @@ struct TalkTelemetry: Sendable {
         var talk: Body
     }
 }
+
+/// The app and device a `talk_lab` report names, as the platform tells them
+/// (``TalkSystem/reportEnvironment``; the iPhone's are in
+/// TalkReportEnvironment+iOS.swift).
+struct TalkReportEnvironment: Equatable, Sendable {
+    /// `version`, `build` and `bundleId`.
+    var app: [String: String]
+    /// `model` and `os` (the system and its version).
+    var device: [String: String]
+}

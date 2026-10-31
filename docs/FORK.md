@@ -3201,12 +3201,46 @@ and `talking` in presence. The engines are in "Talk engines" above.
 - **`TalkController`** runs one Talk: it maps the machine's effects onto
   the audio engine, the engines, the session and the device, all behind
   protocols (`TalkDependencies.swift`), so `TalkControllerTests` drives it
-  over fakes. `TalkLive.swift` is the app's side; `TalkCenter` holds the one
-  Talk the app runs and starts it (models, microphone permission).
+  over fakes. `TalkLive.swift` and `TalkAudioEngine.swift` are the app's
+  side; `TalkCenter` holds the one Talk the app runs and starts it (models,
+  microphone permission).
 - **`SentenceSpeaker`** synthesizes ahead and plays on Talk's engine.
 - **`TalkSheet`**, **`TalkToolbarButton`**, `TalkModelsSheet` (the first-run
   download), `TalkSettingsSection` (Settings › Voice › Talk) and the Lab
   (`TalkLabView`, `TalkLab`).
+
+### Core, shared with the Mac (1.4.1)
+
+`Features/Talk/Core/` is the part of Talk that isn't the iPhone's: the
+machine and its policies, the router, lexicon and spoken prompts, the feed
+and speech text, the prefs, settings and protocols, the listening, the
+sentence speaker, the telemetry and the controller; the audio protocol with
+the microphone's frames, its tap and the earcons (`TalkAudioIO.swift`); the
+echo choice and its names (`TalkEchoPolicy.swift`); the session port
+(`TalkSessionPort.swift`, which reads the title as `talkTitle`); and the
+engines' adapters (`TalkEngineAdapters.swift`: Silero, the Zipformer,
+whisper's final transcript and Smart Turn). It imports Foundation, AVFAudio,
+Accelerate, Observation and the engine packages (SherpaOnnx, SmartTurn,
+whisper) only, never UIKit or AVAudioSession: codeg's Mac helper
+(`native/codeg-talk`) vendors the folder and builds it for macOS.
+
+The iPhone's side stays outside it: the audio engine (`TalkAudioEngine.swift`)
+and the audio session's modes and routes (`TalkEchoPolicy+Session.swift`),
+the session model's conformance (`SessionDetailViewModel+Talk.swift`), the
+app and device a report names (`TalkReportEnvironment+iOS.swift`, through
+`TalkSystem.reportEnvironment`), and loading the engines, the device and the
+server (`TalkLive.swift`).
+
+The helper vendors these too, each portable and in a file of its own:
+`Models/AnyJSON.swift`, `Models/Message.swift`,
+`Models/InteractiveRequests.swift`, `Models/PendingItem.swift`,
+`Features/SessionDetail/TranscriptTime.swift`,
+`Features/SessionDetail/Rendering/UnifiedDiff.swift`,
+`Features/Voice/SpeechText.swift`, `Features/Voice/StreamingSileroVAD.swift`,
+and `Features/Dictation/` `MicrophoneConverter.swift`, `SpeechToText.swift`,
+`DictationLanguage.swift`, `DictationText.swift` and `WhisperCppEngine.swift`.
+A Core change that needs iOS belongs outside the folder, behind a protocol
+or an injected value.
 
 ### A turn
 
@@ -3348,22 +3382,22 @@ thermal state).
   (no GPU there) is freed. Voice typing works as before on top of it.
   `Features/Voice/VoiceEngineHost` holds the one BlueTTS for read aloud and
   Talk, with the same leases and Talk's thread cap (4).
-- **Audio** (`Features/Talk/TalkAudioIO.swift`). `AudioSessionUse.talk`:
-  `.playAndRecord`, speaker by default, AirPods' microphone (HFP), a 10 ms
-  buffer. `TalkEchoPolicy`: echo-cancelled input on the built-in microphone
-  and speaker where iOS has it (checked again after activation and after
-  every route change), voice processing otherwise (players connected before
-  it is turned on, off before the engine stops, other audio ducked as little
-  as it allows), none on Bluetooth HFP, and the Lab's override.
-  `TalkAudioEngine` builds a fresh engine for every start and route change,
-  gives 16 kHz 512-sample frames through `MicrophoneConverter` (the
-  conversion voice typing uses, now shared), plays speech and earcons on two
-  player nodes, runs every raising call through `AVFAudioGuard` and checks
-  the microphone with `MicrophoneFormatCheck`. Its claim
-  (`talkWillClaimAudio` / `talkDidReleaseAudio`) makes the Camera Control's
-  standby step aside, stops read aloud, and keeps both, and voice typing,
-  from starting until Talk lets go.
-- **Sessions** (`Features/Talk/TalkSessionPort.swift`). `sendSpoken` sends
+- **Audio** (`Features/Talk/Core/TalkAudioIO.swift`, `TalkAudioEngine.swift`).
+  `AudioSessionUse.talk`: `.playAndRecord`, speaker by default, AirPods'
+  microphone (HFP), a 10 ms buffer. `TalkEchoPolicy`: echo-cancelled input on
+  the built-in microphone and speaker where iOS has it (checked again after
+  activation and after every route change), voice processing otherwise
+  (players connected before it is turned on, off before the engine stops,
+  other audio ducked as little as it allows), none on Bluetooth HFP, and the
+  Lab's override. `TalkAudioEngine` builds a fresh engine for every start and
+  route change, gives 16 kHz 512-sample frames through `MicrophoneConverter`
+  (the conversion voice typing uses, now shared), plays speech and earcons on
+  two player nodes, runs every raising call through `AVFAudioGuard` and checks
+  the microphone with `MicrophoneFormatCheck`. Its claim (`talkWillClaimAudio`
+  / `talkDidReleaseAudio`) makes the Camera Control's standby step aside,
+  stops read aloud, and keeps both, and voice typing, from starting until Talk
+  lets go.
+- **Sessions** (`Features/Talk/Core/TalkSessionPort.swift`). `sendSpoken` sends
   what was said marked `spoken`: a prompt when idle, into the turn when it
   can take a message, queued otherwise, never touching the draft; an insert
   that finds the turn ended goes as a spoken prompt under the same id, and
