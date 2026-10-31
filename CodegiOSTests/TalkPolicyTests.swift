@@ -135,6 +135,17 @@ final class TalkEndOfTurnTests: XCTestCase {
         XCTAssertEqual(short.trace?.discarded, true)
     }
 
+    func testAnInterruptionStartsTheUtteranceWhereItBegan() {
+        var policy = EndOfTurnPolicy()
+        // Talked over the speech from 1.0 s; confirmed at 1.6 s, already quiet.
+        policy.begin(at: 1.0, speechUntil: 1.5)
+        XCTAssertEqual(policy.phase, .speaking)
+        let decisions = Track.feed(&policy, Track.run(0.1, 40), from: 50)
+        XCTAssertEqual(decisions.first?.decision, Track.rounded(.pause(at: 55 * Track.frame)))
+        XCTAssertEqual(decisions.last?.decision, Track.rounded(.commit(at: 72 * Track.frame, reason: .silence)),
+                       "800 ms after the speech heard before the confirmation")
+    }
+
     func testSixtySecondsCommits() {
         var policy = EndOfTurnPolicy()
         let decisions = Track.feed(&policy, Track.run(0.9, 1_900)).map(\.decision)

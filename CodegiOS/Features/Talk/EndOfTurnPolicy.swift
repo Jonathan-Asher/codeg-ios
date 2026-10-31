@@ -158,6 +158,19 @@ struct EndOfTurnPolicy: Sendable {
         dangling = false
     }
 
+    /// Start an utterance that began without the opening (talking over the
+    /// speech: it began at the barge-in candidate, and speech was heard until
+    /// `speechUntil`). Pauses and the commit then follow as usual.
+    mutating func begin(at start: TimeInterval, speechUntil: TimeInterval) {
+        phase = .speaking
+        self.start = start
+        speechEnd = max(start, speechUntil)
+        quietStart = nil
+        openRun = 0
+        dangling = false
+        trace = EndOfTurnTrace(startedAt: start)
+    }
+
     /// One frame covering `[time, time + frameDuration)`.
     mutating func frame(probability p: Float, at time: TimeInterval) -> EndOfTurnDecision? {
         let end = time + config.frameDuration
