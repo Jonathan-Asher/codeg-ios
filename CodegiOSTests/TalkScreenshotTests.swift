@@ -34,6 +34,22 @@ final class TalkScreenshotTests: XCTestCase {
         }
     }
 
+    func testTheSettings() throws {
+        for style in Shot.styles {
+            try Shot.capture("talk-settings", style, in: Shot.composeDirectory, settle: 1.5) {
+                NavigationStack {
+                    ZStack {
+                        CodegBackground()
+                        ScrollView {
+                            TalkSettingsSection(client: nil)
+                                .padding(.horizontal, Theme.Layout.screenHMargin)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private func shoot(_ state: TalkController.ScreenshotState, styles: [UIUserInterfaceStyle] = Shot.styles,
                        dynamicType: DynamicTypeSize = .large, suffix: String = "") throws {
         for style in styles {
