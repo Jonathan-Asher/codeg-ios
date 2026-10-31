@@ -37,6 +37,10 @@ final class TalkIncrementalSpeechTextTests: XCTestCase {
         "Some *emphasis\nacross lines* here. And a [link\nacross](x) lines.",
         "",
         "\n\n",
+        "עדכנתי את ה-src/app/main.swift ואת ~/x/y.md. (a1b2c3d4e5f6a7b8) [0123456789abcdef] נשאר.",
+        "Use `a. b` and **c. d** in https://x.y/z. Done! <i>ok.</i> 1. not a list here",
+        "ראה \"צה\"ל\" ו'שלום' ב-https://ex.am/ple, ואז ד''ר כהן.\nשורה שנייה עם e.g. קיצור. סוף",
+        "> נאמר: עשה. ואז\n> - פריט. שני\n\n## כותרת. עם נקודה\n\n|a|b|\n|-|-|\n|1|2|\nאחרי.",
     ]
 
     static let longFixture: String = {
