@@ -60,7 +60,10 @@ enum TalkEffect: Equatable, Sendable {
     case route(String)
     /// Append to what is being spoken.
     case speak([SpeechUnit])
+    /// Lower the speech to ``BargeInConfig/duckVolume`` (or bring it back).
+    /// Stopping or finishing the speech brings it back too.
     case duck(Bool)
+    /// Stop speaking now and drop what was handed to the speaker.
     case stopSpeech
     /// Finish the sentence being spoken, then stop.
     case stopSpeechAfterCurrent
@@ -502,15 +505,17 @@ private struct Reducer {
             state.askAttempt = 0
             state.askSpoken = false
         case .stopSpeech:
-            // The speech already stopped to hear this; what came meanwhile is
-            // held too.
+            // The speech already stopped to hear this; what came meanwhile
+            // (or was waiting) is held for "continue" too.
+            for unit in state.queued { state.stoppedReplies.insert(unit.id.reply) }
             holdQueuedStoppedReplies()
         case .repeatLast:
             if state.ask != nil {
                 state.askSpoken = false
-            } else if !state.lastReply.isEmpty {
-                state.held = []
-                state.stoppedReplies = []
+            } else if let reply = state.lastReply.first?.id.reply {
+                state.held.removeAll { $0.id.reply == reply }
+                state.queued.removeAll { $0.id.reply == reply }
+                state.stoppedReplies.remove(reply)
                 state.queued.insert(contentsOf: state.lastReply, at: 0)
             } else {
                 emit(.playCue(.error))
@@ -521,10 +526,11 @@ private struct Reducer {
             state.stoppedReplies = []
             state.queued.insert(contentsOf: resumed, at: 0)
         case .skip:
-            for unit in state.held + state.queued where state.stoppedReplies.contains(unit.id.reply) {
-                state.skippedReplies.insert(unit.id.reply)
-            }
+            // The reply being said (stopped to hear this, or next in line)
+            // is dropped, with whatever more of it comes.
             state.skippedReplies.formUnion(state.stoppedReplies)
+            state.skippedReplies.formUnion(state.held.map(\.id.reply))
+            if let next = state.queued.first { state.skippedReplies.insert(next.id.reply) }
             state.stoppedReplies = []
             state.held = []
             state.queued.removeAll { state.skippedReplies.contains($0.id.reply) }

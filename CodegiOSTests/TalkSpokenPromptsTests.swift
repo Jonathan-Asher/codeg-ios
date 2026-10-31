@@ -49,6 +49,12 @@ final class TalkSpokenPromptsTests: XCTestCase {
             "rawInput": .string(#"{"file_path":"notes/todo.md","content":"x"}"#),
         ]
         XCTAssertEqual(prompt(write, voice: he), "אני רוצה לערוך את todo.md. לאשר?")
+        let read: [String: AnyJSON] = ["kind": .string("read"),
+                                       "rawInput": .object(["file_path": .string("/etc/hosts")])]
+        XCTAssertEqual(prompt(read, voice: he), "אני רוצה לקרוא את hosts. לאשר?")
+        let unknown: [String: AnyJSON] = ["kind": .string("other"),
+                                          "title": .string(String(repeating: "very long title ", count: 6))]
+        XCTAssertEqual(prompt(unknown, voice: he), "צריך אישור, הפרטים על המסך. לאשר?")
     }
 
     func testAFetchNamesTheSiteAndAnMCPToolItsName() {

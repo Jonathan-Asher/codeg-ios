@@ -245,6 +245,10 @@ enum SpokenPrompts {
             let name = basename(first)
             return want("לערוך את \(name)", "edit \(name)", voice: voice)
         }
+        if kind == "read", let first = paths.first {
+            let name = basename(first)
+            return want("לקרוא את \(name)", "read \(name)", voice: voice)
+        }
         if let url = parsed.url {
             let host = URL(string: url)?.host ?? speakable(url)
             return want("לפתוח דף מ-\(host)", "open a page from \(host)", voice: voice)
@@ -257,7 +261,8 @@ enum SpokenPrompts {
         if !title.isEmpty, title.count <= 60 {
             return want("להשתמש ב-\(title)", "use \(title)", voice: voice)
         }
-        return voice.isHebrew ? "אני צריך אישור, הפרטים על המסך. \(approveQuestion(voice))"
+        // Impersonal in Hebrew: "I need" is gendered there (צריך / צריכה).
+        return voice.isHebrew ? "צריך אישור, הפרטים על המסך. \(approveQuestion(voice))"
             : "I need your OK; the details are on the screen. \(approveQuestion(voice))"
     }
 

@@ -280,6 +280,37 @@ final class TalkMachineTests: XCTestCase {
         XCTAssertEqual(driver.state.held, [])
     }
 
+    func testStopHoldsAReplyThatWasWaitingToo() {
+        var driver = TalkMachineDriver.listening()
+        driver.send(.speechStarted)
+        driver.send(.reply(units(["Waiting."])))
+        driver.send(.commit)
+        XCTAssertEqual(driver.finish("די"), [], "the reply that waited for the person isn't spoken")
+        XCTAssertEqual(driver.state.held.map(\.text), ["Waiting."])
+        XCTAssertEqual(driver.say("תמשיך"), [.speak(units(["Waiting."]))])
+    }
+
+    func testSkipDropsAReplyThatWasWaiting() {
+        var driver = TalkMachineDriver.listening()
+        driver.send(.speechStarted)
+        driver.send(.reply(units(["Waiting."])))
+        let other = units(["Other."], reply: "bg")
+        driver.send(.reply(other))
+        driver.send(.commit)
+        XCTAssertEqual(driver.finish("דלג"), [.speak(other)], "only the next reply in line is skipped")
+        XCTAssertEqual(driver.send(.reply(units(["More."], from: 1))), [])
+    }
+
+    func testRepeatDoesntSayAWaitingUnitTwice() {
+        var driver = TalkMachineDriver.listening()
+        let first = units(["One."])
+        driver.send(.reply(first))
+        driver.send(.bargeInCandidate)
+        driver.send(.bargeInConfirmed)
+        driver.send(.reply(units(["Two."], from: 1)))
+        XCTAssertEqual(driver.say("תחזור"), [.speak(units(["One.", "Two."]))])
+    }
+
     func testATapStopsTheSpeech() {
         var driver = TalkMachineDriver.listening()
         driver.send(.reply(units(["One.", "Two."])))

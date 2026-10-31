@@ -51,6 +51,10 @@ enum TalkLexicon {
         ],
     ]
 
+    /// "Cancel" names the agent's work with one of these ("בטל את הסוכן"),
+    /// which makes it a command even while a question waits for a no.
+    static let agentWords: Set<String> = ["הסוכן", "העבודה", "agent", "work"]
+
     /// Words around a command that don't change it ("די בבקשה", "um stop").
     static let fillers: Set<String> = [
         "בבקשה", "נו", "אה", "אהה", "אמ", "אממ", "היי", "הי", "תודה", "please", "um", "umm", "uh", "uhh", "er",
@@ -101,7 +105,7 @@ enum TalkLexicon {
             "בלי בעיה", "למה לא", "ודאי", "בוודאי", "לאשר", "תאשר את זה", "yes", "yeah", "yep", "yup", "ya", "sure",
             "ok", "okay", "go ahead", "go for it", "do it", "of course", "approve", "approved", "fine", "alright",
             "all right", "correct", "absolutely", "definitely", "no problem", "why not", "please do", "sounds good",
-            "go", "proceed", "continue", "yes please",
+            "go", "proceed", "continue", "yes please", "run it", "תריץ את זה", "תריצי את זה", "תמשיך עם זה",
         ],
         .no: [
             "לא", "לא לא", "עצור", "עצרי", "תעצור", "תעצרי", "חכה", "חכי", "רגע", "די", "תפסיק", "תפסיקי", "הפסק",
@@ -109,7 +113,8 @@ enum TalkLexicon {
             "לא עכשיו", "עזוב", "עזבי", "לא בסדר", "לא טוב", "לא נכון", "לא כדאי", "לא לאשר", "אל תאשר", "אסור",
             "no", "nope", "nah", "don't", "dont", "do not", "wait", "cancel", "stop", "hold on", "not now", "no way",
             "never mind", "nevermind", "reject", "deny", "not ok", "not okay", "don't do it", "dont do it",
-            "not good", "not right", "negative",
+            "not good", "not right", "negative", "cancel it", "cancel that", "stop it", "stop that", "בטל את זה",
+            "תבטל את זה", "תבטלי את זה", "עצור את זה", "תעצור את זה",
         ],
         .always: [
             "תמיד", "תמיד תאשר", "מעכשיו תמיד", "אל תשאל שוב", "אל תשאל יותר", "אל תשאלי שוב", "always",
@@ -128,7 +133,8 @@ enum TalkLexicon {
         "תמשיך", "תמשיכי", "תעשה", "תעשי", "תעשה את זה", "תעשי את זה", "תריץ", "תריצי", "לך על זה", "לכי על זה",
         "קדימה", "יאללה", "go", "proceed", "continue", "do it", "go ahead", "go for it", "עצור", "עצרי", "תעצור",
         "תעצרי", "חכה", "חכי", "רגע", "די", "תפסיק", "תפסיקי", "הפסק", "בטל", "תבטל", "תבטלי", "עזוב", "עזבי",
-        "wait", "cancel", "stop", "hold on",
+        "wait", "cancel", "stop", "hold on", "run it", "תריץ את זה", "תריצי את זה", "תמשיך עם זה", "cancel it",
+        "cancel that", "stop it", "stop that", "בטל את זה", "תבטל את זה", "תבטלי את זה", "עצור את זה", "תעצור את זה",
     ]
 
     /// "Wait, let me think": only these words keep a question waiting.

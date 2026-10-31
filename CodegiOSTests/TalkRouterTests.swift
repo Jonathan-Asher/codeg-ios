@@ -119,6 +119,8 @@ final class TalkRouterTests: XCTestCase {
         XCTAssertEqual(route("השתק", context), .mute(true))
         XCTAssertEqual(route("סיים שיחה", context), .endTalk)
         XCTAssertEqual(route("בטל את הסוכן", context), .askConfirmCancel)
+        XCTAssertEqual(route("stop the agent", context), .askConfirmCancel)
+        XCTAssertEqual(route("cancel it", context), respond("no"), "cancelling the action is a no")
     }
 
     func testMissingKindsFallBack() {

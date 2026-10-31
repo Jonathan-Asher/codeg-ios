@@ -89,13 +89,14 @@ enum TalkRouter {
         }
         if let ask = context.ask, ask.answerableByVoice, !ask.isSecret {
             // Commands that can't be answers. "Stop" and "continue" are no
-            // and yes here, and a lone "cancel" is a no.
+            // and yes here, and "cancel" is a no unless it names the agent.
             switch command {
             case .repeatLast?: return .repeatLast
             case .skip?: return .leaveOnScreen
             case .mute?: return .mute(true)
             case .end?: return .endTalk
-            case .cancelAgent? where heard.content.count > 1: return .askConfirmCancel
+            case .cancelAgent? where heard.content.contains(where: { TalkLexicon.agentWords.contains($0) }):
+                return .askConfirmCancel
             default: break
             }
             return answer(heard, to: ask, attempt: context.askAttempt)
