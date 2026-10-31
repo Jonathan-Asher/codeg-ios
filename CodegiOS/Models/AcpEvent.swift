@@ -44,7 +44,9 @@ enum UserMessageBlock: Hashable, Sendable, Decodable {
 /// Decode-only. Unknown event types decode to `.unknown` so a new server event
 /// never breaks the stream.
 enum AcpEvent: Hashable, Sendable, Decodable {
-    case contentDelta(text: String)
+    /// Text of the reply. `parentToolUseId` is set when a sub-agent wrote it
+    /// (`_meta.claudeCode.parentToolUseId`); nil is the main thread.
+    case contentDelta(text: String, parentToolUseId: String? = nil)
     case thinking(text: String)
     /// `images`: pictures the tool returned (a Read of a PNG); nil when the
     /// event carries none, which keeps what an earlier event showed.
@@ -90,8 +92,10 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     /// into the held turn right away (`_session/steering`).
     case awaitingBackground(awaiting: Bool, nativeSteering: Bool)
     /// Background tasks (async sub-agents, background shells) still running,
-    /// from the transcript watcher. Only the count is read here.
-    case backgroundActivity(outstanding: Int)
+    /// from the transcript watcher, and the turns written outside a turn
+    /// since the last event (`turns`, upserted by id: a still-growing turn
+    /// comes again, whole, on every update).
+    case backgroundActivity(outstanding: Int, turns: [MessageTurn] = [])
     /// A message was recorded for the running turn: delivered into it (native
     /// steering, where the agent has it at once) or waiting for the agent's
     /// `check_user_feedback`. Broadcast to every client of the connection.
@@ -126,6 +130,7 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         case images
         case modeId, modes, configOptions, configId, optionName, requested, actual, actualValue
         case supported, whileRunning
+        case parentToolUseId, turns
     }
 
     init(from decoder: Decoder) throws {
@@ -133,7 +138,10 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         let type = try c.decode(String.self, forKey: .type)
         switch type {
         case "content_delta":
-            self = .contentDelta(text: try c.decodeIfPresent(String.self, forKey: .text) ?? "")
+            self = .contentDelta(
+                text: try c.decodeIfPresent(String.self, forKey: .text) ?? "",
+                parentToolUseId: (try? c.decodeIfPresent(String.self, forKey: .parentToolUseId)) ?? nil
+            )
         case "thinking":
             self = .thinking(text: try c.decodeIfPresent(String.self, forKey: .text) ?? "")
         case "tool_call":
@@ -238,7 +246,10 @@ enum AcpEvent: Hashable, Sendable, Decodable {
                 nativeSteering: (try? c.decodeIfPresent(Bool.self, forKey: .nativeSteering)) ?? false
             )
         case "background_activity":
-            self = .backgroundActivity(outstanding: (try? c.decodeIfPresent(Int.self, forKey: .outstanding)) ?? 0)
+            self = .backgroundActivity(
+                outstanding: (try? c.decodeIfPresent(Int.self, forKey: .outstanding)) ?? 0,
+                turns: Self.turns(c)
+            )
         case "feedback_submitted":
             if let item = (try? c.decodeIfPresent(FeedbackNoteSnapshot.self, forKey: .item)) ?? nil {
                 self = .feedbackSubmitted(item)
@@ -287,6 +298,28 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         let images = ImageData.lenientList(c, forKey: .images)
         return images.isEmpty ? nil : images
     }
+
+    /// A `background_activity` event's turns, skipping any that don't decode:
+    /// one malformed turn must not cost the others (or the event its count).
+    private static func turns(_ c: KeyedDecodingContainer<CodingKeys>) -> [MessageTurn] {
+        guard c.contains(.turns), (try? c.decodeNil(forKey: .turns)) == false,
+              var list = try? c.nestedUnkeyedContainer(forKey: .turns) else { return [] }
+        var out: [MessageTurn] = []
+        while !list.isAtEnd {
+            if let turn = try? list.decode(MessageTurn.self) {
+                out.append(turn)
+            } else if (try? list.decode(SkippedEventElement.self)) == nil {
+                break
+            }
+        }
+        return out
+    }
+}
+
+/// Always decodes, so a list element that failed to decode is stepped over
+/// rather than retried.
+private struct SkippedEventElement: Decodable {
+    init(from decoder: Decoder) {}
 }
 
 /// The flat ACP event envelope (Rust `EventEnvelope`): `{seq, connection_id,
@@ -420,17 +453,20 @@ struct FeedbackNoteSnapshot: Sendable, Decodable, Hashable {
     let createdAtMillis: Int64?
     /// What was sent when it was more than text (pictures); empty otherwise.
     let blocks: [UserMessageBlock]
+    /// Said in Talk rather than typed (`spoken`); false from an older server.
+    let spoken: Bool
 
     init(id: String, text: String, status: Status = .delivered, createdAtMillis: Int64? = nil,
-         blocks: [UserMessageBlock] = []) {
+         blocks: [UserMessageBlock] = [], spoken: Bool = false) {
         self.id = id
         self.text = text
         self.status = status
         self.createdAtMillis = createdAtMillis
         self.blocks = blocks
+        self.spoken = spoken
     }
 
-    private enum CodingKeys: String, CodingKey { case id, text, status, createdAt, blocks }
+    private enum CodingKeys: String, CodingKey { case id, text, status, createdAt, blocks, spoken }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -444,6 +480,7 @@ struct FeedbackNoteSnapshot: Sendable, Decodable, Hashable {
         // Read the text: the shared date decoder drops 6-digit fractions.
         createdAtMillis = ((try? c.decodeIfPresent(String.self, forKey: .createdAt)) ?? nil).flatMap(TranscriptTime.millis)
         blocks = ((try? c.decodeIfPresent([UserMessageBlock].self, forKey: .blocks)) ?? nil) ?? []
+        spoken = ((try? c.decodeIfPresent(Bool.self, forKey: .spoken)) ?? nil) ?? false
     }
 
     /// When it was recorded, if the server said.
@@ -481,17 +518,20 @@ struct LiveMessageSnapshot: Sendable, Decodable {
 /// One ordered block of the in-flight message (Rust `LiveContentBlock`,
 /// `kind`-tagged). `toolCallRef` points into `activeToolCalls` by id.
 enum LiveContentBlockSnapshot: Sendable, Decodable {
-    case text(String)
+    /// `parentToolUseId`: a sub-agent wrote it (see ``AcpEvent/contentDelta(text:parentToolUseId:)``).
+    case text(String, parentToolUseId: String? = nil)
     case thinking(String)
     case toolCallRef(toolCallId: String)
     case plan(entries: AnyJSON)
     case unknown
 
-    private enum CodingKeys: String, CodingKey { case kind, text, toolCallId, entries }
+    private enum CodingKeys: String, CodingKey { case kind, text, toolCallId, entries, parentToolUseId }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         switch try c.decodeIfPresent(String.self, forKey: .kind) ?? "" {
-        case "text": self = .text(try c.decodeIfPresent(String.self, forKey: .text) ?? "")
+        case "text":
+            self = .text(try c.decodeIfPresent(String.self, forKey: .text) ?? "",
+                         parentToolUseId: (try? c.decodeIfPresent(String.self, forKey: .parentToolUseId)) ?? nil)
         case "thinking": self = .thinking(try c.decodeIfPresent(String.self, forKey: .text) ?? "")
         case "tool_call_ref": self = .toolCallRef(toolCallId: try c.decodeIfPresent(String.self, forKey: .toolCallId) ?? "")
         case "plan": self = .plan(entries: try c.decodeIfPresent(AnyJSON.self, forKey: .entries) ?? .null)

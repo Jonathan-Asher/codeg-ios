@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// Settings › Voice: voice typing (on-device whisper, see
-/// ``VoiceTypingSection``), Camera Control to talk, then the on-device
-/// read-aloud voice (BlueTTS 2.5, Hebrew and English) — its 575 MB model
-/// download — plus the voice, the speed and what gets read.
+/// ``VoiceTypingSection``), Talk (``TalkSettingsSection``), Camera Control
+/// to talk, then the on-device read-aloud voice (BlueTTS 2.5, Hebrew and
+/// English) — its 575 MB model download — plus the voice, the speed and
+/// what gets read.
 struct VoiceSettingsView: View {
     /// The selected server, for dictation clean-up's status.
     var client: CodegClient? = nil
@@ -29,6 +30,7 @@ struct VoiceSettingsView: View {
             ScrollView {
                 VStack(spacing: 22) {
                     VoiceTypingSection(client: client)
+                    TalkSettingsSection(client: client)
                     if CameraTalkController.isSupported {
                         cameraTalkSection
                     }

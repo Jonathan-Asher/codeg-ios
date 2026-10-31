@@ -75,7 +75,9 @@ enum DictationOutcome: Equatable {
 
 /// Runs voice typing: the microphone, Silero VAD trimming, and one whisper
 /// decode over the whole recording (Speakly's dictation policy). One shared
-/// instance, because there is one microphone.
+/// instance, because there is one microphone. The engines themselves are
+/// ``SpeechEngineHost``'s, shared with Talk; a dictation holds its lease from
+/// the start of the recording to the outcome.
 @MainActor
 @Observable
 final class DictationController {
@@ -125,12 +127,8 @@ final class DictationController {
 
     private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "codeg", category: "dictation")
     private let recorder = DictationRecorder()
-    private var engine: SpeechToText?
-    private var vad: VoiceActivityDetector?
-    private var vadModelPath: String?
-    /// The small model that tells Hebrew from English, when it's downloaded.
-    private var languageID: SpokenLanguageIdentifier?
-    private var languageIDPath: String?
+    /// whisper, the language-ID model and Silero VAD, shared with Talk.
+    private let engines: SpeechEngineHost
     private var completion: ((DictationOutcome) -> Void)?
     private var context = DictationContext()
     private var usePrompt = true
@@ -144,7 +142,6 @@ final class DictationController {
     private var pendingNote: String?
     private var meterTask: Task<Void, Never>?
     private var transcribeTask: Task<Void, Never>?
-    private var unloadTask: Task<Void, Never>?
     private var startedAt = Date()
     /// Bumped per dictation, so a late decode never lands in a newer one.
     private var generation = 0
@@ -157,12 +154,12 @@ final class DictationController {
     private var readAloudActive = false
     /// A video or audio file from the session plays; standby steps aside too.
     private var mediaActive = false
+    /// Talk has the microphone; standby steps aside, and a dictation waits.
+    private var talkActive = false
     private var preRollRetry: Task<Void, Never>?
 
-    /// Unload the model after this long without dictation.
-    private static let idleUnload: Duration = .seconds(180)
-
     private init() {
+        engines = SpeechEngineHost.shared
         recorder.onInterrupted = { [weak self] in
             // A call or Siri cut the recording short: transcribe it, but leave
             // it in the composer rather than sending half a message.
@@ -197,16 +194,27 @@ final class DictationController {
                 self?.updatePreRoll()
             }
         })
+        // Posted on the main thread, before Talk changes the session.
+        observers.append(center.addObserver(forName: .talkWillClaimAudio, object: nil, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.talkActive = true
+                self?.updatePreRoll()
+            }
+        })
+        observers.append(center.addObserver(forName: .talkDidReleaseAudio, object: nil, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.talkActive = false
+                self?.updatePreRoll()
+            }
+        })
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil,
                                             queue: .main) { [weak self] note in
             let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
             guard raw.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) == .ended else { return }
             Task { @MainActor in self?.updatePreRoll() }
         })
-        observers.append(center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil,
-                                            queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.unloadIfIdle() }
-        })
+        // A memory warning, or the app going to the background while idle,
+        // unloads the engines in ``SpeechEngineHost`` (no lease holds them).
         observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil,
                                             queue: .main) { [weak self] _ in
             Task { @MainActor in
@@ -220,11 +228,12 @@ final class DictationController {
                         ? "The app left the screen while you held the Camera Control, so it wasn't sent." : nil)
                 case .transcribing:
                     self.decodeInterrupted = true
-                    self.engine?.cancel()
+                    self.engines.whisper?.cancel()
                 case .refining:
                     // The server call finishes or times out when the app is back.
                     break
-                case .idle: self.unloadIfIdle()
+                case .idle:
+                    break
                 }
             }
         })
@@ -267,7 +276,8 @@ final class DictationController {
 
     /// Start or stop standby to match what is wanted now.
     private func updatePreRoll(attempt: Int = 0) {
-        let should = preRollWanted && !readAloudActive && !mediaActive && DictationRecorder.permission == .granted
+        let should = preRollWanted && !readAloudActive && !mediaActive && !talkActive
+            && DictationRecorder.permission == .granted
             && UIApplication.shared.applicationState != .background
         guard should else {
             recorder.stopStandby()
@@ -329,6 +339,10 @@ final class DictationController {
                postProcessor: TranscriptPostProcessor? = nil, pressUptime: TimeInterval? = nil,
                completion: @escaping (DictationOutcome) -> Void) async {
         guard phase == .idle else { return }
+        guard !talkActive else {
+            completion(.failed("Talk is using the microphone."))
+            return
+        }
         let language = DictationPrefs.language
         guard let model = SpeechModelCatalog.model(for: language) else {
             completion(.failed("No speech model is configured."))
@@ -389,7 +403,7 @@ final class DictationController {
         startedAt = Date()
         elapsed = 0
         levels = Array(repeating: 0, count: Self.meterBars)
-        unloadTask?.cancel()
+        engines.acquire(.dictation)
         loadEngine(model: model, store: store)
         startMeter()
         checkRefine(generation: generation)
@@ -441,14 +455,14 @@ final class DictationController {
             recorder.stop()
             updatePreRoll()
         case .transcribing:
-            engine?.cancel()
+            engines.whisper?.cancel()
             transcribeTask?.cancel()
         }
         completion = nil
         owner = nil
         phase = .idle
         level = 0
-        scheduleUnload()
+        engines.release(.dictation)
     }
 
     private func finish(_ outcome: DictationOutcome, generation: Int) {
@@ -458,50 +472,23 @@ final class DictationController {
         owner = nil
         phase = .idle
         completion?(outcome)
-        scheduleUnload()
+        engines.release(.dictation)
     }
 
     // MARK: - Work
 
+    /// The engines for `model` (the host keeps the ones whose files didn't
+    /// change, and the language-ID model counts only once its download was
+    /// verified), then their weights load while the user speaks.
     private func loadEngine(model: SpeechModelManifest.Model, store: ModelPackStore) {
-        if engine?.modelID != model.id {
-            let old = engine
-            Task { await old?.unload() }
-            engine = WhisperCppEngine(modelID: model.id, modelURL: store.url(forPath: model.weights))
-        }
-        let vadPath = model.vad.map { store.url(forPath: $0).path }
-        if vadPath != vadModelPath {
-            vadModelPath = vadPath
-            vad = vadPath.flatMap { SileroVAD(modelURL: URL(fileURLWithPath: $0)) }
-            if vadPath != nil, vad == nil { log.error("Silero VAD failed to load; decoding untrimmed audio") }
-        }
-        // The language-ID model only counts once its download was verified.
-        let languageIDPath = model.languageID.flatMap { path in
-            store.hasVerified([path]) ? store.url(forPath: path).path : nil
-        }
-        if languageIDPath != self.languageIDPath {
-            let old = languageID
-            Task { await old?.unload() }
-            self.languageIDPath = languageIDPath
-            languageID = languageIDPath.map { WhisperLanguageIdentifier(modelURL: URL(fileURLWithPath: $0)) }
-        }
-        // Load the weights while the user speaks.
-        let engine = self.engine
-        let languageID = language.plan(choice: languageThisTime) == .hebrewOrEnglish ? self.languageID : nil
-        Task.detached(priority: .userInitiated) {
-            do { try await languageID?.prepare() } catch {
-                // identifyLanguage() falls back to Hebrew.
-            }
-            do { try await engine?.prepare() } catch {
-                // transcribe() reports it.
-            }
-        }
+        engines.use(SpeechEngineConfiguration(model: model, store: store))
+        engines.preload(languageID: language.plan(choice: languageThisTime) == .hebrewOrEnglish)
     }
 
     /// Hebrew or English for "Hebrew or English": the language-ID model's
     /// call, leaning to Hebrew. Without the model, or if it fails, Hebrew.
     private func identifyLanguage(_ clip: [Float]) async -> String {
-        guard let languageID else {
+        guard let languageID = engines.languageID else {
             log.info("No language-ID model; transcribing as Hebrew")
             return "he"
         }
@@ -523,8 +510,8 @@ final class DictationController {
     /// Trim with the VAD, then one decode over the speech. The heavy work runs
     /// off the main actor (the VAD in a detached task, whisper on its queue).
     private func transcribe(_ samples: [Float]) async -> DictationOutcome {
-        guard let engine else { return .failed("The speech engine isn't loaded.") }
-        let vad = self.vad
+        guard let engine = engines.whisper else { return .failed("The speech engine isn't loaded.") }
+        let vad = engines.vad
         let plan = await Task.detached(priority: .userInitiated) {
             DictationTrim.plan(totalSamples: samples.count, probabilities: vad?.speechProbabilities(samples))
         }.value
@@ -637,15 +624,6 @@ final class DictationController {
         }
     }
 
-    private func scheduleUnload() {
-        unloadTask?.cancel()
-        unloadTask = Task { [weak self] in
-            try? await Task.sleep(for: Self.idleUnload)
-            guard !Task.isCancelled else { return }
-            self?.unloadIfIdle()
-        }
-    }
-
     #if DEBUG
     /// Screenshot tests: show a dictation state without a microphone.
     func showForScreenshot(_ phase: Phase, owner: UUID, source: DictationSource = .mic, elapsed: TimeInterval = 0,
@@ -664,17 +642,4 @@ final class DictationController {
         self.languageDefault = languageDefault
     }
     #endif
-
-    private func unloadIfIdle() {
-        guard phase == .idle, let engine else { return }
-        self.engine = nil
-        Task { await engine.unload() }
-        let languageID = self.languageID
-        self.languageID = nil
-        languageIDPath = nil
-        Task { await languageID?.unload() }
-        vad = nil
-        vadModelPath = nil
-        log.info("Unloaded the speech model")
-    }
 }

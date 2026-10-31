@@ -242,6 +242,12 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
     /// `mark_conversations_viewed`). Nil when never, or from a server that
     /// predates it.
     var lastViewedAt: Date? = nil
+    /// Talk is on for this conversation (`talk_mode`): the person talks with
+    /// it by voice, from a phone. The desktop shows a Talk badge.
+    var talkMode: Bool = false
+    /// Whether the server sent `talk_mode` at all: a server that predates
+    /// Talk leaves this false.
+    var talkModeReported: Bool = false
 
     /// What the lists order by: the later of the last activity and the last
     /// time the user opened the session, as the desktop's Recent section does.
@@ -254,7 +260,7 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         case id, folderId, title, agentType, status, model, gitBranch, externalId
         case messageCount, createdAt, updatedAt, pinnedAt, lastViewedAt
         case turnState, critical, criticalStall, parentId, limitPause, limitAutoContinue, limitReason
-        case background
+        case background, talkMode
     }
 
     init(from decoder: Decoder) throws {
@@ -284,6 +290,16 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         limitReason = (try? c.decodeIfPresent(LimitReason.self, forKey: .limitReason)) ?? nil
         background = (try? c.decodeIfPresent(ConversationBackground.self, forKey: .background)) ?? nil
         lastViewedAt = (try? c.decodeIfPresent(Date.self, forKey: .lastViewedAt)) ?? nil
+        talkModeReported = c.contains(.talkMode)
+        talkMode = Self.talkMode(c)
+    }
+
+    /// `talk_mode` as a flag, or as the stored state (`on`, `ending`): only
+    /// `on` is Talk on.
+    private static func talkMode(_ c: KeyedDecodingContainer<CodingKeys>) -> Bool {
+        if let flag = (try? c.decodeIfPresent(Bool.self, forKey: .talkMode)) ?? nil { return flag }
+        if let state = (try? c.decodeIfPresent(String.self, forKey: .talkMode)) ?? nil { return state == "on" }
+        return false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -316,6 +332,7 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         try c.encodeIfPresent(limitReason, forKey: .limitReason)
         try c.encodeIfPresent(background, forKey: .background)
         try c.encodeIfPresent(lastViewedAt, forKey: .lastViewedAt)
+        if talkModeReported { try c.encode(talkMode, forKey: .talkMode) }
     }
 
     /// Non-empty, trimmed user-provided title, or `nil` for an unnamed session.

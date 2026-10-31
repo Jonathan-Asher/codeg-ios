@@ -160,6 +160,8 @@ final class AppModel {
             self.selectedTab = tab
         }
         actions.app = self
+        // Talk asks what the session's sub-agents wait on from this list.
+        TalkCenter.shared.pendingItems = pending
         let activity = self.activity
         activity.snapshotCache = snapshotCache
         activity.connectivity = .shared

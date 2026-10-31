@@ -91,6 +91,57 @@ jobs:
           path: ${{ runner.temp }}/xcodebuild.log
           retention-days: 7
 
+  # The app as it links for an iPhone (Release, arm64, unsigned): proves the
+  # device link and checks the binary carries one ONNX Runtime and one
+  # espeak-ng, with sherpa-onnx using BlueTTSKit's runtime.
+  device:
+    name: Device build
+    runs-on: macos-26
+    timeout-minutes: 60
+    concurrency:
+      group: ios-device-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Ensure the Metal toolchain
+        run: |
+          if ! xcrun metal --version >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Build for an iPhone
+        run: |
+          set -o pipefail
+          fmt=cat
+          if command -v xcbeautify >/dev/null 2>&1; then fmt="xcbeautify --renderer github-actions"; fi
+          xcodebuild build \
+            -project CodegiOS.xcodeproj \
+            -scheme CodegiOS \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild-device.log" | $fmt
+
+      - name: Check the linked binary for a second ONNX Runtime or espeak-ng
+        run: scripts/check-linked-symbols.sh build/DerivedData/Build/Products/Release-iphoneos/Codeg.app/Codeg
+
+      - name: Upload the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-device-log
+          path: ${{ runner.temp }}/xcodebuild-device.log
+          retention-days: 7
+
   test:
     name: Unit tests
     runs-on: macos-26

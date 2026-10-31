@@ -1,10 +1,14 @@
 import Foundation
 
-/// The speech-to-text models the app can download, as listed in
-/// `stt-models.json`. The same file is published next to the models in the
-/// `models-v1` release of Jonathan-Asher/codeg-ios; the copy bundled in the app
-/// is the one trusted, so a download is only accepted when it matches the
-/// size and sha256 pinned here.
+/// The speech models the app can download, as listed in `stt-models.json`:
+/// whisper models for voice typing, and for Talk the streaming Zipformer
+/// transducer and the Smart Turn end-of-turn classifier. The same file is
+/// published next to the models in the latest `models-vN` release of
+/// Jonathan-Asher/codeg-ios; the copy bundled in the app is the one trusted, so
+/// a download is only accepted when it matches the size and sha256 pinned here.
+///
+/// Schema 1 throughout: `engine` and `parts` were added as optional fields
+/// (models-v2), and a model without `engine` is a whisper model.
 struct SpeechModelManifest: Codable, Sendable {
     struct File: Codable, Hashable, Sendable {
         /// File name inside the model's directory.
@@ -15,20 +19,42 @@ struct SpeechModelManifest: Codable, Sendable {
         let sha256: String
     }
 
+    /// What runs a model.
+    enum Engine: String, Codable, Sendable, CaseIterable {
+        /// whisper.cpp ggml weights (voice typing, Talk's final transcript).
+        case whisper
+        /// A streaming transducer on sherpa-onnx (Talk's live transcript):
+        /// `parts` names its encoder, decoder, joiner and tokens.
+        case transducer
+        /// An end-of-turn classifier on ONNX Runtime (Smart Turn): `weights`.
+        case turn
+    }
+
+    /// The `parts` a transducer model must name.
+    static let transducerParts = ["encoder", "decoder", "joiner", "tokens"]
+
     struct Model: Codable, Identifiable, Sendable {
         let id: String
         let title: String
         /// One line for Settings.
         let summary: String
-        /// Whisper language codes the model is meant for.
+        /// Language codes the model is meant for (whisper codes; "auto" when
+        /// it isn't tied to one language).
         let languages: [String]
         /// Whether whisper's language detection works with this model.
         let detectsLanguage: Bool
         let license: String
         /// Where the weights come from and how they were made.
         let source: String
-        /// The whisper ggml weights (one of `files`).
+        /// The engine, as written in the manifest: "whisper", "transducer" or
+        /// "turn". Missing means whisper (every models-v1 entry).
+        let engine: String?
+        /// The model's main file (one of `files`): the whisper ggml weights,
+        /// the transducer's encoder, or the classifier's ONNX model.
         let weights: String
+        /// A transducer's files by role: `encoder`, `decoder`, `joiner` and
+        /// `tokens`, each one of `files`.
+        let parts: [String: String]?
         /// The Silero VAD ggml model (one of `files`), if any.
         let vad: String?
         /// A small multilingual whisper model (one of `files`) that tells
@@ -37,8 +63,24 @@ struct SpeechModelManifest: Codable, Sendable {
         let languageID: String?
         let files: [File]
 
-        /// The files transcription can't do without: the weights and the VAD.
-        var requiredPaths: [String] { [weights] + (vad.map { [$0] } ?? []) }
+        /// The engine that runs the model; nil for an engine this app doesn't
+        /// know (``SpeechModelManifest/problems()`` reports it).
+        var engineKind: Engine? { engine.map { Engine(rawValue: $0) } ?? .whisper }
+
+        /// The files the model can't run without: the weights, a transducer's
+        /// parts and the VAD.
+        var requiredPaths: [String] {
+            var paths = [weights]
+            for key in SpeechModelManifest.transducerParts {
+                if let part = parts?[key], !paths.contains(part) { paths.append(part) }
+            }
+            if let vad, !paths.contains(vad) { paths.append(vad) }
+            return paths
+        }
+
+        /// The local file name of a transducer part (`encoder`, `decoder`,
+        /// `joiner`, `tokens`).
+        func part(_ key: String) -> String? { parts?[key] }
 
         var totalBytes: Int64 { files.reduce(0) { $0 + $1.size } }
     }
@@ -73,6 +115,29 @@ struct SpeechModelManifest: Codable, Sendable {
             if let languageID = model.languageID, !model.files.contains(where: { $0.path == languageID }) {
                 problems.append("\(model.id): languageID \(languageID) is not one of its files")
             }
+            switch model.engineKind {
+            case nil:
+                problems.append("\(model.id): unknown engine \(model.engine ?? "")")
+            case .transducer:
+                let parts = model.parts ?? [:]
+                for key in Self.transducerParts {
+                    guard let name = parts[key] else {
+                        problems.append("\(model.id): no \(key) part")
+                        continue
+                    }
+                    if !model.files.contains(where: { $0.path == name }) {
+                        problems.append("\(model.id): \(key) \(name) is not one of its files")
+                    }
+                }
+                for key in parts.keys where !Self.transducerParts.contains(key) {
+                    problems.append("\(model.id): unknown part \(key)")
+                }
+                if parts["encoder"] != model.weights {
+                    problems.append("\(model.id): weights is not the encoder")
+                }
+            case .whisper, .turn:
+                if model.parts != nil { problems.append("\(model.id): parts on a \(model.engineKind!.rawValue) model") }
+            }
             for file in model.files {
                 if file.sha256.count != 64 || !file.sha256.allSatisfy(hex.contains) {
                     problems.append("\(model.id)/\(file.path): sha256 is not 64 lowercase hex digits")
@@ -104,9 +169,19 @@ enum SpeechModelCatalog {
     static let hebrewID = "he-turbo"
     /// The stock multilingual model, used when the language is detected.
     static let multilingualID = "multi-turbo"
+    /// Talk's live Hebrew transcriber: ivrit.ai's streaming Zipformer on
+    /// sherpa-onnx (`import SherpaOnnx`), with the Silero VAD in its pack.
+    static let hebrewStreamingID = "he-zipformer-stream"
+    /// Talk's end-of-turn classifier: Smart Turn v3.2 (`import SmartTurn`).
+    static let smartTurnID = "smart-turn-v3.2"
 
     static func model(id: String) -> SpeechModelManifest.Model? {
         manifest.models.first { $0.id == id }
+    }
+
+    /// The models an engine runs, in manifest order.
+    static func models(engine: SpeechModelManifest.Engine) -> [SpeechModelManifest.Model] {
+        manifest.models.filter { $0.engineKind == engine }
     }
 
     /// The model a language setting uses. "Hebrew or English" uses the

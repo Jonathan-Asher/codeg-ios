@@ -7,8 +7,9 @@ in open pull requests. The fork carries those fixes and its own app identity, so
 installs next to the upstream app. Features for Jonathan's own codeg server,
 push notifications, on-device voice (read aloud and voice typing, with
 clean-up and translation through the codeg server), Camera Control to
-talk, and the pictures, videos, audio and documents a session refers to, are
-added here.
+talk, Talk (hands-free Hebrew voice conversations with a session, also with
+the screen locked), and the pictures, videos, audio and documents a session
+refers to, are added here.
 
 `LICENSE` is kept as upstream ships it. `THIRD_PARTY_NOTICES.md` keeps
 upstream's entries and adds the fork's own dependencies at the end.
@@ -2422,6 +2423,11 @@ git subtree pull --prefix Packages/BlueTTSKit <path-or-url-of-codeg-voice/BlueTT
 
 ### Licences: read before any public release
 
+- Talk's engines: sherpa-onnx and its libraries are Apache-2.0, MIT and
+  BSD-3-Clause; the streaming Zipformer is CC-BY-4.0 (attribution in
+  About › Acknowledgements and the `models-v2` NOTICE.txt); Smart Turn is
+  BSD-2-Clause. None is copyleft. See "Talk engines" and
+  THIRD_PARTY_NOTICES.md.
 - BlueTTSKit is MIT (`Packages/BlueTTSKit/LICENSE`).
 - **BlueTTSEspeak, which the app links for English phonemes inside Hebrew
   text, is espeak-ng: GPL-3.0-or-later.** That makes the app binary a GPL-3
@@ -2849,6 +2855,78 @@ The CLI runs the app's own `WhisperCppEngine`, `SileroVAD`, `DictationTrim`
 and `DictationText` code against the XCFramework's macOS slice. Usage is in the
 header of each file.
 
+## Talk engines
+
+Talk mode (hands-free voice conversations with a session) adds two on-device
+engines next to whisper and BlueTTS. Both run on BlueTTSKit's ONNX Runtime
+1.30.0, so the app links one runtime and one espeak-ng.
+
+- **Live transcript: `Packages/SherpaOnnx`** (`import SherpaOnnx`).
+  `StreamingTransducerRecognizer` wraps sherpa-onnx's C API around ivrit.ai's
+  streaming Zipformer: created from the four model files and a thread count;
+  `accept(samples:)` takes 16 kHz mono and decodes each ready chunk;
+  `partialText`; `inputFinished()` appends 1.5 s of silence (the model
+  decodes 1.28 s chunks) and returns the final text; `reset()` starts a fresh
+  stream. Calls are serialized inside; drive it from a background queue.
+  `StreamingTransducerRecognizer.versions` reports sherpa-onnx's version and
+  the ONNX Runtime it runs on (About › Acknowledgements shows it).
+- **sherpa-onnx itself** is the binary target `SherpaOnnxC`, a static
+  XCFramework pinned by URL and checksum (release
+  [`sherpa-onnx-2.0.1-ort1.30`](https://github.com/Jonathan-Asher/codeg-ios/releases/tag/sherpa-onnx-2.0.1-ort1.30)).
+  `scripts/build-sherpa-onnx.sh` builds it on the GitHub-hosted runners
+  (`.github/workflows/sherpa-onnx.yml`, on changes to the script): sherpa-onnx
+  2.0.1, C API on, TTS and speaker diarization off, compiled against the
+  ONNX Runtime 1.30.0 pod archive's headers, nothing of ONNX Runtime inside.
+  Slices: ios-arm64, ios-arm64_x86_64-simulator (the simulator build also
+  links x86_64) and macos-arm64 (for `swift test` and the macOS tool). The
+  script fails if any slice defines an `_Ort*`, `onnxruntime::`, espeak or
+  piper symbol, or doesn't call `_OrtGetApiBase`. A new build needs a new tag
+  (`BUILD_REVISION`); the workflow never replaces a published zip.
+- **End of turn: `Packages/SmartTurn`** (`import SmartTurn`).
+  `SmartTurnClassifier(modelURL:threads:)` and
+  `probability(last8s:) async -> Float?` run Smart Turn v3.2 (int8, CPU)
+  over the last 8 s of 16 kHz audio, zero-padded at the front.
+  `WhisperLogMel` is its front end in Accelerate: the steps of
+  pipecat-ai/smart-turn's `inference.py` (transformers'
+  `WhisperFeatureExtractor`, chunk 8 s, normalized over the whole window).
+  Its tests compare it with values from that pipeline
+  (`scripts/mel_reference.py`): at most 1.6e-5 apart. The model quantizes
+  its activations at run time, so near p = 0.5 its output moves by up to
+  ±0.1 with differences of that size (the same happens to the reference
+  pipeline with 1e-5 of noise); read it as a soft signal.
+- **ONNX Runtime for other packages**: BlueTTSKit exports
+  `.library(name: "OnnxRuntime", targets: ["OnnxRuntimeBindings"])`. This
+  is a local change to the subtree; carry it into codeg-voice before the
+  next `git subtree pull`.
+- **Models** (release
+  [`models-v2`](https://github.com/Jonathan-Asher/codeg-ios/releases/tag/models-v2),
+  with `NOTICE.txt` and the licence texts): `he-zipformer-stream`, the
+  int8 encoder, decoder, joiner and tokens of `zipformer2-66m-streaming-he`
+  (Yakov Kolani, CC-BY-4.0, unchanged but renamed, 73 MB with the Silero VAD
+  file from models-v1, so Talk can listen without the whisper pack), and
+  `smart-turn-v3.2` (Daily, BSD-2-Clause, 8.7 MB). `stt-models.json` stays
+  schema 1 with two optional fields: `engine` (`whisper` when missing,
+  `transducer` or `turn`) and `parts` (a transducer's encoder, decoder,
+  joiner and tokens); `problems()` checks them, and
+  `SpeechModelCatalog.models(engine:)` lists a kind.
+- **Measured** on the M1 build box (macOS, 2 threads, six FLEURS Hebrew
+  clips, 38 s): the Zipformer loads in 0.6 s, streams 100 ms chunks at RTF
+  0.017 (the worst chunk 28 ms), flushes in 22–48 ms, and the first words
+  appear after 1.5 s of audio, then every 1.28 s. Its transcripts match the
+  Python sherpa-onnx wheel's word for word. Smart Turn: 27 ms per call
+  (front end 0.9 ms), 47 ms on one thread. `.github/workflows/talk-engines.yml`
+  repeats this on a GitHub runner, after the packages' tests with the real
+  models.
+- **Memory**: the app asks for
+  `com.apple.developer.kernel.increased-memory-limit`. Signed builds need
+  the Increased Memory Limit capability on the App ID; automatic signing
+  with `-allowProvisioningUpdates` should turn it on, as it did for Time
+  Sensitive Notifications.
+- **Checks**: the `device` job of `ios.yml` builds the app for an iPhone
+  (Release, unsigned) and runs `scripts/check-linked-symbols.sh` on the
+  binary: `_OrtGetApiBase` defined once, no `_Ort*` or `_espeak*` symbol
+  twice, sherpa-onnx linked.
+
 ## Camera Control to talk
 
 With a session open and the mode on, hold the Camera Control (iPhone 16 and
@@ -3099,6 +3177,217 @@ zero) couldn't see it.
   starts the engine before scheduling or playing, restarts it after a
   configuration change while reading, and stops cleanly when it won't.
 
+## Talk (1.4.0)
+
+Talk is a hands-free voice conversation with one session, in Hebrew with
+English terms where they're natural: tap Talk at the top of a session, speak,
+pause, and the agent's reply is spoken while it streams. It goes on with the
+screen locked and AirPods in. The server's side, and the contract the phone
+builds against, is codeg's `docs/talk-mode.md` (fork `fork/solution-plan`):
+`set_conversation_talk_mode`, the `spoken` flag on messages, the hidden
+"talk frame" the server adds so the agent answers in short spoken sentences,
+and `talking` in presence. The engines are in "Talk engines" above.
+
+### The pieces
+
+- **`TalkMachine`** (pure): Talk's conversation logic as a reducer, 13
+  phases from listening to speaking and asking, with abstract events and
+  effects. `EndOfTurnPolicy` (when a turn ends), `BargeInPolicy`
+  (talking over the speech), `FinalTranscriptChoice` (whisper's text or the
+  live one), `TalkRouter` (what an utterance means), `SpokenPrompts` (how a
+  permission, question or plan is asked), `TalkFeed` and
+  `IncrementalSpeechText` (what of the session is spoken) are pure too, and
+  tested on their own.
+- **`TalkController`** runs one Talk: it maps the machine's effects onto
+  the audio engine, the engines, the session and the device, all behind
+  protocols (`TalkDependencies.swift`), so `TalkControllerTests` drives it
+  over fakes. `TalkLive.swift` is the app's side; `TalkCenter` holds the one
+  Talk the app runs and starts it (models, microphone permission).
+- **`SentenceSpeaker`** synthesizes ahead and plays on Talk's engine.
+- **`TalkSheet`**, **`TalkToolbarButton`**, `TalkModelsSheet` (the first-run
+  download), `TalkSettingsSection` (Settings › Voice › Talk) and the Lab
+  (`TalkLabView`, `TalkLab`).
+
+### A turn
+
+1. Every 32 ms microphone frame goes to the streaming Silero VAD. Speech
+   opens at p ≥ 0.5 for two frames, with 300 ms of audio from before.
+2. While the person speaks, the frames go to the Zipformer, whose partial
+   text is the "You" caption.
+3. At a pause (quiet for 150 ms after 250 ms of speech) the last 3 s are
+   decoded again on a stream of their own (`transcribeOnce`): a last word
+   that dangles (של, אבל, and…) doubles the wait. whisper starts on the
+   utterance so far, speculatively, with voice typing's language plan and
+   prompt; Smart Turn is asked for the last 8 s and logged (it commits only
+   when "Smart Turn decides" is on in the Lab).
+4. The commit comes after 0.8 s of silence (1.6 s after a dangling word),
+   times the patience (0.7, 1 or 1.5). A soft tick plays.
+5. whisper's text is used if it is back within 0.5 s of the commit,
+   otherwise the Zipformer's. Without whisper (not downloaded, not enough
+   memory, the app in the background) it is the Zipformer's at once.
+6. `TalkRouter` decides: a short command (stop, repeat, continue, skip,
+   mute, end Talk, cancel the agent after "are you sure?"), an answer to
+   what the agent waits on, or words for the session. Words go with
+   `sendSpoken`: a prompt when idle, into the running turn when it takes
+   inserts, queued otherwise.
+7. The reply is spoken sentence by sentence while it streams; code, tables
+   and long details are left on the screen with one "it's on the screen".
+   More than 90 s of one reply becomes "the rest is on the screen".
+
+### Talking over the speech
+
+While Talk speaks, a voice at p ≥ 0.5 for 300 ms, twice as loud as the
+noise floor, is a candidate: the speech ducks to 0.12 at once, and a fresh
+Zipformer pass over the candidate's audio runs every 250 ms. At least two
+words (or a stop word) that aren't the sentence being spoken or the one
+before confirm it within 1.5 s: the speech stops, its rest kept for
+"continue", and the words go into the turn as an insert, never a cancel.
+Otherwise the volume comes back. After the speech, new speech waits 600 ms
+(the echo's tail) unless it is loud. With "Interrupt by speaking" off, a tap
+on the orb or the Camera Control interrupts.
+
+### Asking
+
+The session's permission, question and plan cards, and what its sub-agents
+wait on (the "Waiting for you" list, filtered to this session's
+sub-agents), are spoken with `SpokenPrompts`, one at a time: a command by
+the description the agent wrote for it ("אני רוצה למחוק את תיקיית הבילד.
+לאשר?"), an edit by its file's name, a question with up to four options, a
+plan by its first sentence. Secret questions are only announced. The answer
+is spoken ("כן", "השנייה", or in the person's own words) or tapped on the
+sheet's big buttons; an unclear answer is asked again once, then left on
+the screen. A sub-agent's answer goes to the server
+(`acp_respond_permission`, `acp_answer_question`, `acp_answer_plan_approval`
+with the item's connection and request).
+
+### Mute
+
+Two levels, and the sheet says which:
+
+- **Said** ("השתק", or an AirPods stem press): Talk keeps listening on this
+  iPhone, but only "תקשיב" (unmute) and "סיים" (end) are acted on; nothing
+  is sent.
+- **The Mute button**: the microphone stops (frames are dropped and the
+  app's input is muted, `TalkAudioIO.setInputMuted`) until Unmute is
+  tapped. Replies are still spoken.
+
+### Pocket mode
+
+With the screen locked Talk keeps running under the `audio` background
+mode: the engine runs, the session's socket stays attached
+(`keepsStreamAttached`), and presence says `talking` (at least every 30 s),
+so the server doesn't push about the session meanwhile. In the background
+whisper is unloaded (no GPU), so finals come from the Zipformer; it is
+loaded again when the app comes back if memory allows. The Lock Screen
+shows "Talk · ‹session›"; the AirPods (remote commands through
+`RemoteCommandRouter`): play/pause mutes or unmutes, next track stops the
+speech, previous says the last reply again. A call or Siri pauses Talk and
+it resumes after; a route change (AirPods in or out) rebuilds the engine
+and says the current sentence again. Talk ends by itself after 10 minutes
+with nothing said and nothing running, which turns the server's Talk mode
+off.
+
+### Starting and ending
+
+Starting takes a lease on the session's model (`SessionModelStore`), sets
+the session's `talkObserver` (which replays the turn in progress; what is
+already there is not spoken), keeps the socket attached, turns the server's
+Talk mode on, then presence's `talking` (only for a server that took Talk
+mode). The engines' leases (`SpeechEngineHost` and `VoiceEngineHost`
+`.talk`, BlueTTS capped at 4 threads) are taken, the idle timer is turned
+off. Ending undoes all of it, in reverse, and sends the telemetry.
+
+### Memory
+
+whisper (1.1 GB), BlueTTS (0.9 GB), the Zipformer (0.16 GB) and Smart Turn
+fit with the increased memory limit, but whisper loads only when
+`os_proc_available_memory()` is at least 1.5 GB with the others loaded. The
+first memory warning drops whisper (a "Fast mode" chip shows); the second
+keeps one sentence ahead instead of two.
+
+### Models
+
+The first Talk asks for the downloads with their sizes: the Zipformer pack
+(73 MB, with the Silero VAD) and Smart Turn (9 MB) are required; BlueTTS
+(575 MB) is for the natural voice (without it the iPhone's own Hebrew and
+English voices speak, rendered into Talk's engine so echo cancellation
+still hears them); whisper (voice typing's model) is optional, for better
+English terms. Settings › Voice › Talk lists them too.
+
+### Telemetry and the Lab
+
+Each Talk records, per utterance, the stage timings (end of speech →
+commit → final text → sent → first token → first audio), the end-of-turn
+trace (pauses, dangling words, Smart Turn's shadow verdict), which
+transcript won and both texts; for the Talk, barge-in candidates,
+confirmations and rejections, voice onsets heard while speaking and the
+speech's length per route and echo mode, memory and thermal samples, memory
+warnings and errors; and "You cut me off" taps. When Talk ends it goes to
+the session's server as `talk_lab` reports through
+`report_client_diagnostic` (JSON only, transcripts but never audio, each
+report under 1 MiB, split into parts when needed); Settings › Voice › Talk
+› Share Talk telemetry turns it off.
+
+The Lab (Settings › Voice › Talk › Lab): record a sentence and see whisper's
+and the Zipformer's text side by side with their times (and Smart Turn's
+probability), BlueTTS's time to first audio, an echo test that plays a
+sentence once with each echo mode on the current route and counts the voice
+onsets the microphone heard, the echo and Smart Turn switches, and this
+iPhone's capabilities (echo-cancelled input, background GPU, memory,
+thermal state).
+
+### Platform
+
+- **Shared engines** (no model loads twice). `Features/Voice/SpeechEngineHost`
+  holds whisper, the language-ID model and Silero VAD, now also streaming
+  (whisper.cpp v1.9.1's `whisper_vad_detect_speech_no_reset` and
+  `whisper_vad_reset_state`, in a context of its own), plus whatever Talk
+  attaches (`SpeechEngineAttachment`). Voice typing, Talk and the Lab hold
+  leases; with none held everything goes after 180 s, on a memory warning,
+  or in the background, where Talk keeps the CPU engines and only whisper
+  (no GPU there) is freed. Voice typing works as before on top of it.
+  `Features/Voice/VoiceEngineHost` holds the one BlueTTS for read aloud and
+  Talk, with the same leases and Talk's thread cap (4).
+- **Audio** (`Features/Talk/TalkAudioIO.swift`). `AudioSessionUse.talk`:
+  `.playAndRecord`, speaker by default, AirPods' microphone (HFP), a 10 ms
+  buffer. `TalkEchoPolicy`: echo-cancelled input on the built-in microphone
+  and speaker where iOS has it (checked again after activation and after
+  every route change), voice processing otherwise (players connected before
+  it is turned on, off before the engine stops, other audio ducked as little
+  as it allows), none on Bluetooth HFP, and the Lab's override.
+  `TalkAudioEngine` builds a fresh engine for every start and route change,
+  gives 16 kHz 512-sample frames through `MicrophoneConverter` (the
+  conversion voice typing uses, now shared), plays speech and earcons on two
+  player nodes, runs every raising call through `AVFAudioGuard` and checks
+  the microphone with `MicrophoneFormatCheck`. Its claim
+  (`talkWillClaimAudio` / `talkDidReleaseAudio`) makes the Camera Control's
+  standby step aside, stops read aloud, and keeps both, and voice typing,
+  from starting until Talk lets go.
+- **Sessions** (`Features/Talk/TalkSessionPort.swift`). `sendSpoken` sends
+  what was said marked `spoken`: a prompt when idle, into the turn when it
+  can take a message, queued otherwise, never touching the draft; an insert
+  that finds the turn ended goes as a spoken prompt under the same id, and
+  the outbox keeps `spoken`. The `SessionTalkObserver` hears the live turn's
+  main-thread text (sub-agent text, which `content_delta` now marks, runs
+  apart and is left out; rendering is unchanged), the turn's end, the
+  background hold, background turns (`background_activity` now decodes its
+  turns) and the cards. With `keepsStreamAttached` the event socket stays
+  attached while the session is idle (the "idle watch"): background turns
+  reach Talk on it, and a turn that starts (the agent's follow-up, or one
+  from the desktop) is picked up from a fresh snapshot on the same socket.
+- **Presence and display.** While talking, the presence socket stays open
+  with the screen locked and reports `talking: true` with the session, to
+  servers that took `set_conversation_talk_mode` only. Spoken messages
+  (`MessageTurn.spoken`) show a microphone; summaries decode `talk_mode`.
+
+### Checking it on the iPhone
+
+The unit tests cover the logic and the controller over fakes; these need
+the device: the echo modes on the speaker and on AirPods, barge-in against
+real echo, AirPods' stem presses with a voice-chat session, the Camera
+Control while the sheet is up, pocket mode's socket with the screen locked,
+whisper's load and unload around the background, and the memory headroom.
+
 ## Crash reports (1.3.20)
 
 The app sends its crash reports to the codeg servers it knows, and nowhere
@@ -3237,13 +3526,22 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   lists saved for a start without a network and the protection of saved
   files, the network monitor and the connection capsule, the event
   socket's pong deadline against a scripted socket and clock, and a
-  running turn through a dead zone) on an
+  running turn through a dead zone; Talk's platform: its audio session,
+  echo policy, microphone frames and earcons, the shared speech and voice
+  engines, spoken prompts and inserts, the idle watch and presence while
+  talking) on an
   iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
   `build`. It uploads the session list screenshots as the
   `session-list-screenshots` artifact (with `transcript-scroll.txt`, the
   scroll measurements, and `transcript-returned-new-messages.png`), and the
   compose area and a reply's media cards (`media-cards-*.png`) as
   `compose-screenshots`.
+- **`device`** builds the app for an iPhone (Release, unsigned) and checks
+  the linked binary with `scripts/check-linked-symbols.sh` (one ONNX
+  Runtime, one espeak-ng; see "Talk engines").
+- **`sherpa-onnx.yml`** builds and publishes the sherpa-onnx XCFramework
+  when its script changes; **`talk-engines.yml`** tests the SherpaOnnx and
+  SmartTurn packages on macOS with the real models when they change.
 - **`build`** runs on every push and pull request on GitHub-hosted `macos-26`
   with its default Xcode. It runs `brew install xcodegen`, `xcodegen generate`,
   then an unsigned `xcodebuild build` for `generic/platform=iOS Simulator`.

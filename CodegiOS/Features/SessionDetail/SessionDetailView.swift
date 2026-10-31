@@ -51,6 +51,7 @@ struct SessionDetailView: View {
     @AppStorage(MessageEditPreferences.keepOriginalKey) private var keepOriginalOnEdit = false
 
     private var cameraTalk: CameraTalkController { CameraTalkController.shared }
+    private var talkCenter: TalkCenter { TalkCenter.shared }
 
     init(server: ServerProfile, client: CodegClient, model: SessionDetailViewModel, lease: SessionLease?,
          onOpenSession: ((NewSessionRequest) -> Void)? = nil) {
@@ -71,6 +72,7 @@ struct SessionDetailView: View {
 
     var body: some View {
         screen
+            .modifier(TalkSessionSheets(conversationID: model.conversationID, stats: model.sessionStats))
             .alert("Camera Control to talk", isPresented: $showCameraTalkIntro) {
                 Button("Turn On") { Task { await enableCameraTalk() } }
                 Button("Cancel", role: .cancel) { }
@@ -96,6 +98,13 @@ struct SessionDetailView: View {
         // whose sheet also hosts the Agent + Folder pickers (otherwise just
         // Mode/config) and needs nothing from the server.
         if model.showsAgentButton {
+            // Talk: a hands-free voice conversation with this session (once
+            // the server has it).
+            if case .loaded = model.phase, model.conversationID != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    TalkToolbarButton(isActive: talkCenter.isActive(model.conversationID), action: startTalk)
+                }
+            }
             // Walkie-talkie: hold the Camera Control to talk to this agent.
             if CameraTalkController.isSupported {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -353,6 +362,13 @@ struct SessionDetailView: View {
         )
     }
 
+    // MARK: - Talk
+
+    private func startTalk() {
+        if talkCenter.isActive(model.conversationID) { return }
+        talkCenter.start(model: model, client: client, serverProfileID: server.id, lease: lease)
+    }
+
     private func toggleCameraTalk() {
         if cameraTalk.isEnabled {
             cameraTalk.setEnabled(false)
@@ -590,7 +606,8 @@ struct SessionDetailView: View {
                     insertModel: model.insertModel,
                     dictationContext: DictationContext(folder: model.folder?.name, session: model.summary?.title),
                     dictationRefiner: client,
-                    onFocusChange: { composeFocused = $0 }
+                    onFocusChange: { composeFocused = $0 },
+                    talkConversationID: model.conversationID
                 )
             }
             .animation(.snappy(duration: 0.26), value: composeFocused)
