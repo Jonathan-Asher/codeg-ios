@@ -92,9 +92,10 @@ struct SessionDetailView: View {
             )
         }
         // The agent avatar (formerly in the compose bar) sits to the right of
-        // the title. Shown once loaded; for an editable draft its sheet also
-        // hosts the Agent + Folder pickers, otherwise just Mode/config.
-        if case .loaded = model.phase {
+        // the title. Shown once loaded, and at once for an editable draft,
+        // whose sheet also hosts the Agent + Folder pickers (otherwise just
+        // Mode/config) and needs nothing from the server.
+        if model.showsAgentButton {
             // Walkie-talkie: hold the Camera Control to talk to this agent.
             if CameraTalkController.isSupported {
                 ToolbarItem(placement: .topBarTrailing) {

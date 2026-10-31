@@ -28,6 +28,13 @@ import Observation
 /// (`mode_changed`, `session_modes`, `session_config_options`, the attach
 /// snapshot), so a mode the agent leaves on its own (plan mode after an
 /// approved plan) or another client picks shows here at once.
+///
+/// A new session with no connection yet (`picksWaitForConnect`) asks nothing
+/// of the server: the sheet shows the lists last seen for the agent on this
+/// server (`savedOptions`, kept from any session's live lists or a probe) at
+/// once, a pick is saved as the agent's preference, which `acp_connect`
+/// carries, and with no saved lists the sheet says they come once the session
+/// connects (`.atConnect`), starting no agent unless asked to (`load()`).
 @MainActor
 @Observable
 final class AgentOptionsModel {
@@ -38,6 +45,9 @@ final class AgentOptionsModel {
         case loaded            // modes/config available
         case empty             // loaded, but nothing configurable
         case failed(String)
+        /// A new session before it connects, with no lists saved for its
+        /// agent: they come once it connects (or `load()` reads them now).
+        case atConnect
     }
 
     private let client: CodegClient
@@ -48,6 +58,20 @@ final class AgentOptionsModel {
     /// Injected by the owner to fetch the authoritative live session snapshot for
     /// this conversation (nil when no live session exists).
     var loadSnapshot: (() async throws -> SessionSnapshot?)?
+
+    /// Injected by the owner: true while the session is a new one with no
+    /// connection yet. A pick then waits for the connect (saved as the
+    /// agent's preference, which `acp_connect` applies) instead of being sent,
+    /// and the lists come from `savedOptions` instead of the server.
+    var picksWaitForConnect: (() -> Bool)?
+
+    /// Injected by the owner: the lists last seen per agent on this server,
+    /// kept between launches (nil keeps them in this model only).
+    var savedOptions: (() -> SavedAgentOptions?)?
+
+    /// Injected by the owner: the session's agent, under which its live lists
+    /// are saved (nil while unknown).
+    var sessionAgent: (() -> AgentType?)?
 
     private(set) var phase: Phase = .idle
     private(set) var snapshot: AgentOptionsSnapshot?
@@ -75,7 +99,8 @@ final class AgentOptionsModel {
     var isSheetShown = false
 
     /// Catalog cache per agent type so re-opening the sheet doesn't re-spawn a
-    /// probe when there's no live session.
+    /// probe when there's no live session (with `savedOptions`, also kept
+    /// between launches).
     private var cache: [AgentType: AgentOptionsSnapshot] = [:]
 
     private var agentType: AgentType?
@@ -116,12 +141,23 @@ final class AgentOptionsModel {
         if case .failed = phase { phase = .idle }
 
         autoLoadTask?.cancel()
+        // A new session before it connects has no live session to read, and
+        // starting an agent just to list its options would keep the picks
+        // waiting: the lists last seen for this agent show at once.
+        if waitsForConnect {
+            if let known = knownOptions(for: agentType) {
+                applyCatalog(known)
+            } else if phase != .loading, snapshot == nil {
+                phase = .atConnect
+            }
+            return
+        }
         autoLoadTask = Task { [weak self] in
             guard let self else { return }
             // 1) Cheap authoritative snapshot first (no agent spawn).
             if let snap = try? await self.fetchSnapshot(), snap.hasSelectors {
                 if Task.isCancelled { return }
-                self.cache[agentType] = snap.asOptionsSnapshot
+                self.remember(snap.asOptionsSnapshot, for: agentType)
                 self.applyAuthoritative(snap)
                 return
             }
@@ -157,7 +193,7 @@ final class AgentOptionsModel {
             guard let self else { return }
             if let snap = try? await self.fetchSnapshot(), snap.hasSelectors {
                 if Task.isCancelled { return }
-                self.cache[agentType] = snap.asOptionsSnapshot
+                self.remember(snap.asOptionsSnapshot, for: agentType)
                 self.applyAuthoritative(snap)
                 return
             }
@@ -166,7 +202,7 @@ final class AgentOptionsModel {
             do {
                 let probe = try await self.client.describeAgentOptions(agentType: agentType, workingDir: workingDir)
                 if Task.isCancelled { return }
-                self.cache[agentType] = probe
+                self.remember(probe, for: agentType)
                 self.applyCatalog(probe)
             } catch is CancellationError {
                 // superseded / torn down
@@ -180,6 +216,32 @@ final class AgentOptionsModel {
     private func fetchSnapshot() async throws -> SessionSnapshot? {
         guard let loadSnapshot else { return nil }
         return try await loadSnapshot()
+    }
+
+    /// A pick now waits for the connect (see `picksWaitForConnect`).
+    var waitsForConnect: Bool { picksWaitForConnect?() ?? false }
+
+    /// The lists last seen for `agent`: kept between launches, else this
+    /// model's own.
+    private func knownOptions(for agent: AgentType) -> AgentOptionsSnapshot? {
+        savedOptions?()?.options(for: agent) ?? cache[agent]
+    }
+
+    /// Keep `options` as the lists last seen for `agent` on this server.
+    private func remember(_ options: AgentOptionsSnapshot, for agent: AgentType) {
+        guard !options.isEmpty else { return }
+        cache[agent] = options
+        savedOptions?()?.save(options, for: agent)
+    }
+
+    /// The session's own lists, from its events: they replace what is kept
+    /// for its agent (an event that carries one of the two keeps the other).
+    private func rememberLive(modes: SessionModeState?, configOptions: [SessionConfigOption]?) {
+        guard let agent = sessionAgent?() ?? agentType else { return }
+        let known = knownOptions(for: agent)
+        remember(AgentOptionsSnapshot(modes: modes ?? known?.modes,
+                                      configOptions: configOptions ?? known?.configOptions ?? []),
+                 for: agent)
     }
 
     /// Adopt authoritative current mode/config from the live snapshot (overwrites
@@ -228,6 +290,13 @@ final class AgentOptionsModel {
     // MARK: - Apply
 
     func selectMode(_ modeId: String) {
+        if waitsForConnect {
+            // Nothing to apply it to yet: the connect starts the session in it.
+            guard modeId != selectedModeId else { return }
+            selectedModeId = modeId
+            if let agentType { SelectorPrefsStore.saveMode(agent: agentType, modeId: modeId) }
+            return
+        }
         guard modeId != selectedModeId, canApply(Self.modeKey) else { return }
         let previous = selectedModeId
         selectedModeId = modeId   // optimistic (only after the guards pass)
@@ -241,6 +310,13 @@ final class AgentOptionsModel {
     }
 
     func selectConfig(optionId: String, valueId: String) {
+        if waitsForConnect {
+            // Nothing to apply it to yet: the connect starts the session with it.
+            guard selectedConfig[optionId] != valueId else { return }
+            selectedConfig[optionId] = valueId
+            if let agentType { SelectorPrefsStore.saveConfig(agent: agentType, configId: optionId, valueId: valueId) }
+            return
+        }
         guard selectedConfig[optionId] != valueId, canApply(optionId) else { return }
         let previous = selectedConfig[optionId]
         selectedConfig[optionId] = valueId   // optimistic (only after the guards pass)
@@ -420,6 +496,7 @@ final class AgentOptionsModel {
         snapshot = AgentOptionsSnapshot(modes: modes, configOptions: snapshot?.configOptions ?? [])
         adoptLive(key: Self.modeKey, value: modes.currentModeId)
         if case .loaded = phase {} else if snapshot?.isEmpty == false { phase = .loaded }
+        rememberLive(modes: modes, configOptions: nil)
     }
 
     /// The agent's config options with their current values
@@ -432,6 +509,7 @@ final class AgentOptionsModel {
             }
         }
         if case .loaded = phase {} else if snapshot?.isEmpty == false { phase = .loaded }
+        rememberLive(modes: nil, configOptions: options)
     }
 
     /// The selectors an attach snapshot carries, current as of that snapshot.
@@ -527,6 +605,9 @@ final class AgentOptionsModel {
     func teardown() {
         loadTask?.cancel()
         loadTask = nil
+        // A probe stopped on its way leaves nothing loading: the next
+        // `prepare` starts over rather than waiting for it.
+        if case .loading = phase { phase = .idle }
         autoLoadTask?.cancel()
         autoLoadTask = nil
         connectionTask?.cancel()
