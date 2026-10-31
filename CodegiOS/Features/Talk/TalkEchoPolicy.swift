@@ -1,7 +1,7 @@
 import AVFoundation
 
 /// How Talk keeps the agent's own speech out of what the microphone hears,
-/// per audio route. Pure, apart from the Lab's stored override.
+/// per audio route. Pure.
 ///
 /// - Built-in microphone and speaker, on an iPhone that has it (iOS 18.2,
 ///   2024 and later models): echo-cancelled input
@@ -12,7 +12,8 @@ import AVFoundation
 ///   processing on the engine's input (the session in mode `.voiceChat`).
 /// - AirPods and other Bluetooth headsets (HFP): none; the headset keeps its
 ///   own speech out of its microphone.
-/// - The Lab can force any of them to compare them.
+/// - The Lab can force any of them to compare them (`override`, which Talk
+///   passes to ``TalkAudioIO/start(preferring:)`` from its settings).
 enum TalkEchoPolicy {
     /// The echo mode for a route.
     static func choose(route: TalkRoute, echoCancelledInputAvailable: Bool,
@@ -53,24 +54,9 @@ enum TalkEchoPolicy {
         return .other
     }
 
-    // MARK: - The Lab's override
+    // MARK: - Names
 
-    private static let overrideKey = "codeg.talk.echoOverride"
-
-    /// The echo mode the Lab forces, nil for the policy's choice. Talk passes
-    /// it to ``TalkAudioIO/start(preferring:)``.
-    static var labOverride: TalkEchoMode? {
-        get { UserDefaults.standard.string(forKey: overrideKey).flatMap(echoMode(named:)) }
-        set {
-            if let newValue {
-                UserDefaults.standard.set(name(of: newValue), forKey: overrideKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: overrideKey)
-            }
-        }
-    }
-
-    /// A stable name for logs, breadcrumbs and the stored override.
+    /// A stable name for logs and breadcrumbs.
     static func name(of echo: TalkEchoMode) -> String {
         switch echo {
         case .echoCancelledInput: return "echoCancelledInput"

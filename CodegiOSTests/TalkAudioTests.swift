@@ -137,16 +137,12 @@ final class TalkEchoPolicyTests: XCTestCase {
         XCTAssertEqual(TalkEchoPolicy.route(inputs: [], outputs: []), .other)
     }
 
-    func testTheLabOverrideIsStored() {
-        let saved = TalkEchoPolicy.labOverride
-        defer { TalkEchoPolicy.labOverride = saved }
+    func testNamesRoundTrip() {
         for mode in [TalkEchoMode.echoCancelledInput, .voiceProcessing, TalkEchoMode.none] {
-            TalkEchoPolicy.labOverride = mode
-            XCTAssertEqual(TalkEchoPolicy.labOverride, mode)
             XCTAssertEqual(TalkEchoPolicy.echoMode(named: TalkEchoPolicy.name(of: mode)), mode)
         }
-        TalkEchoPolicy.labOverride = nil
-        XCTAssertNil(TalkEchoPolicy.labOverride)
+        XCTAssertNil(TalkEchoPolicy.echoMode(named: "automatic"))
+        XCTAssertEqual(TalkEchoPolicy.name(of: .bluetoothHFP), "bluetoothHFP")
     }
 }
 
@@ -167,18 +163,22 @@ final class TalkAudioFramesTests: XCTestCase {
         let converter = try XCTUnwrap(MicrophoneConverter(inputFormat: tapFormat))
         XCTAssertEqual(converter.outputFormat.sampleRate, 16_000)
         XCTAssertEqual(converter.outputFormat.channelCount, 1)
-        var total = 0
+        var counts: [Int] = []
         var last: MicrophoneConverter.Converted?
         for _ in 0..<5 {
             let converted = try XCTUnwrap(converter.convert(sine(440, amplitude: 0.5, frames: 4_800, rate: 48_000)))
-            total += converted.samples.count
+            counts.append(converted.samples.count)
             last = converted
         }
-        // 0.5 s of audio at 16 kHz, give or take the resampler's delay.
-        XCTAssertEqual(Double(total), 8_000, accuracy: 200)
+        // 100 ms in, 100 ms out at 16 kHz once the resampler's delay is
+        // filled; that delay stays inside it from buffer to buffer.
+        XCTAssertEqual(Double(counts.last ?? 0), 1_600, accuracy: 2)
+        let total = counts.reduce(0, +)
+        XCTAssertLessThanOrEqual(total, 8_000)
+        XCTAssertGreaterThan(total, 7_400)
         XCTAssertEqual(try XCTUnwrap(last).inputRMS, Float(0.5) / Float(2).squareRoot(), accuracy: 0.01)
         let tail = try XCTUnwrap(last).samples
-        let peak = tail.map(abs).max() ?? 0
+        let peak = tail.map { abs($0) }.max() ?? 0
         XCTAssertEqual(peak, 0.5, accuracy: 0.05, "the tone survives the conversion")
     }
 
@@ -217,7 +217,7 @@ final class TalkAudioFramesTests: XCTestCase {
         XCTAssertEqual(gotIt.count, Int(0.04 * rate))
         for earcon in [Earcon.listening, .gotIt, .error] {
             let samples = EarconTone.samples(earcon, sampleRate: rate)
-            let peak = samples.map(abs).max() ?? 0
+            let peak = samples.map { abs($0) }.max() ?? 0
             XCTAssertLessThanOrEqual(peak, EarconTone.peak + 1e-6, "about -20 dBFS")
             XCTAssertGreaterThan(peak, EarconTone.peak * 0.9)
             XCTAssertEqual(samples.first ?? 1, 0, accuracy: 1e-6, "fades in")
