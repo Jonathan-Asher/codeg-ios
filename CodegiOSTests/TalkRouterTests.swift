@@ -235,6 +235,8 @@ final class TalkRouterTests: XCTestCase {
         XCTAssertEqual(route("כולם", context), answered(["Lint", "Tests", "Docs"]))
         XCTAssertEqual(route("all of them", context), answered(["Lint", "Tests", "Docs"]))
         XCTAssertEqual(route("Docs", context), answered(["Docs"]))
+        XCTAssertEqual(route("Lint ו-Docs", context), answered(["Lint", "Docs"]))
+        XCTAssertEqual(route("את השנייה וגם את השלישית", context), answered(["Tests", "Docs"]))
     }
 
     func testAQuestionSetIsAskedOneQuestionAtATime() {
