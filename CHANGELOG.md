@@ -46,7 +46,17 @@ the text as the git tag message and the GitHub Release notes.
   the live transcriber on your own sentences, time the voice's first
   audio, test echo on the current route with each echo mode, and see what
   this iPhone offers.
-
+- A new session is set up at once (1.3.31). Its agent button is there as soon as it
+  opens, the Agent and Folder pickers show the agents and folders the server
+  offered last time (kept per server) and catch up when the server answers,
+  and Mode, Model and Effort (or Pi's thinking level) show the lists last seen
+  for each agent on that server, so switching agents and picking their
+  options waits for nothing. Options picked before the session
+  starts are kept for the agent and go with its connect, so it starts with
+  them; no agent is started on the server just to list them. An agent not
+  used on that server yet says its options come once the session starts, with
+  Load Options Now. A first message sent before the lists came goes as soon
+  as they do.
 - Paste files into a message (1.3.30). A file you copied in another app (a
   PDF, a Word document, a picture, a video, any file) pastes into the message
   box as an attachment, with ⌘V on a keyboard or Paste in the field's menu, the

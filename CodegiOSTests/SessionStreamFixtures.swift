@@ -13,6 +13,9 @@ final class MockCodegServer: @unchecked Sendable {
         case status(Int, String)
         /// The request fails as the network would (a timeout, a lost connection).
         case fail(URLError.Code)
+        /// No answer until the gate opens (a server that hasn't answered
+        /// yet), then this reply.
+        indirect case held(ReplyGate, Reply)
     }
 
     struct Call {
@@ -56,6 +59,11 @@ final class MockCodegServer: @unchecked Sendable {
         lock.withLock { log.filter { $0.path == path } }
     }
 
+    /// Every call's path, in the order they came.
+    var paths: [String] {
+        lock.withLock { log.map(\.path) }
+    }
+
     fileprivate func answer(path: String, body: [String: Any], raw: Data = Data(),
                             query: [String: String] = [:], method: String = "POST") -> Reply {
         let call = Call(path: path, body: body, raw: raw, query: query, method: method)
@@ -72,6 +80,31 @@ final class MockCodegServer: @unchecked Sendable {
         cfg.timeoutIntervalForRequest = 10
         return URLSession(configuration: cfg)
     }()
+}
+
+/// Holds the replies routed through it until the test opens it.
+final class ReplyGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiting: [() -> Void] = []
+
+    func open() {
+        let released: [() -> Void] = lock.withLock {
+            isOpen = true
+            defer { waiting = [] }
+            return waiting
+        }
+        released.forEach { $0() }
+    }
+
+    fileprivate func whenOpen(_ action: @escaping () -> Void) {
+        let now: Bool = lock.withLock {
+            if isOpen { return true }
+            waiting.append(action)
+            return false
+        }
+        if now { action() }
+    }
 }
 
 final class MockURLProtocol: URLProtocol {
@@ -101,6 +134,15 @@ final class MockURLProtocol: URLProtocol {
         }
         let reply = server.answer(path: url.lastPathComponent, body: body, raw: raw, query: query,
                                   method: request.httpMethod ?? "GET")
+        deliver(reply, url: url)
+    }
+
+    /// The request was cancelled or timed out (only touched on the loading thread).
+    private var stopped = false
+
+    override func stopLoading() { stopped = true }
+
+    private func deliver(_ reply: MockCodegServer.Reply, url: URL) {
         switch reply {
         case .fail(let code):
             client?.urlProtocol(self, didFailWithError: URLError(code))
@@ -108,10 +150,19 @@ final class MockURLProtocol: URLProtocol {
             respond(status: 200, text: text, url: url)
         case .status(let status, let text):
             respond(status: status, text: text, url: url)
+        case .held(let gate, let then):
+            // Answered later on the loading thread's run loop, as URL loading
+            // expects of its protocol's callbacks.
+            let runLoop = CFRunLoopGetCurrent()
+            gate.whenOpen { [weak self] in
+                CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue) {
+                    guard let self, !self.stopped else { return }
+                    self.deliver(then, url: url)
+                }
+                CFRunLoopWakeUp(runLoop)
+            }
         }
     }
-
-    override func stopLoading() {}
 
     private func respond(status: Int, text: String, url: URL) {
         let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1",

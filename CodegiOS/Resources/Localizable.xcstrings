@@ -6855,6 +6855,36 @@
         }
       }
     },
+    "Load Options Now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "立即加载选项"
+          }
+        }
+      }
+    },
+    "The session starts with these." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话将以这些设置开始。"
+          }
+        }
+      }
+    },
+    "This agent's modes and models show here once the session starts. You can send your first message now." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话开始后，此智能体的模式和模型会显示在这里。你现在就可以发送第一条消息。"
+          }
+        }
+      }
+    },
     "Loading providers…" : {
       "extractionState" : "stale",
       "localizations" : {

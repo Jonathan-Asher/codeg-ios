@@ -2019,6 +2019,73 @@ and Pi with the forked adapter fork while one runs). On an older server, and
 for the open session's own Fork Session, the fork goes as before. Tests in
 `SessionForkTests`.
 
+### New sessions set up at once
+
+`Persistence/DraftCatalogStore.swift`, `Features/SessionDetail/DraftChoices.swift`,
+`AgentOptionsModel.swift`, `AgentOptionsButton.swift` and the draft section of
+`SessionDetailViewModel`.
+
+- **What a draft opens with.** `DraftCatalogStore` keeps, per server, the
+  usable agents (`acp_list_agents`, installed and enabled), the open folders,
+  every folder but chat scratch folders, and each agent's option lists:
+  `draft-catalog.json` in the server's `TranscriptCache` folder, with complete
+  file protection, left alone by eviction and removed with the server. A draft
+  is seeded from it when it is made, so the agent button (shown from the first
+  frame for an editable draft) opens on the Agent and Folder pickers with the
+  last lists and their defaults: the preselected folder, else the most
+  recently opened; its default agent, else the first offered. A preselected
+  folder the saved lists don't have yet (a worktree just opened) waits for the
+  server's lists rather than another folder standing in for it, and the
+  request's agent (an edited first message keeps its session's) is checked
+  against the server's list, not the saved one.
+- **The refresh.** `load()` still fetches the three lists. Each that answers
+  replaces the one shown and is saved; one that fails keeps the saved one. A
+  choice the user made (or the request's agent) stays while the server still
+  offers it; anything not chosen, or no longer offered, falls back to the
+  defaults of the new lists, as a first load picks them. A folder the user
+  picked keeps the agent, as before.
+- **Options without a probe.** While it has no connection and its next
+  connect starts the agent session afresh (no agent session id yet), a new
+  session reads nothing from the server for the options sheet
+  (`optionsWaitForConnect`): the lists last seen for the agent on this server
+  show at once. They are saved from every session's own lists
+  (`session_modes`, `session_config_options`, the attach snapshot, the
+  by-conversation snapshot) and from a probe. With none saved, the sheet says
+  they come once the session starts; "Load Options Now" runs the probe
+  (`acp_describe_agent_options`) only when tapped. Switching agents shows the
+  other agent's saved lists at once.
+- **Picks before the connect.** A pick is shown and saved for the agent in
+  `SelectorPrefsStore`, nothing is sent, and the session's `acp_connect`
+  carries it as `preferredModeId` / `preferredConfigValues`, which the server
+  applies while it configures the session, before its first option events
+  and before it takes the prompt (`apply_preferred_session_options`); the
+  server needed no change. Once the sheet showed the agent's lists, the
+  connect also carries what it showed as chosen for the other options (a
+  saved list's values can come from a session another client changed), so
+  the session starts as the sheet said ("The session starts with these.");
+  with the sheet never opened, only the saved picks go, as before. A pick made while the connect was on its way is
+  sent with `acp_set_mode` / `acp_set_config_option` right after it, before
+  the prompt. Once the connection exists, picks apply to it as before (and a
+  new session's not yet linked connection is found as the one its send made).
+- **Sending before the lists came.** With no folder or agent yet (the first
+  draft on a server, before the server answers), Send still goes: the message
+  shows as sent, "connecting", and waits for the lists (`draftTarget()`),
+  then creates the conversation and connects. A draft seeded from saved lists
+  waits for the fetch too, so it never starts on a folder or agent the server
+  dropped; the folder and agent shown when it was sent are the ones it goes
+  to, unless the server no longer has them. A fetch that failed is made again for it; with the server out of
+  reach the message goes back to the queue as "Not sent" and retries like any
+  other, and with the lists in but no folder at all it asks for one.
+- **Existing sessions** work as before; their lists are now also kept for new
+  sessions.
+- Tests: `DraftPresetsTests` (pickers before the server answers, saved
+  options with no probe, a pick going with the connect or right after it,
+  instant agent switches, a send before the lists came, the saved lists
+  replaced by a session's own, fallbacks, an existing session). The mock
+  server can hold a reply until the test opens its `ReplyGate`. Screenshots:
+  `draft-options-saved` and `draft-options-at-connect` in the
+  `compose-screenshots` artifact.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one

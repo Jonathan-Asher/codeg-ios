@@ -94,11 +94,13 @@ struct SessionDetailView: View {
             )
         }
         // The agent avatar (formerly in the compose bar) sits to the right of
-        // the title. Shown once loaded; for an editable draft its sheet also
-        // hosts the Agent + Folder pickers, otherwise just Mode/config.
-        if case .loaded = model.phase {
-            // Talk: a hands-free voice conversation with this session.
-            if model.conversationID != nil {
+        // the title. Shown once loaded, and at once for an editable draft,
+        // whose sheet also hosts the Agent + Folder pickers (otherwise just
+        // Mode/config) and needs nothing from the server.
+        if model.showsAgentButton {
+            // Talk: a hands-free voice conversation with this session (once
+            // the server has it).
+            if case .loaded = model.phase, model.conversationID != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     TalkToolbarButton(isActive: talkCenter.isActive(model.conversationID), action: startTalk)
                 }
