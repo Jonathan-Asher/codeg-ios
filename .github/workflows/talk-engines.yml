@@ -1,0 +1,82 @@
+name: Talk engines
+
+# The SherpaOnnx and SmartTurn packages on macOS, with the real models from the
+# models-v2 release: their unit tests (the log-mel front end against the
+# reference values, the classifier against the reference pipeline, the
+# recognizer's lifecycle and the ONNX Runtime it links), then both macOS tools
+# over a few Hebrew FLEURS clips, for transcripts and timings.
+
+on:
+  push:
+    paths:
+      - Packages/SherpaOnnx/**
+      - Packages/SmartTurn/**
+      - Packages/BlueTTSKit/Package.swift
+      - .github/workflows/talk-engines.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: talk-engines-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packages:
+    name: Engine packages
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      MODELS: ${{ github.workspace }}/build/models
+      CLIPS: ${{ github.workspace }}/build/clips
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Download the Talk models (models-v2)
+        run: |
+          mkdir -p "$MODELS"
+          cd "$MODELS"
+          base=https://github.com/Jonathan-Asher/codeg-ios/releases/download/models-v2
+          curl -fsSL --retry 3 -O "$base/SHA256SUMS"
+          for f in $(awk '{print $2}' SHA256SUMS); do curl -fsSL --retry 3 -O "$base/$f"; done
+          shasum -a 256 -c SHA256SUMS
+
+      - name: Download Hebrew test clips (FLEURS he_il dev, CC-BY-4.0)
+        run: |
+          mkdir -p "$CLIPS/raw"
+          cd "$CLIPS"
+          curl -fsSL --retry 3 -o dev.tsv https://huggingface.co/datasets/google/fleurs/resolve/main/data/he_il/dev.tsv
+          printf 'dev/%s.wav\n' 17840303524627035052 5622971120288588229 7231034118042719230 \
+            10285382808955499770 6397497053739746370 15806971442844339825 >members.txt
+          curl -fsSL --retry 3 https://huggingface.co/datasets/google/fleurs/resolve/main/data/he_il/audio/dev.tar.gz \
+            | tar -xzf - -C raw -T members.txt
+          for f in raw/dev/*.wav; do afconvert -f WAVE -d LEI16@16000 -c 1 "$f" "$(basename "$f")"; done
+          ls -l *.wav
+          echo "Reference transcripts:"
+          for f in *.wav; do awk -F'\t' -v n="$f" '$2 == n {print n "\t" $3; exit}' dev.tsv; done
+
+      - name: SmartTurn tests
+        env:
+          SMART_TURN_MODEL: ${{ env.MODELS }}/smart-turn-v3.2-cpu.onnx
+        run: swift test --package-path Packages/SmartTurn
+
+      - name: SherpaOnnx tests
+        env:
+          SHERPA_ONNX_MODEL_DIR: ${{ env.MODELS }}
+        run: swift test --package-path Packages/SherpaOnnx
+
+      - name: Zipformer over the clips
+        run: |
+          swift build -c release --package-path Packages/SherpaOnnx --product sherpa-onnx-cli
+          Packages/SherpaOnnx/.build/release/sherpa-onnx-cli --dir "$MODELS" --threads 2 --chunk-ms 100 "$CLIPS"/*.wav
+
+      - name: Smart Turn over the clips
+        run: |
+          swift build -c release --package-path Packages/SmartTurn --product smart-turn-cli
+          Packages/SmartTurn/.build/release/smart-turn-cli --model "$MODELS/smart-turn-v3.2-cpu.onnx" --threads 2 "$CLIPS"/*.wav

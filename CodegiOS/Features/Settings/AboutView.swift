@@ -57,6 +57,7 @@ struct AboutView: View {
                     headerCard
                     descriptionCard
                     versionCard
+                    acknowledgementsCard
                     crashReportsCard
                 }
                 .padding(.horizontal, Theme.Layout.screenHMargin)
@@ -131,6 +132,18 @@ struct AboutView: View {
                     serverVersionValue
                 }
             }
+        }
+    }
+
+    /// The open-source code and the models the app uses, with their licenses.
+    private var acknowledgementsCard: some View {
+        GlassCard(padding: 0) {
+            NavigationLink {
+                AcknowledgementsView()
+            } label: {
+                SettingsGroupedRowLabel(icon: "doc.text.fill", title: "Acknowledgements")
+            }
+            .buttonStyle(.plain)
         }
     }
 

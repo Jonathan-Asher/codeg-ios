@@ -2355,6 +2355,11 @@ git subtree pull --prefix Packages/BlueTTSKit <path-or-url-of-codeg-voice/BlueTT
 
 ### Licences: read before any public release
 
+- Talk's engines: sherpa-onnx and its libraries are Apache-2.0, MIT and
+  BSD-3-Clause; the streaming Zipformer is CC-BY-4.0 (attribution in
+  About › Acknowledgements and the `models-v2` NOTICE.txt); Smart Turn is
+  BSD-2-Clause. None is copyleft. See "Talk engines" and
+  THIRD_PARTY_NOTICES.md.
 - BlueTTSKit is MIT (`Packages/BlueTTSKit/LICENSE`).
 - **BlueTTSEspeak, which the app links for English phonemes inside Hebrew
   text, is espeak-ng: GPL-3.0-or-later.** That makes the app binary a GPL-3
@@ -2782,6 +2787,78 @@ The CLI runs the app's own `WhisperCppEngine`, `SileroVAD`, `DictationTrim`
 and `DictationText` code against the XCFramework's macOS slice. Usage is in the
 header of each file.
 
+## Talk engines
+
+Talk mode (hands-free voice conversations with a session) adds two on-device
+engines next to whisper and BlueTTS. Both run on BlueTTSKit's ONNX Runtime
+1.30.0, so the app links one runtime and one espeak-ng.
+
+- **Live transcript: `Packages/SherpaOnnx`** (`import SherpaOnnx`).
+  `StreamingTransducerRecognizer` wraps sherpa-onnx's C API around ivrit.ai's
+  streaming Zipformer: created from the four model files and a thread count;
+  `accept(samples:)` takes 16 kHz mono and decodes each ready chunk;
+  `partialText`; `inputFinished()` appends 1.5 s of silence (the model
+  decodes 1.28 s chunks) and returns the final text; `reset()` starts a fresh
+  stream. Calls are serialized inside; drive it from a background queue.
+  `StreamingTransducerRecognizer.versions` reports sherpa-onnx's version and
+  the ONNX Runtime it runs on (About › Acknowledgements shows it).
+- **sherpa-onnx itself** is the binary target `SherpaOnnxC`, a static
+  XCFramework pinned by URL and checksum (release
+  [`sherpa-onnx-2.0.1-ort1.30`](https://github.com/Jonathan-Asher/codeg-ios/releases/tag/sherpa-onnx-2.0.1-ort1.30)).
+  `scripts/build-sherpa-onnx.sh` builds it on the GitHub-hosted runners
+  (`.github/workflows/sherpa-onnx.yml`, on changes to the script): sherpa-onnx
+  2.0.1, C API on, TTS and speaker diarization off, compiled against the
+  ONNX Runtime 1.30.0 pod archive's headers, nothing of ONNX Runtime inside.
+  Slices: ios-arm64, ios-arm64_x86_64-simulator (the simulator build also
+  links x86_64) and macos-arm64 (for `swift test` and the macOS tool). The
+  script fails if any slice defines an `_Ort*`, `onnxruntime::`, espeak or
+  piper symbol, or doesn't call `_OrtGetApiBase`. A new build needs a new tag
+  (`BUILD_REVISION`); the workflow never replaces a published zip.
+- **End of turn: `Packages/SmartTurn`** (`import SmartTurn`).
+  `SmartTurnClassifier(modelURL:threads:)` and
+  `probability(last8s:) async -> Float?` run Smart Turn v3.2 (int8, CPU)
+  over the last 8 s of 16 kHz audio, zero-padded at the front.
+  `WhisperLogMel` is its front end in Accelerate: the steps of
+  pipecat-ai/smart-turn's `inference.py` (transformers'
+  `WhisperFeatureExtractor`, chunk 8 s, normalized over the whole window).
+  Its tests compare it with values from that pipeline
+  (`scripts/mel_reference.py`): at most 1.6e-5 apart. The model quantizes
+  its activations at run time, so near p = 0.5 its output moves by up to
+  ±0.1 with differences of that size (the same happens to the reference
+  pipeline with 1e-5 of noise); read it as a soft signal.
+- **ONNX Runtime for other packages**: BlueTTSKit exports
+  `.library(name: "OnnxRuntime", targets: ["OnnxRuntimeBindings"])`. This
+  is a local change to the subtree; carry it into codeg-voice before the
+  next `git subtree pull`.
+- **Models** (release
+  [`models-v2`](https://github.com/Jonathan-Asher/codeg-ios/releases/tag/models-v2),
+  with `NOTICE.txt` and the licence texts): `he-zipformer-stream`, the
+  int8 encoder, decoder, joiner and tokens of `zipformer2-66m-streaming-he`
+  (Yakov Kolani, CC-BY-4.0, unchanged but renamed, 73 MB with the Silero VAD
+  file from models-v1, so Talk can listen without the whisper pack), and
+  `smart-turn-v3.2` (Daily, BSD-2-Clause, 8.7 MB). `stt-models.json` stays
+  schema 1 with two optional fields: `engine` (`whisper` when missing,
+  `transducer` or `turn`) and `parts` (a transducer's encoder, decoder,
+  joiner and tokens); `problems()` checks them, and
+  `SpeechModelCatalog.models(engine:)` lists a kind.
+- **Measured** on the M1 build box (macOS, 2 threads, six FLEURS Hebrew
+  clips, 38 s): the Zipformer loads in 0.6 s, streams 100 ms chunks at RTF
+  0.017 (the worst chunk 28 ms), flushes in 22–48 ms, and the first words
+  appear after 1.5 s of audio, then every 1.28 s. Its transcripts match the
+  Python sherpa-onnx wheel's word for word. Smart Turn: 27 ms per call
+  (front end 0.9 ms), 47 ms on one thread. `.github/workflows/talk-engines.yml`
+  repeats this on a GitHub runner, after the packages' tests with the real
+  models.
+- **Memory**: the app asks for
+  `com.apple.developer.kernel.increased-memory-limit`. Signed builds need
+  the Increased Memory Limit capability on the App ID; automatic signing
+  with `-allowProvisioningUpdates` should turn it on, as it did for Time
+  Sensitive Notifications.
+- **Checks**: the `device` job of `ios.yml` builds the app for an iPhone
+  (Release, unsigned) and runs `scripts/check-linked-symbols.sh` on the
+  binary: `_OrtGetApiBase` defined once, no `_Ort*` or `_espeak*` symbol
+  twice, sherpa-onnx linked.
+
 ## Camera Control to talk
 
 With a session open and the mode on, hold the Camera Control (iPhone 16 and
@@ -3177,6 +3254,12 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   scroll measurements, and `transcript-returned-new-messages.png`), and the
   compose area and a reply's media cards (`media-cards-*.png`) as
   `compose-screenshots`.
+- **`device`** builds the app for an iPhone (Release, unsigned) and checks
+  the linked binary with `scripts/check-linked-symbols.sh` (one ONNX
+  Runtime, one espeak-ng; see "Talk engines").
+- **`sherpa-onnx.yml`** builds and publishes the sherpa-onnx XCFramework
+  when its script changes; **`talk-engines.yml`** tests the SherpaOnnx and
+  SmartTurn packages on macOS with the real models when they change.
 - **`build`** runs on every push and pull request on GitHub-hosted `macos-26`
   with its default Xcode. It runs `brew install xcodegen`, `xcodegen generate`,
   then an unsigned `xcodebuild build` for `generic/platform=iOS Simulator`.

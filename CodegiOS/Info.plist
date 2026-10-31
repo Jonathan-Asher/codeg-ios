@@ -50,7 +50,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>$(CODEG_DISPLAY_NAME) connects to your codeg server, which may run on your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>$(CODEG_DISPLAY_NAME) records your voice while you hold or tap the mic, and transcribes it on this iPhone into your message. It also records the sound of a video you take with the camera for a message.</string>
+	<string>$(CODEG_DISPLAY_NAME) records your voice while you hold or tap the mic, and transcribes it on this iPhone into your message. In Talk, it listens while you talk with a session hands-free, also with the screen locked, and transcribes what you say on this iPhone. It also records the sound of a video you take with the camera for a message.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>$(CODEG_DISPLAY_NAME) saves a picture from a session to your library when you tap Save to Photos.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

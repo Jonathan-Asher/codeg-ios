@@ -1,0 +1,134 @@
+name: sherpa-onnx
+
+# Builds sherpa-onnx's C API as SherpaOnnxC.xcframework against BlueTTSKit's
+# ONNX Runtime 1.30.0 (scripts/build-sherpa-onnx.sh) and publishes the zip as
+# a release asset that Packages/SherpaOnnx pins by URL and checksum.
+#
+# Runs when the build script or this file changes. The first green build of a
+# release tag publishes it; later runs rebuild and check, and never replace an
+# asset that Packages/SherpaOnnx may already pin. A changed build needs a new
+# tag (BUILD_REVISION in the script).
+
+on:
+  push:
+    paths:
+      - scripts/build-sherpa-onnx.sh
+      - .github/workflows/sherpa-onnx.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sherpa-onnx-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  slice:
+    name: Build ${{ matrix.slice }}
+    runs-on: macos-26
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [ios-arm64, ios-sim-arm64, ios-sim-x86_64, macos-arm64]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          cmake --version | head -1
+          sysctl -n hw.ncpu
+
+      - name: Build the slice
+        run: scripts/build-sherpa-onnx.sh slice "${{ matrix.slice }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slice-${{ matrix.slice }}
+          path: build/sherpa-onnx/slices/${{ matrix.slice }}
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble:
+    name: XCFramework
+    needs: slice
+    runs-on: macos-26
+    timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.names.outputs.tag }}
+      zip: ${{ steps.names.outputs.zip }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: slice-*
+          path: build/sherpa-onnx/artifacts
+
+      - name: Assemble
+        run: |
+          mkdir -p build/sherpa-onnx/slices
+          for d in build/sherpa-onnx/artifacts/slice-*; do
+            mv "$d" "build/sherpa-onnx/slices/${d##*/slice-}"
+          done
+          ls -l build/sherpa-onnx/slices/*
+          scripts/build-sherpa-onnx.sh assemble
+
+      - id: names
+        run: scripts/build-sherpa-onnx.sh names >>"$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sherpa-onnx-xcframework
+          path: |
+            build/sherpa-onnx/${{ steps.names.outputs.zip }}
+            build/sherpa-onnx/checksum.txt
+            build/sherpa-onnx/BUILD-INFO.txt
+            build/sherpa-onnx/symbols.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish
+    needs: assemble
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.assemble.outputs.tag }}
+      ZIP: ${{ needs.assemble.outputs.zip }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sherpa-onnx-xcframework
+          path: out
+
+      - name: Publish the release asset (first build of the tag only)
+        run: |
+          cd out
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qxF "$ZIP"; then
+              echo "$TAG already has $ZIP; leaving it (this build's sha256: $(cut -d' ' -f1 checksum.txt))."
+              exit 0
+            fi
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" "$ZIP" checksum.txt BUILD-INFO.txt symbols.txt
+            exit 0
+          fi
+          {
+            echo "sherpa-onnx's C API as a static XCFramework for Codeg Plus (\`Packages/SherpaOnnx\`), built by \`scripts/build-sherpa-onnx.sh\` in run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}."
+            echo
+            echo "- Compiled against the ONNX Runtime 1.30.0 that BlueTTSKit links, which it does not bundle: the app links one runtime."
+            echo "- TTS and speaker diarization are off (no espeak-ng or piper)."
+            echo "- Slices: ios-arm64, ios-arm64_x86_64-simulator, macos-arm64."
+            echo "- sherpa-onnx is Apache-2.0 (https://github.com/k2-fsa/sherpa-onnx); see BUILD-INFO.txt for the exact versions and the libraries inside."
+            echo
+            echo '```'
+            cat checksum.txt
+            echo '```'
+          } >notes.md
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
+            --title "$TAG" --notes-file notes.md "$ZIP" checksum.txt BUILD-INFO.txt symbols.txt

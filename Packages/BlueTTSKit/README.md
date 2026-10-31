@@ -15,6 +15,7 @@ automatic `<en>…</en>` tagging of Latin and code spans.
 |---|---|---|
 | `BlueTTSKit` | MIT | Normalizer, `<en>` auto-tagger, RenikudPlus G2P, BlueTTS synthesis, `EnglishPhonemizer` protocol |
 | `BlueTTSEspeak` | GPL-3.0-or-later | espeak-ng 1.52.0 compiled from source plus its English data (~0.8 MB), as `EspeakPhonemizer` |
+| `OnnxRuntime` | MIT | ONNX Runtime 1.30.0 and its Objective-C bindings (`import OnnxRuntimeBindings`), so other models in the same app (sherpa-onnx, Smart Turn) use this one runtime |
 | `bluetts-cli` | MIT | macOS benchmarking / listening-pack tool; not for the app |
 
 ## Usage
