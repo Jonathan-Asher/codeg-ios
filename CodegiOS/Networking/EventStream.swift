@@ -11,7 +11,11 @@ enum WSClientMessage: Encodable, Sendable {
     case ping
     /// Who is looking (codeg fork `crate::presence`): this client is visible,
     /// focused, how long since the user touched it, and which sessions it shows.
-    case presence(visible: Bool, focused: Bool, idleSecs: UInt64, conversationIds: [Int])
+    /// `talking`: the person is in a Talk conversation with the sessions in
+    /// `conversationIds`, which the server keeps quiet about even with the
+    /// screen locked (`docs/talk-mode.md` §6); nil leaves the key out (a
+    /// server without Talk).
+    case presence(visible: Bool, focused: Bool, idleSecs: UInt64, conversationIds: [Int], talking: Bool? = nil)
 
     private enum CodingKeys: String, CodingKey {
         case action
@@ -21,6 +25,7 @@ enum WSClientMessage: Encodable, Sendable {
         case visible, focused
         case idleSecs = "idle_secs"
         case conversationIds = "conversation_ids"
+        case talking
     }
 
     func encode(to encoder: Encoder) throws {
@@ -36,12 +41,13 @@ enum WSClientMessage: Encodable, Sendable {
             try c.encode(sub, forKey: .subscriptionId)
         case .ping:
             try c.encode("ping", forKey: .action)
-        case .presence(let visible, let focused, let idleSecs, let conversationIds):
+        case .presence(let visible, let focused, let idleSecs, let conversationIds, let talking):
             try c.encode("presence", forKey: .action)
             try c.encode(visible, forKey: .visible)
             try c.encode(focused, forKey: .focused)
             try c.encode(idleSecs, forKey: .idleSecs)
             try c.encode(conversationIds, forKey: .conversationIds)
+            try c.encodeIfPresent(talking, forKey: .talking)
         }
     }
 }
@@ -326,8 +332,10 @@ final class EventStream: @unchecked Sendable {
     func ping() { send(.ping) }
 
     /// Report this client's presence (see ``WSClientMessage/presence``).
-    func reportPresence(visible: Bool, focused: Bool, idleSecs: UInt64 = 0, conversationIds: [Int]) {
-        send(.presence(visible: visible, focused: focused, idleSecs: idleSecs, conversationIds: conversationIds))
+    func reportPresence(visible: Bool, focused: Bool, idleSecs: UInt64 = 0, conversationIds: [Int],
+                        talking: Bool? = nil) {
+        send(.presence(visible: visible, focused: focused, idleSecs: idleSecs, conversationIds: conversationIds,
+                       talking: talking))
     }
 
     /// A turn streams on screen: ping after 5 s of quiet instead of 20 s.

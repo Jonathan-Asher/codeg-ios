@@ -106,6 +106,10 @@ struct PromptBody: Encodable, Sendable {
     var folderId: Int?
     var conversationId: Int?
     var clientMessageId: String?
+    /// The message was said in Talk (`true`); left out for a typed one. A
+    /// server with Talk adds its hidden note to the message and turns Talk
+    /// on; an older one ignores the field.
+    var spoken: Bool?
 }
 
 struct ConnectionIdBody: Encodable, Sendable {
@@ -244,6 +248,8 @@ struct SubmitFeedbackBody: Encodable, Sendable {
     /// The message's client id: the server records the note under it, and
     /// answers a repeat with that note instead of delivering it twice.
     var clientId: String?
+    /// Said in Talk (`true`); left out when typed. See ``PromptBody/spoken``.
+    var spoken: Bool?
 }
 
 /// The answer to `acp_prompt` (fork): `duplicate` when the server had already

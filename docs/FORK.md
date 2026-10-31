@@ -3109,6 +3109,55 @@ zero) couldn't see it.
   starts the engine before scheduling or playing, restarts it after a
   configuration change while reading, and stops cleanly when it won't.
 
+## Talk: the platform (in progress)
+
+Talk is a hands-free Hebrew voice conversation with a session (the server's
+side and the contract the phone builds against: codeg's `docs/talk-mode.md`).
+These pieces are in; the Talk controller, its sheet, the Lab and its
+telemetry build on them.
+
+- **Shared engines** (no model loads twice). `Features/Voice/SpeechEngineHost`
+  holds whisper, the language-ID model and Silero VAD, now also streaming
+  (whisper.cpp v1.9.1's `whisper_vad_detect_speech_no_reset` and
+  `whisper_vad_reset_state`, in a context of its own), plus whatever Talk
+  attaches (`SpeechEngineAttachment`). Voice typing, Talk and the Lab hold
+  leases; with none held everything goes after 180 s, on a memory warning,
+  or in the background, where Talk keeps the CPU engines and only whisper
+  (no GPU there) is freed. Voice typing works as before on top of it.
+  `Features/Voice/VoiceEngineHost` holds the one BlueTTS for read aloud and
+  Talk, with the same leases and Talk's thread cap (4).
+- **Audio** (`Features/Talk/TalkAudioIO.swift`). `AudioSessionUse.talk`:
+  `.playAndRecord`, speaker by default, AirPods' microphone (HFP), a 10 ms
+  buffer. `TalkEchoPolicy`: echo-cancelled input on the built-in microphone
+  and speaker where iOS has it (checked again after activation and after
+  every route change), voice processing otherwise (players connected before
+  it is turned on, off before the engine stops, other audio ducked as little
+  as it allows), none on Bluetooth HFP, and the Lab's override.
+  `TalkAudioEngine` builds a fresh engine for every start and route change,
+  gives 16 kHz 512-sample frames through `MicrophoneConverter` (the
+  conversion voice typing uses, now shared), plays speech and earcons on two
+  player nodes, runs every raising call through `AVFAudioGuard` and checks
+  the microphone with `MicrophoneFormatCheck`. Its claim
+  (`talkWillClaimAudio` / `talkDidReleaseAudio`) makes the Camera Control's
+  standby step aside, stops read aloud, and keeps both, and voice typing,
+  from starting until Talk lets go.
+- **Sessions** (`Features/Talk/TalkSessionPort.swift`). `sendSpoken` sends
+  what was said marked `spoken`: a prompt when idle, into the turn when it
+  can take a message, queued otherwise, never touching the draft; an insert
+  that finds the turn ended goes as a spoken prompt under the same id, and
+  the outbox keeps `spoken`. The `SessionTalkObserver` hears the live turn's
+  main-thread text (sub-agent text, which `content_delta` now marks, runs
+  apart and is left out; rendering is unchanged), the turn's end, the
+  background hold, background turns (`background_activity` now decodes its
+  turns) and the cards. With `keepsStreamAttached` the event socket stays
+  attached while the session is idle (the "idle watch"): background turns
+  reach Talk on it, and a turn that starts (the agent's follow-up, or one
+  from the desktop) is picked up from a fresh snapshot on the same socket.
+- **Presence and display.** While talking, the presence socket stays open
+  with the screen locked and reports `talking: true` with the session, to
+  servers that took `set_conversation_talk_mode` only. Spoken messages
+  (`MessageTurn.spoken`) show a microphone; summaries decode `talk_mode`.
+
 ## Crash reports (1.3.20)
 
 The app sends its crash reports to the codeg servers it knows, and nowhere
@@ -3247,7 +3296,10 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   lists saved for a start without a network and the protection of saved
   files, the network monitor and the connection capsule, the event
   socket's pong deadline against a scripted socket and clock, and a
-  running turn through a dead zone) on an
+  running turn through a dead zone; Talk's platform: its audio session,
+  echo policy, microphone frames and earcons, the shared speech and voice
+  engines, spoken prompts and inserts, the idle watch and presence while
+  talking) on an
   iPhone simulator, preferably an iPhone 17 Pro Max, in parallel with
   `build`. It uploads the session list screenshots as the
   `session-list-screenshots` artifact (with `transcript-scroll.txt`, the

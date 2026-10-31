@@ -165,6 +165,7 @@ final class SessionDetailViewModel {
         didSet {
             if pendingPermission?.requestId != oldValue?.requestId {
                 modeWhenPermissionAsked = pendingPermission == nil ? nil : agentOptions.currentMode?.id
+                talkObserver?.talkPendingChanged()
             }
             syncAttention()
         }
@@ -182,11 +183,17 @@ final class SessionDetailViewModel {
     }
     /// A pending `ask_user_question` awaiting the user's answers.
     private(set) var pendingQuestion: PendingQuestion? {
-        didSet { syncAttention() }
+        didSet {
+            if pendingQuestion?.questionId != oldValue?.questionId { talkObserver?.talkPendingChanged() }
+            syncAttention()
+        }
     }
     /// A pending Grok `exit_plan_mode` awaiting approve / request-changes / abandon.
     private(set) var pendingPlanApproval: PendingPlanApproval? {
-        didSet { syncAttention() }
+        didSet {
+            if pendingPlanApproval?.approvalId != oldValue?.approvalId { talkObserver?.talkPendingChanged() }
+            syncAttention()
+        }
     }
     /// Revision notes waiting to be sent as a follow-up prompt after a
     /// "request changes" decision (see ``answerPlanApproval(decision:feedback:)``).
@@ -321,7 +328,11 @@ final class SessionDetailViewModel {
     private(set) var nativeSteeringAvailable = false
     /// The prompting turn is held open only for background work: the agent
     /// answered and is idle, and a message is delivered at once.
-    private(set) var awaitingBackground = false
+    private(set) var awaitingBackground = false {
+        didSet {
+            if awaitingBackground != oldValue { talkObserver?.talkAwaitingBackground(awaitingBackground) }
+        }
+    }
     /// Background tasks still running (0 = none or count unknown).
     private(set) var backgroundOutstanding = 0
     /// The latest `attach_progress` phase while the session is being opened.
@@ -347,6 +358,8 @@ final class SessionDetailViewModel {
         /// Set when a send failed: the row says "Not sent" and why. See
         /// ``SendFailure``.
         var failure: SendFailure? = nil
+        /// Said in Talk: every send of it is marked spoken.
+        var spoken: Bool = false
     }
     /// The queue, also this conversation's local outbox: stored on every
     /// change (see ``OutboxStore``).
@@ -384,6 +397,8 @@ final class SessionDetailViewModel {
         var inThread: Bool
         /// The turn it was sent into (``SessionDetailViewModel/turnSerial``).
         let turnSerial: Int
+        /// Said in Talk.
+        var spoken: Bool = false
     }
     private(set) var insertedNotes: [InsertedNote] = []
     /// The messages above the composer: on their way into the turn, or
@@ -463,6 +478,73 @@ final class SessionDetailViewModel {
     /// saved copy's date, then every load and frame. The offline capsule's age.
     @ObservationIgnored private(set) var lastSyncedAt: Date?
     static let lostConnectionMessage = "Lost the connection. Your reply may still be running — reopen the session to check."
+
+    // MARK: - Talk (see TalkSessionPort.swift)
+
+    /// Talk's controller, told what the session says and does (see
+    /// ``SessionTalkObserver``). Setting it replays the current state: the
+    /// live turn's text, whether the turn is held for background work, and
+    /// the waiting cards.
+    @ObservationIgnored weak var talkObserver: SessionTalkObserver? {
+        didSet {
+            guard talkObserver !== oldValue else { return }
+            lastTalkLive = nil
+            endedTalkTurnID = nil
+            guard let observer = talkObserver else { return }
+            if let live = liveTurn { signalTalkLiveText(live) }
+            observer.talkAwaitingBackground(awaitingBackground)
+            observer.talkPendingChanged()
+        }
+    }
+    /// Talk keeps the session's event socket attached while it is idle (an
+    /// "idle watch"): turns the agent writes outside a turn (background
+    /// work finishing) reach ``SessionTalkObserver/talkBackgroundTurns(_:)``,
+    /// and a turn that starts (the agent's own follow-up, or one from the
+    /// desktop) is picked up from it as the normal reattach does. Off, an idle
+    /// socket is closed, as before.
+    @ObservationIgnored var keepsStreamAttached = false {
+        didSet {
+            guard keepsStreamAttached != oldValue else { return }
+            if keepsStreamAttached {
+                scheduleIdleWatch(after: .zero)
+            } else {
+                idleWatchTask?.cancel()
+                idleWatchTask = nil
+                if isIdleWatching {
+                    closeStream()
+                    connectionID = nil
+                }
+            }
+        }
+    }
+    /// The person talks with this session in Talk: presence says so (to a
+    /// server that has Talk), even with the screen locked, so it doesn't push
+    /// about this session meanwhile.
+    @ObservationIgnored var isTalking = false {
+        didSet {
+            guard isTalking != oldValue else { return }
+            presenceReporter.update(conversationID: conversationID, looking: isOnScreen, talking: isTalking)
+        }
+    }
+    /// The socket of this stream generation is an idle watch.
+    @ObservationIgnored private var idleWatchGeneration: Int?
+    /// The idle watch asked the server for a fresh snapshot (a turn seems to
+    /// start) and waits for it.
+    @ObservationIgnored private var watchSnapshotRequested = false
+    /// Idle-watch sockets lost in a row, for the backoff.
+    @ObservationIgnored private var idleWatchDrops = 0
+    /// Opens the idle watch after a pause.
+    @ObservationIgnored private var idleWatchTask: Task<Void, Never>?
+    /// What Talk was last told about the live turn.
+    @ObservationIgnored private var lastTalkLive: TalkLiveSignal?
+    /// The turn whose end Talk was last told.
+    @ObservationIgnored private var endedTalkTurnID: String?
+
+    private struct TalkLiveSignal: Equatable {
+        let turnID: String
+        let text: String
+        let isStreaming: Bool
+    }
 
     private init(client: CodegClient, mode: Mode,
                  makeEventStream: (@MainActor (CodegClient) -> any SessionEventStream)? = nil,
@@ -743,6 +825,12 @@ final class SessionDetailViewModel {
         if isInFlight, isTurnActive, liveTurn != nil {
             resumeStreamAfterForeground()
             return
+        }
+        // Talk's idle watch: make sure its socket survived the background, and
+        // ask for a fresh snapshot (a turn may have started meanwhile).
+        if isIdleWatching, let watched = stream, let conn = connectionID {
+            watched.checkLink()
+            requestWatchSnapshot(stream: watched, connectionID: conn)
         }
         // No turn was in flight. Discard any (now-unverifiable) stale live
         // tracking defensively before resyncing — see `discardStaleLiveState`.
@@ -1258,11 +1346,13 @@ final class SessionDetailViewModel {
 
     /// Start a turn with `rawText` + `sending`. `fromComposer` clears the
     /// composer once the optimistic turn is posted. A message from the queue
-    /// keeps its `clientMessageID` and its last `failure`. Returns whether the
-    /// send started; a caller holding the message keeps it when it did not.
+    /// keeps its `clientMessageID` and its last `failure`. `spoken`: said in
+    /// Talk (the prompt goes out marked so). Returns whether the send
+    /// started; a caller holding the message keeps it when it did not.
     @discardableResult
     private func startSend(text rawText: String, attachments sending: [Attachment], fromComposer: Bool,
-                           clientMessageID: String? = nil, failure previous: SendFailure? = nil) -> Bool {
+                           clientMessageID: String? = nil, failure previous: SendFailure? = nil,
+                           spoken: Bool = false) -> Bool {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (!text.isEmpty || !sending.isEmpty), !isInFlight else { return false }
         guard sending.allSatisfy(\.isReady) else {
@@ -1298,7 +1388,8 @@ final class SessionDetailViewModel {
             id: "pending-\(UUID().uuidString)",
             role: .user,
             blocks: blocks,
-            timestamp: Date()
+            timestamp: Date(),
+            spoken: spoken
         )
         pendingUserTurns.append(userTurn)
         if fromComposer {
@@ -1338,10 +1429,10 @@ final class SessionDetailViewModel {
         // killed, or a screen closed, before then gives it back (and sends it
         // again under this id). Before the task, which a closing screen can
         // cancel before it ever runs.
-        trackInFlight(clientMessageID: clientMessageID, text: text, attachments: sending)
+        trackInFlight(clientMessageID: clientMessageID, text: text, attachments: sending, spoken: spoken)
         sendTask = Task { [weak self] in
             await self?.runSend(text: text, attachments: sending, live: live, userTurnID: userTurnID,
-                                clientMessageID: clientMessageID, previous: previous)
+                                clientMessageID: clientMessageID, previous: previous, spoken: spoken)
         }
         return true
     }
@@ -1350,7 +1441,7 @@ final class SessionDetailViewModel {
     nonisolated static func newClientMessageID() -> String { "ios-" + UUID().uuidString }
 
     private func runSend(text: String, attachments sending: [Attachment], live: LiveTurn, userTurnID: String,
-                         clientMessageID: String, previous: SendFailure?) async {
+                         clientMessageID: String, previous: SendFailure?, spoken: Bool = false) async {
         sendsInProgress += 1
         defer { sendsInProgress -= 1 }
         do {
@@ -1364,17 +1455,17 @@ final class SessionDetailViewModel {
             connectionID = conn
 
             let duplicate = try await attachAndPrompt(conn: conn, text: text, attachments: sending, live: live,
-                                                      clientMessageID: clientMessageID)
+                                                      clientMessageID: clientMessageID, spoken: spoken)
             settleInFlight(clientMessageID)
             if duplicate { showAlreadyDelivered(userTurnID: userTurnID, live: live) }
         } catch let error as APIError where error.isStaleConnection {
             // Stale connection → drop it and retry once with a fresh spawn.
             connectionID = nil
             await retrySendOnce(text: text, attachments: sending, live: live, clientMessageID: clientMessageID,
-                                userTurnID: userTurnID, previous: previous)
+                                userTurnID: userTurnID, previous: previous, spoken: spoken)
         } catch APIError.turnInProgress {
             parkBehindRunningTurn(userTurnID: userTurnID, live: live, text: text, attachments: sending,
-                                  clientMessageID: clientMessageID)
+                                  clientMessageID: clientMessageID, spoken: spoken)
         } catch is CancellationError {
             // Cancelled by the user (`cancel()` settles it) or by the screen going
             // away: then it stays stored as on its way, and comes back at the
@@ -1386,12 +1477,12 @@ final class SessionDetailViewModel {
             // optimistic turn and keep the message: at the queue's front, marked
             // "Not sent", to go again under the same id.
             keepUnsent(userTurnID: userTurnID, live: live, text: text, attachments: sending,
-                       clientMessageID: clientMessageID, error: error, previous: previous)
+                       clientMessageID: clientMessageID, error: error, previous: previous, spoken: spoken)
         }
     }
 
     private func retrySendOnce(text: String, attachments sending: [Attachment], live: LiveTurn, clientMessageID: String,
-                               userTurnID: String, previous: SendFailure?) async {
+                               userTurnID: String, previous: SendFailure?, spoken: Bool = false) async {
         do {
             closeStream()
             let prefs = preferredSelectors
@@ -1404,17 +1495,17 @@ final class SessionDetailViewModel {
             )
             connectionID = conn
             let duplicate = try await attachAndPrompt(conn: conn, text: text, attachments: sending, live: live,
-                                                      clientMessageID: clientMessageID)
+                                                      clientMessageID: clientMessageID, spoken: spoken)
             settleInFlight(clientMessageID)
             if duplicate { showAlreadyDelivered(userTurnID: userTurnID, live: live) }
         } catch is CancellationError {
             // Stays stored as on its way (see `runSend`).
         } catch APIError.turnInProgress {
             parkBehindRunningTurn(userTurnID: userTurnID, live: live, text: text, attachments: sending,
-                                  clientMessageID: clientMessageID)
+                                  clientMessageID: clientMessageID, spoken: spoken)
         } catch {
             keepUnsent(userTurnID: userTurnID, live: live, text: text, attachments: sending,
-                       clientMessageID: clientMessageID, error: error, previous: previous)
+                       clientMessageID: clientMessageID, error: error, previous: previous, spoken: spoken)
         }
     }
 
@@ -1423,13 +1514,13 @@ final class SessionDetailViewModel {
     /// never into the message bar — where the user may already be writing the
     /// next one. Reachability failures go again by themselves.
     private func keepUnsent(userTurnID: String, live: LiveTurn, text: String, attachments sending: [Attachment],
-                            clientMessageID: String, error: Error, previous: SendFailure?) {
+                            clientMessageID: String, error: Error, previous: SendFailure?, spoken: Bool = false) {
         discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text,
                               restoringAttachments: sending, restoreToComposer: false,
                               keepCreatedConversation: true)
         let failure = SendFailure.next(after: error, previous: previous)
         queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending, holdUntilTurnEnd: false,
-                                            clientMessageID: clientMessageID, failure: failure), at: 0)
+                                            clientMessageID: clientMessageID, failure: failure, spoken: spoken), at: 0)
         settleInFlight(clientMessageID)
         notice = failure.autoRetry ? nil : "Not sent: \(Self.describe(error))"
         scheduleUnsentResend()
@@ -1454,7 +1545,7 @@ final class SessionDetailViewModel {
     /// everything the agent streamed in the meantime.
     @discardableResult
     private func attachAndPrompt(conn: String, text: String, attachments sending: [Attachment],
-                                 live: LiveTurn, clientMessageID: String) async throws -> Bool {
+                                 live: LiveTurn, clientMessageID: String, spoken: Bool = false) async throws -> Bool {
         let attached = try await openStream(connectionID: conn, live: live)
         try Task.checkCancellation()
 
@@ -1468,7 +1559,7 @@ final class SessionDetailViewModel {
         promptInFlight = true
         defer { promptInFlight = false }
         let duplicate = try await sendPromptConfirmed(conn: conn, text: text, attachments: sending,
-                                                      clientMessageID: clientMessageID)
+                                                      clientMessageID: clientMessageID, spoken: spoken)
         // Prompt accepted — the created conversation is now legitimately in use,
         // so it must not be rolled back by a later stream failure.
         draftCreatedConversationID = nil
@@ -1490,9 +1581,10 @@ final class SessionDetailViewModel {
     /// it as the running turn's prompt. Otherwise the error stands.
     @discardableResult
     private func sendPromptConfirmed(conn: String, text: String, attachments sending: [Attachment],
-                                     clientMessageID: String) async throws -> Bool {
+                                     clientMessageID: String, spoken: Bool = false) async throws -> Bool {
         do {
-            return try await sendPrompt(conn: conn, text: text, attachments: sending, clientMessageID: clientMessageID)
+            return try await sendPrompt(conn: conn, text: text, attachments: sending, clientMessageID: clientMessageID,
+                                        spoken: spoken)
         } catch let error as APIError {
             let unclear: Bool
             if case .turnInProgress = error { unclear = true } else { unclear = error.isTransient }
@@ -1528,12 +1620,13 @@ final class SessionDetailViewModel {
     /// attach to that turn so the message goes when the turn ends (or at once,
     /// when the turn is only held open for background work).
     private func parkBehindRunningTurn(userTurnID: String, live: LiveTurn, text: String, attachments sending: [Attachment],
-                                       clientMessageID: String) {
+                                       clientMessageID: String, spoken: Bool = false) {
         discardOptimisticSend(userTurnID: userTurnID, live: live, restoringDraft: text,
                               restoringAttachments: sending, restoreToComposer: false,
                               keepCreatedConversation: true)
         queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending,
-                                            holdUntilTurnEnd: false, clientMessageID: clientMessageID), at: 0)
+                                            holdUntilTurnEnd: false, clientMessageID: clientMessageID,
+                                            spoken: spoken), at: 0)
         settleInFlight(clientMessageID)
         notice = "A turn is already running on this session. Your message is queued and goes when it ends."
         Task { [weak self] in await self?.reattachIfLive(serverSaysLive: true) }
@@ -1598,7 +1691,8 @@ final class SessionDetailViewModel {
     }
 
     /// Returns whether the server answered that it already had this message.
-    private func sendPrompt(conn: String, text: String, attachments sending: [Attachment], clientMessageID: String) async throws -> Bool {
+    private func sendPrompt(conn: String, text: String, attachments sending: [Attachment], clientMessageID: String,
+                            spoken: Bool = false) async throws -> Bool {
         // Text first, then images — matches the web client's block order.
         var blocks: [PromptInputBlock] = []
         if !text.isEmpty { blocks.append(.text(text)) }
@@ -1611,7 +1705,8 @@ final class SessionDetailViewModel {
             blocks: blocks,
             folderId: summary?.folderId ?? folder?.id,
             conversationId: conversationID,
-            clientMessageId: clientMessageID
+            clientMessageId: clientMessageID,
+            spoken: spoken ? true : nil
         )
     }
 
@@ -1636,7 +1731,7 @@ final class SessionDetailViewModel {
         draftCreatedConversationID = id
         restoredOutboxFor = id
         persistOutbox()
-        presenceReporter.update(conversationID: id, looking: isOnScreen)
+        presenceReporter.update(conversationID: id, looking: isOnScreen, talking: isTalking)
         currentBranch = folder?.gitBranch
         // Refresh this app's own session list so the new row shows there too.
         notifyConversationsChanged()
@@ -1752,6 +1847,14 @@ final class SessionDetailViewModel {
             if Task.isCancelled { return }
             let isCurrent = generation == streamGeneration
             if isCurrent { noteFrame(frame, on: stream) }
+            // The turn ended and Talk kept this socket as the idle watch.
+            if isCurrent, idleWatchGeneration == generation {
+                switch idleWatch(frame, stream: stream, connectionID: conn) {
+                case .keep: continue
+                case .stop: return
+                case .adopt(let adopted): live = adopted; continue
+                }
+            }
             switch frame {
             case .ready:
                 // Send attach, but do NOT release openStream yet: wait for the
@@ -1799,6 +1902,7 @@ final class SessionDetailViewModel {
                             rebuilt.adoptSteered(from: live) { Self.steered($0, belongsTo: snap) }
                             live = rebuilt
                             liveTurn = rebuilt
+                            signalTalkLiveText(rebuilt)
                             // Recovery parked the status line on "connecting"; the reply
                             // is streaming again, so say so (without stomping a tool run).
                             if case .running = sendState {} else { sendState = .thinking }
@@ -1969,9 +2073,9 @@ final class SessionDetailViewModel {
     /// than the snapshot we loaded a beat too early. No-op if a turn has since
     /// started locally — that path owns the transcript.
     private func reconcileAfterMissedLive() async {
-        guard let id = conversationID, liveTurn == nil, !isInFlight, stream == nil else { return }
+        guard let id = conversationID, liveTurn == nil, !isInFlight, stream == nil || isIdleWatching else { return }
         guard let outcome = try? await fetchTranscript(id: id, overlap: TranscriptSync.liveOverlap) else { return }
-        guard liveTurn == nil, !isInFlight, stream == nil else { return }
+        guard liveTurn == nil, !isInFlight, stream == nil || isIdleWatching else { return }
         summary = outcome.detail.summary
         adoptWindow(outcome, allowShrink: true)
         sessionStats = outcome.detail.sessionStats ?? sessionStats
@@ -2010,6 +2114,14 @@ final class SessionDetailViewModel {
             // A send (or another reattach) superseded us — let go; the new stream owns the turn.
             guard generation == streamGeneration else { return }
             noteFrame(frame, on: stream)
+            // Idle, and Talk keeps the socket as the idle watch.
+            if idleWatchGeneration == generation {
+                switch idleWatch(frame, stream: stream, connectionID: conn) {
+                case .keep: continue
+                case .stop: return
+                case .adopt(let adopted): live = adopted; continue
+                }
+            }
             switch frame {
             case .ready:
                 stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
@@ -2026,23 +2138,25 @@ final class SessionDetailViewModel {
                         // The same turn again: the messages sent into it stay
                         // where they were (the snapshot marks none).
                         rebuilt.adoptSteered(from: shown) { Self.steered($0, belongsTo: snap) }
+                        live = rebuilt
+                        liveTurn = rebuilt
+                        // This live turn is the snapshot's in-flight reply; the
+                        // transcript hides the partial copy the agent has begun
+                        // persisting into `turns` so the reply isn't doubled — but
+                        // only where this copy covers it (see `buildPersisted`).
+                        liveTurnFromReattach = true
+                        liveCopyIncomplete = false
+                        isTurnActive = true
+                        restorePending(from: snap)
+                        sendState = .thinking
+                        // A reattach or a reconnect: followed at the latest
+                        // message, never a pull down for a reader scrolled up.
+                        requestScrollToBottom()
+                        signalTalkLiveText(rebuilt)
                     } else {
-                        turnSerial &+= 1
+                        live = rebuilt
+                        adoptAttachedTurn(rebuilt, from: snap)
                     }
-                    live = rebuilt
-                    liveTurn = rebuilt
-                    // This live turn is the snapshot's in-flight reply; the
-                    // transcript hides the partial copy the agent has begun
-                    // persisting into `turns` so the reply isn't doubled — but
-                    // only where this copy covers it (see `buildPersisted`).
-                    liveTurnFromReattach = true
-                    liveCopyIncomplete = false
-                    isTurnActive = true
-                    restorePending(from: snap)
-                    sendState = .thinking
-                    // A reattach or a reconnect: followed at the latest
-                    // message, never a pull down for a reader scrolled up.
-                    requestScrollToBottom()
                 } else if resuming, let current = liveTurn {
                     // The turn on screen ended while the socket was down, so its
                     // `turn_complete` never arrived. Settle it rather than leave it
@@ -2050,6 +2164,11 @@ final class SessionDetailViewModel {
                     // that still arrive feed it meanwhile.
                     live = current
                     settleIfTurnEnded(live: current, connectionID: conn, reading: snap.turnPhase)
+                } else if keepsStreamAttached {
+                    // Idle connection, and Talk keeps it attached: this socket
+                    // goes on as the idle watch (see `idleWatch`).
+                    enterIdleWatch(generation: generation, stream: stream)
+                    if serverSaysLive { Task { [weak self] in await self?.reconcileAfterMissedLive() } }
                 } else {
                     // Idle connection: nothing in flight. Release it.
                     closeStream()
@@ -2124,7 +2243,7 @@ final class SessionDetailViewModel {
                                    uniquingKeysWith: { first, _ in first })
         for block in blocks {
             switch block {
-            case .text(let t): live.appendText(t)
+            case .text(let t, let parent): live.appendText(t, subAgent: parent)
             case .thinking(let t): live.appendThinking(t)
             case .toolCallRef(let toolId):
                 guard let st = toolsById[toolId] else { break }
@@ -2185,9 +2304,11 @@ final class SessionDetailViewModel {
     // MARK: - Event → UI mapping
 
     private func handle(event: AcpEvent, live: LiveTurn) {
+        // Talk hears what the agent says as it streams.
+        defer { if talkObserver != nil { signalTalkLiveText(live) } }
         switch event {
-        case .contentDelta(let text):
-            live.appendText(text)
+        case .contentDelta(let text, let parentToolUseId):
+            live.appendText(text, subAgent: parentToolUseId)
             if case .running = sendState {} else { sendState = .thinking }
             requestScrollToBottom()
 
@@ -2287,8 +2408,9 @@ final class SessionDetailViewModel {
             if nativeSteering { nativeSteeringAvailable = true }
             if awaiting { drainIntoHeldTurnIfPossible() }
 
-        case .backgroundActivity(let outstanding):
+        case .backgroundActivity(let outstanding, let turns):
             backgroundOutstanding = max(0, outstanding)
+            if !turns.isEmpty { talkObserver?.talkBackgroundTurns(turns) }
 
         case .feedbackSubmitted(let note):
             noteRecorded(note, live: live)
@@ -2374,7 +2496,7 @@ final class SessionDetailViewModel {
     private func adoptLinkedConversation(_ id: Int) {
         guard conversationID == nil else { return }
         conversationID = id
-        presenceReporter.update(conversationID: id, looking: isOnScreen)
+        presenceReporter.update(conversationID: id, looking: isOnScreen, talking: isTalking)
         Task { [weak self] in
             guard let self else { return }
             guard let detail = try? await self.client.conversationDetail(id: id, window: .tail(1)),
@@ -2414,9 +2536,12 @@ final class SessionDetailViewModel {
         live.flushAllText()
         live.isStreaming = false
         live.stopReason = stopReason
+        signalTalkTurnEnded(live, stopReason: stopReason)
         sendState = .idle
         completedTurnTick &+= 1
-        closeStream()
+        // Talk keeps the socket attached while idle; otherwise it closes.
+        let watching = keepAsIdleWatch()
+        if !watching { closeStream() }
         requestScrollToBottom()
         // Replace the optimistic + live turns with the authoritative server copy.
         Task { [weak self] in await self?.refreshAfterTurn(reconciling: live) }
@@ -2430,6 +2555,7 @@ final class SessionDetailViewModel {
         } else {
             sendNextQueued()
         }
+        if !watching { scheduleIdleWatch() }
     }
 
     /// Roll back an optimistic send that failed *before the server accepted the
@@ -2478,6 +2604,7 @@ final class SessionDetailViewModel {
             }
         }
         requestScrollToBottom()
+        scheduleIdleWatch()
     }
 
     private func failLive(_ live: LiveTurn, message: String?) {
@@ -2488,6 +2615,7 @@ final class SessionDetailViewModel {
         live.flushAllText()
         live.isStreaming = false
         if let message { live.errorMessage = message }
+        signalTalkTurnEnded(live, stopReason: "error")
         sendState = message.map { .error($0) } ?? .idle
         closeStream()
         // Keep the live turn on screen so the user sees partial output + error;
@@ -2496,6 +2624,7 @@ final class SessionDetailViewModel {
             liveTurn = nil
         }
         requestScrollToBottom()
+        scheduleIdleWatch(after: .seconds(1))
     }
 
     // MARK: - Stream recovery (transient drops)
@@ -2672,6 +2801,8 @@ final class SessionDetailViewModel {
         guard outcome.window.end > heldEnd, Self.transcriptHasReply(outcome.window.turns) else { return false }
         isTurnActive = false
         clearInteractivePrompts()
+        live.isStreaming = false
+        signalTalkTurnEnded(live, stopReason: nil)
         adoptWindow(outcome, allowShrink: false)
         pendingUserTurns.removeAll()
         liveTurn = nil
@@ -2683,6 +2814,7 @@ final class SessionDetailViewModel {
         requestScrollToBottom()
         // The turn is over: what waited for its end goes now.
         sendNextQueued()
+        scheduleIdleWatch()
         return true
     }
 
@@ -2740,6 +2872,9 @@ final class SessionDetailViewModel {
             if let pending = pendingReconnect {
                 reconnectStream(into: pending.live, connectionID: pending.conn, reason: nil,
                                 reattach: pending.reattach, immediately: true)
+            } else if stream == nil, keepsStreamAttached {
+                // Talk's idle watch waits for the network: open it now.
+                scheduleIdleWatch(after: .zero)
             } else {
                 stream?.checkLink()
             }
@@ -3024,6 +3159,42 @@ final class SessionDetailViewModel {
         }
     }
 
+    /// Send what the person said in Talk: a prompt when the session is idle,
+    /// into the running turn when it can take a message now
+    /// (``canInsertIntoTurn``: Talk's interruptions go into the current
+    /// turn, never cancel it), and the queue otherwise. Marked `spoken` on
+    /// the wire, so the server adds Talk's note and the message shows a
+    /// microphone. Never touches the draft or the attachments.
+    ///
+    /// Returns where it went. A prompt returns once the send has started (the
+    /// send pipeline owns its retries); an insert once the server answered:
+    /// `.insert` when the agent has it, `.prompt` when the turn had just ended
+    /// and it went as the next prompt instead, `.queued` when it was kept as
+    /// "Not sent". Empty text sends nothing and returns `.queued` with nothing
+    /// queued.
+    func sendSpoken(_ text: String) async -> SpokenSendRoute {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return .queued }
+        if !isInFlight {
+            if startSend(text: text, attachments: [], fromComposer: false, spoken: true) { return .prompt }
+            queueSpoken(text)
+            return .queued
+        }
+        if canInsertIntoTurn, let conn = connectionID {
+            return await deliverIntoTurn(text: text, attachments: [], connectionID: conn, spoken: true)
+        }
+        queueSpoken(text)
+        return .queued
+    }
+
+    /// Park a spoken message until the turn ends (or send it now when idle
+    /// after all), as ``queueDraft(holdUntilTurnEnd:)`` does for the draft.
+    private func queueSpoken(_ text: String) {
+        queuedMessages.append(QueuedMessage(id: UUID(), text: text, attachments: [], holdUntilTurnEnd: false,
+                                            spoken: true))
+        if !isInFlight { sendNextQueued() }
+    }
+
     /// Deliver the composer's text (and images) into the running turn.
     func insertIntoTurn() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3087,14 +3258,15 @@ final class SessionDetailViewModel {
             let before = queuedMessages
             queuedMessages.removeAll { $0.id == id }
             if !startSend(text: item.text, attachments: item.attachments, fromComposer: false,
-                          clientMessageID: item.clientMessageID, failure: item.failure) {
+                          clientMessageID: item.clientMessageID, failure: item.failure, spoken: item.spoken) {
                 queuedMessages = before
             }
         } else if canInsertIntoTurn, let conn = connectionID {
             queuedMessages.removeAll { $0.id == id }
             Task { [weak self] in
                 await self?.deliverIntoTurn(text: item.text, attachments: item.attachments, connectionID: conn,
-                                            clientMessageID: item.clientMessageID, previous: item.failure)
+                                            clientMessageID: item.clientMessageID, previous: item.failure,
+                                            spoken: item.spoken)
             }
         }
     }
@@ -3107,7 +3279,7 @@ final class SessionDetailViewModel {
         if let failure = next.failure, !failure.autoRetry { return }
         queuedMessages.removeFirst()
         if !startSend(text: next.text, attachments: next.attachments, fromComposer: false,
-                      clientMessageID: next.clientMessageID, failure: next.failure) {
+                      clientMessageID: next.clientMessageID, failure: next.failure, spoken: next.spoken) {
             queuedMessages.insert(next, at: 0)
         }
     }
@@ -3122,30 +3294,34 @@ final class SessionDetailViewModel {
         deliveringQueued = true
         Task { [weak self] in
             await self?.deliverIntoTurn(text: head.text, attachments: head.attachments, connectionID: conn,
-                                        clientMessageID: head.clientMessageID, previous: head.failure)
+                                        clientMessageID: head.clientMessageID, previous: head.failure,
+                                        spoken: head.spoken)
             self?.deliveringQueued = false
         }
     }
 
     /// `submit_session_feedback`. When the turn already ended (`NoActiveTurn`)
-    /// the message is sent as an ordinary prompt instead.
+    /// the message is sent as an ordinary prompt instead (still spoken, when it
+    /// was). Returns where the message went: into the turn, a prompt, or the
+    /// queue (waiting, or kept as "Not sent").
     ///
     /// The message waits above the composer while it is on its way. Once the
     /// server says the agent has it (the `feedback_submitted` echo or the
     /// response, whichever comes first), it moves into the conversation, inside
     /// the reply where the agent took it, as the desktop shows it.
+    @discardableResult
     private func deliverIntoTurn(text: String, attachments sending: [Attachment], connectionID conn: String,
                                  clientMessageID: String = SessionDetailViewModel.newClientMessageID(),
-                                 previous: SendFailure? = nil) async {
+                                 previous: SendFailure? = nil, spoken: Bool = false) async -> SpokenSendRoute {
         // On its way until the server answers (see `runSend`); an insert that
         // outlives the app comes back as a queued prompt under the same id,
         // which the server answers as a duplicate when the insert had arrived.
-        trackInFlight(clientMessageID: clientMessageID, text: text, attachments: sending)
+        trackInFlight(clientMessageID: clientMessageID, text: text, attachments: sending, spoken: spoken)
         var shown: [ContentBlock] = text.isEmpty ? [] : [.text(text)]
         shown.append(contentsOf: sending.map { $0.optimisticBlock })
         let note = InsertedNote(id: UUID(), text: text.isEmpty ? "(image)" : text, blocks: shown,
                                 serverID: nil, serverStatus: nil, resolved: false, delivered: false,
-                                inThread: false, turnSerial: turnSerial)
+                                inThread: false, turnSerial: turnSerial, spoken: spoken)
         insertedNotes.append(note)
         requestScrollToBottom()
         var blocks: [PromptInputBlock]?
@@ -3156,7 +3332,7 @@ final class SessionDetailViewModel {
         var recorded: FeedbackNoteSnapshot?
         do {
             recorded = try await client.submitSessionFeedback(connectionId: conn, text: text, blocks: blocks,
-                                                              clientId: clientMessageID)
+                                                              clientId: clientMessageID, spoken: spoken ? true : nil)
         } catch {
             failure = error
         }
@@ -3179,19 +3355,20 @@ final class SessionDetailViewModel {
         settleInFlight(clientMessageID)
         guard let error = failure else {
             insertAccepted(note.id, recorded: recorded)
-            return
+            return .insert
         }
         if let api = error as? APIError, api.isNoActiveTurn {
             insertedNotes.removeAll { $0.id == note.id }
             // The turn finished meanwhile: this is simply the next prompt (under
             // the same id).
-            if isInFlight || !startSend(text: text, attachments: sending, fromComposer: false,
-                                        clientMessageID: clientMessageID, failure: previous) {
-                queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending,
-                                                    holdUntilTurnEnd: false, clientMessageID: clientMessageID,
-                                                    failure: previous), at: 0)
+            if !isInFlight, startSend(text: text, attachments: sending, fromComposer: false,
+                                      clientMessageID: clientMessageID, failure: previous, spoken: spoken) {
+                return .prompt
             }
-            return
+            queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending,
+                                                holdUntilTurnEnd: false, clientMessageID: clientMessageID,
+                                                failure: previous, spoken: spoken), at: 0)
+            return .queued
         }
         insertedNotes.removeAll { $0.id == note.id }
         // Not delivered as far as this screen knows: kept at the queue's front as
@@ -3200,8 +3377,9 @@ final class SessionDetailViewModel {
         // becomes a no-op if the insert did arrive.
         let failed = SendFailure.next(after: error, previous: previous)
         queuedMessages.insert(QueuedMessage(id: UUID(), text: text, attachments: sending, holdUntilTurnEnd: true,
-                                            clientMessageID: clientMessageID, failure: failed), at: 0)
+                                            clientMessageID: clientMessageID, failure: failed, spoken: spoken), at: 0)
         notice = failed.autoRetry ? nil : "Not sent: \(Self.describe(error))"
+        return .queued
     }
 
     /// The server took a message sent into the turn. `recorded` is the note
@@ -3248,7 +3426,8 @@ final class SessionDetailViewModel {
             // Sent into this turn from another client (the desktop): the
             // conversation shows it too, as the desktop shows the phone's.
             if live.insertSteered(id: "fb-\(recorded.id)", serverID: recorded.id, text: recorded.text,
-                                  blocks: recorded.displayBlocks, timestamp: recorded.createdAt ?? Date()) {
+                                  blocks: recorded.displayBlocks, timestamp: recorded.createdAt ?? Date(),
+                                  spoken: recorded.spoken) {
                 requestScrollToBottom()
             }
         }
@@ -3269,7 +3448,7 @@ final class SessionDetailViewModel {
             return
         }
         live.insertSteered(id: note.id.uuidString, serverID: note.serverID, text: note.text,
-                           blocks: note.blocks)
+                           blocks: note.blocks, spoken: note.spoken)
         insertedNotes[idx].inThread = true
         requestScrollToBottom()
     }
@@ -3364,6 +3543,219 @@ final class SessionDetailViewModel {
         }
     }
 
+    // MARK: - Talk: the idle watch and what Talk is told
+
+    /// Talk's id for the turn on screen: the same through a reconnect that
+    /// rebuilds it, new for every turn.
+    private var talkTurnID: String { "\(subscriptionID)#\(turnSerial)" }
+
+    /// Tell Talk the live turn's main-thread text, when it changed.
+    private func signalTalkLiveText(_ live: LiveTurn) {
+        guard let observer = talkObserver, liveTurn === live else { return }
+        let signal = TalkLiveSignal(turnID: talkTurnID, text: live.mainThreadText, isStreaming: live.isStreaming)
+        guard signal != lastTalkLive else { return }
+        lastTalkLive = signal
+        observer.talkLiveText(turnID: signal.turnID, text: signal.text, isStreaming: signal.isStreaming)
+    }
+
+    /// Tell Talk the turn on screen ended (once), after its final text.
+    private func signalTalkTurnEnded(_ live: LiveTurn, stopReason: String?) {
+        guard let observer = talkObserver, liveTurn === live else { return }
+        let id = talkTurnID
+        guard endedTalkTurnID != id else { return }
+        endedTalkTurnID = id
+        signalTalkLiveText(live)
+        observer.talkTurnEnded(turnID: id, stopReason: stopReason)
+    }
+
+    /// What a consumer does with a frame of a socket that watches an idle
+    /// connection for Talk.
+    private enum IdleWatchStep {
+        /// Watching on.
+        case keep
+        /// The socket is gone; the watch comes back by itself.
+        case stop
+        /// A turn started: this is its live turn, fed from here on.
+        case adopt(LiveTurn)
+    }
+
+    /// The socket of this stream generation is Talk's idle watch.
+    private var isIdleWatching: Bool { stream != nil && idleWatchGeneration == streamGeneration }
+
+    /// Make the socket of `generation` the idle watch.
+    private func enterIdleWatch(generation: Int, stream: any SessionEventStream) {
+        idleWatchGeneration = generation
+        watchSnapshotRequested = false
+        idleWatchDrops = 0
+        // Nothing streams: the socket is checked at the idle pace.
+        stream.setStreaming(false)
+    }
+
+    /// The turn just ended: keep its socket as the idle watch, when Talk wants
+    /// one and the socket is healthy (not waiting to reconnect). Returns
+    /// whether it was kept.
+    private func keepAsIdleWatch() -> Bool {
+        guard keepsStreamAttached, let current = stream, connectionID != nil, pendingReconnect == nil,
+              reconnectTask == nil, readyContinuation == nil else { return false }
+        enterIdleWatch(generation: streamGeneration, stream: current)
+        return true
+    }
+
+    /// A frame of the idle watch's socket. Turns the agent writes outside a
+    /// turn go to Talk; a turn that starts (`prompting`, a card) asks the
+    /// server for a fresh snapshot on the same socket, and the snapshot that
+    /// shows it running hands over to the normal reattach path.
+    private func idleWatch(_ frame: EventStream.Frame, stream: any SessionEventStream,
+                           connectionID conn: String) -> IdleWatchStep {
+        switch frame {
+        case .ready:
+            stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
+            return .keep
+        case .snapshot(let snap):
+            streamReconnects = 0
+            reattachDrops = 0
+            idleWatchDrops = 0
+            watchSnapshotRequested = false
+            applyLiveSignals(from: snap)
+            guard let rebuilt = buildLiveTurn(from: snap) else {
+                stream.setStreaming(false)
+                return .keep
+            }
+            idleWatchGeneration = nil
+            adoptAttachedTurn(rebuilt, from: snap)
+            return .adopt(rebuilt)
+        case .replay, .pong, .frameCut:
+            return .keep
+        case .event(let envelope):
+            idleWatchEvent(envelope.event, stream: stream, connectionID: conn)
+            return .keep
+        case .detached(let reason):
+            idleWatchLost(connectionGone: reason == "connection_gone")
+            return .stop
+        case .closed:
+            idleWatchLost(connectionGone: false)
+            return .stop
+        }
+    }
+
+    private func idleWatchEvent(_ event: AcpEvent, stream: any SessionEventStream, connectionID conn: String) {
+        switch event {
+        case .backgroundActivity(let outstanding, let turns):
+            backgroundOutstanding = max(0, outstanding)
+            if !turns.isEmpty { talkObserver?.talkBackgroundTurns(turns) }
+        case .statusChanged(.prompting), .userMessage, .permissionRequest, .questionRequest, .planApprovalRequest:
+            requestWatchSnapshot(stream: stream, connectionID: conn)
+        case .awaitingBackground(let awaiting, _):
+            if awaiting { requestWatchSnapshot(stream: stream, connectionID: conn) }
+        case .usageUpdate(let used, let size):
+            applyUsage(used: used, size: size)
+        case .modeChanged(let modeId):
+            agentOptions.applyLiveMode(modeId)
+        case .sessionModes(let modes):
+            agentOptions.applyLiveModes(modes)
+        case .sessionConfigOptions(let options):
+            agentOptions.applyLiveConfigOptions(options)
+        case .forkSupported(let supported, let whileRunning):
+            ForkCapabilities.shared.note(agent: agentTypeForUI, forks: supported, whileRunning: whileRunning,
+                                         client: client)
+        default:
+            // Out-of-turn text and the like: the turns above carry it.
+            break
+        }
+    }
+
+    /// Ask for a fresh snapshot on the watch's socket: attaching again with
+    /// the same subscription replaces it and answers with the connection's
+    /// state now, so the turn that started arrives whole.
+    private func requestWatchSnapshot(stream: any SessionEventStream, connectionID conn: String) {
+        guard !watchSnapshotRequested else { return }
+        watchSnapshotRequested = true
+        stream.attach(subscriptionId: subscriptionID, connectionId: conn, sinceSeq: nil)
+    }
+
+    /// The watch's socket went: try again, sooner after a single drop.
+    private func idleWatchLost(connectionGone: Bool) {
+        closeStream()
+        if connectionGone { connectionID = nil }
+        idleWatchDrops += 1
+        let seconds = min(30.0, pow(2.0, Double(min(idleWatchDrops, 6) - 1)))
+        scheduleIdleWatch(after: .seconds(seconds))
+    }
+
+    /// Open the idle watch after `delay`, if Talk still wants it and nothing
+    /// else holds the socket by then.
+    private func scheduleIdleWatch(after delay: Duration = .milliseconds(300)) {
+        guard keepsStreamAttached else { return }
+        idleWatchTask?.cancel()
+        idleWatchTask = Task { [weak self] in
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            guard !Task.isCancelled, let self else { return }
+            self.idleWatchTask = nil
+            await self.startIdleWatch()
+        }
+    }
+
+    /// Nothing else needs the socket: no turn, no send, no attach under way.
+    private var canStartIdleWatch: Bool {
+        keepsStreamAttached && !isSuspended && phase == .loaded && summary != nil && stream == nil
+            && !isInFlight && !isTurnActive && sendsInProgress == 0 && readyContinuation == nil
+    }
+
+    /// Attach to the conversation's connection and watch it. Without a live
+    /// connection there is nothing to watch; it looks again every 30 s.
+    private func startIdleWatch() async {
+        guard canStartIdleWatch, let id = conversationID else { return }
+        let found: String?
+        if let known = connectionID {
+            found = known
+        } else {
+            found = try? await client.findConnection(
+                conversationId: id, sessionId: summary?.externalId, agentType: agentTypeForUI)?.connectionId
+        }
+        guard canStartIdleWatch else { return }
+        guard let conn = found else {
+            scheduleIdleWatch(after: .seconds(30))
+            return
+        }
+        connectionID = conn
+        closeStream()
+        streamGeneration &+= 1
+        let generation = streamGeneration
+        let newStream = makeEventStream()
+        stream = newStream
+        // Watching from the first frame: `.ready` attaches, and the snapshot
+        // adopts a turn already running.
+        idleWatchGeneration = generation
+        newStream.start()
+        consumerTask = Task { [weak self] in
+            await self?.consumeReattach(stream: newStream, connectionID: conn, generation: generation)
+        }
+    }
+
+    /// A turn found running by an attach (the cold reattach, or the idle
+    /// watch): it becomes the live turn on screen, as a new turn.
+    private func adoptAttachedTurn(_ rebuilt: LiveTurn, from snap: LiveSessionSnapshot) {
+        // A finished reply not yet reconciled stays in the conversation.
+        if let prior = liveTurn, !prior.isStreaming, !prior.isEmpty {
+            promoteUnreconciled(prior)
+        }
+        turnSerial &+= 1
+        liveTurn = rebuilt
+        // This live turn is the snapshot's in-flight reply; the transcript
+        // hides the partial copy the agent has begun persisting into `turns`
+        // so the reply isn't doubled — but only where this copy covers it
+        // (see `buildPersisted`).
+        liveTurnFromReattach = true
+        liveCopyIncomplete = false
+        isTurnActive = true
+        restorePending(from: snap)
+        sendState = .thinking
+        // A reattach or a reconnect: followed at the latest message, never a
+        // pull down for a reader scrolled up.
+        requestScrollToBottom()
+        signalTalkLiveText(rebuilt)
+    }
+
     // MARK: - Cancel
 
     func cancel() {
@@ -3383,6 +3775,7 @@ final class SessionDetailViewModel {
         if live.isEmpty {
             live.errorMessage = "Cancelled."
         }
+        signalTalkTurnEnded(live, stopReason: "cancelled")
         sendState = .idle
         sendTask?.cancel()
         consumerTask?.cancel()
@@ -3393,12 +3786,15 @@ final class SessionDetailViewModel {
                 try? await self?.client.cancel(connectionId: conn)
             }
         }
+        scheduleIdleWatch(after: .seconds(1))
     }
 
     private func closeStream() {
         // Supersede the current consumer so its imminent `.closed`/`.detached`
         // frame is ignored (it must not end a turn we are deliberately closing).
         streamGeneration &+= 1
+        idleWatchGeneration = nil
+        watchSnapshotRequested = false
         resumeReady(throwing: CancellationError())
         // Drop any pending silent reconnect — a deliberate close ends recovery.
         reconnectTask?.cancel()
@@ -3414,7 +3810,7 @@ final class SessionDetailViewModel {
     /// foreground and the background.
     func setOnScreen(_ onScreen: Bool) {
         isOnScreen = onScreen
-        presenceReporter.update(conversationID: conversationID, looking: onScreen)
+        presenceReporter.update(conversationID: conversationID, looking: onScreen, talking: isTalking)
     }
 
     /// Tear down all live work — call from `.onDisappear` / deinit paths.
@@ -3423,6 +3819,8 @@ final class SessionDetailViewModel {
         isOnScreen = false
         unsentResendTask?.cancel()
         unsentResendTask = nil
+        idleWatchTask?.cancel()
+        idleWatchTask = nil
         presenceReporter.stop()
         reattachRetryTask?.cancel()
         reattachRetryTask = nil
@@ -4117,10 +4515,11 @@ final class SessionDetailViewModel {
         scheduleUnsentResend()
     }
 
-    private func trackInFlight(clientMessageID: String, text: String, attachments sending: [Attachment]) {
+    private func trackInFlight(clientMessageID: String, text: String, attachments sending: [Attachment],
+                               spoken: Bool = false) {
         inflightMessages[clientMessageID] = Self.outboxMessage(
             QueuedMessage(id: UUID(), text: text, attachments: sending, holdUntilTurnEnd: false,
-                          clientMessageID: clientMessageID)
+                          clientMessageID: clientMessageID, spoken: spoken)
         )
         persistOutbox()
     }
@@ -4145,7 +4544,8 @@ final class SessionDetailViewModel {
             }
         }
         return OutboxMessage(clientMessageID: item.clientMessageID, text: text, images: images,
-                             holdUntilTurnEnd: item.holdUntilTurnEnd, failure: item.failure)
+                             holdUntilTurnEnd: item.holdUntilTurnEnd, failure: item.failure,
+                             spoken: item.spoken ? true : nil)
     }
 
     private static func queuedMessage(_ stored: OutboxMessage) -> QueuedMessage {
@@ -4155,7 +4555,8 @@ final class SessionDetailViewModel {
             attachments: stored.images.map { Attachment(name: $0.name, mimeType: $0.mimeType, data: $0.data) },
             holdUntilTurnEnd: stored.holdUntilTurnEnd,
             clientMessageID: stored.clientMessageID,
-            failure: stored.failure
+            failure: stored.failure,
+            spoken: stored.spoken ?? false
         )
     }
 

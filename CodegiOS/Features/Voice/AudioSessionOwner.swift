@@ -2,8 +2,8 @@ import Foundation
 import os
 
 /// What the app uses its audio session for. There is one session per app, so
-/// the microphone (dictation and the Camera Control's standby) and read aloud
-/// take turns through ``AudioSessionOwner``.
+/// the microphone (dictation and the Camera Control's standby), read aloud and
+/// Talk take turns through ``AudioSessionOwner``.
 enum AudioSessionUse: String, Sendable {
     /// The Camera Control's standby microphone, and any recording that starts
     /// from it: `.playAndRecord` through the iPhone's microphone, mixing with
@@ -16,6 +16,12 @@ enum AudioSessionUse: String, Sendable {
     case readAloud
     /// A video, or an audio file from the session, playing: `.playback`.
     case media
+    /// Talk: the microphone and the agent's speech on one engine,
+    /// `.playAndRecord` with the speaker by default and AirPods' microphone
+    /// (HFP) allowed, a 10 ms IO buffer. The mode follows how echo is kept
+    /// out (see ``TalkEchoPolicy``): `.default` for echo-cancelled input
+    /// (and with no echo control), `.voiceChat` for voice processing.
+    case talk
 }
 
 /// The calls ``AudioSessionOwner`` makes: `AVAudioSession` in the app
@@ -26,6 +32,13 @@ protocol AudioSessionDriver: AnyObject {
     func activate() throws
     /// Deactivate, letting other apps' audio resume.
     func deactivate() throws
+    /// How Talk keeps its speech out of the microphone; the next
+    /// `configure(for: .talk)` sets the session up for it.
+    func prepareTalk(echo: TalkEchoMode)
+}
+
+extension AudioSessionDriver {
+    func prepareTalk(echo: TalkEchoMode) {}
 }
 
 /// The one owner of the app's audio session. Every activation and
@@ -57,7 +70,11 @@ final class AudioSessionOwner: @unchecked Sendable {
     private let retryDelay: TimeInterval
     private let pause: (TimeInterval) -> Void
     private let lock = NSRecursiveLock()
-    private var active: AudioSessionUse?
+    private var active: AudioSessionUse? {
+        didSet { if active != .talk { talkEcho = nil } }
+    }
+    /// The echo setting the session is configured for while Talk holds it.
+    private var talkEcho: TalkEchoMode?
 
     /// `pause` waits between the failed attempt and the retry (a sleep in
     /// the app, nothing in the tests).
@@ -120,6 +137,40 @@ final class AudioSessionOwner: @unchecked Sendable {
         try driver.activate()
         active = use
         try work()
+    }
+
+    /// Talk's session (``AudioSessionUse/talk``), set up for `echo`. While
+    /// Talk holds the session already with another echo setting (a route
+    /// change, an echo option that iOS didn't honor), it is configured again
+    /// in place, without deactivating, so the microphone carries on with the
+    /// screen locked. Then `work` runs (starting Talk's engine), with
+    /// ``acquire(_:starting:)``'s retry once after a clean deactivate.
+    @discardableResult
+    func acquireTalk(echo: TalkEchoMode, starting work: () throws -> Void = {}) throws -> Outcome {
+        lock.lock()
+        defer { lock.unlock() }
+        driver.prepareTalk(echo: echo)
+        if active == .talk, talkEcho != echo {
+            do {
+                try driver.configure(for: .talk)
+                talkEcho = echo
+            } catch {
+                Self.log.error("Reconfiguring Talk's session failed: \(AudioErrorText(error).logLine, privacy: .public); starting it again")
+                try? driver.deactivate()
+                active = nil
+            }
+        }
+        let outcome = try acquire(.talk, starting: work)
+        talkEcho = echo
+        return outcome
+    }
+
+    /// The echo setting Talk's session is configured for; nil when Talk
+    /// doesn't hold it.
+    var activeTalkEcho: TalkEchoMode? {
+        lock.lock()
+        defer { lock.unlock() }
+        return talkEcho
     }
 
     /// `use` is done with the session: deactivate it, letting other apps'

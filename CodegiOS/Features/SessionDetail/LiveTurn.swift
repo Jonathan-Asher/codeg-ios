@@ -110,10 +110,12 @@ struct SteeredMessage: Hashable, Sendable {
     let timestamp: Date
     /// Where it sits among the agent's output (see ``SteerAnchor``).
     var anchor: SteerAnchor
+    /// Said in Talk rather than typed (the card shows a microphone).
+    var spoken: Bool = false
 
     /// The message as a user turn of the conversation.
     var turn: MessageTurn {
-        MessageTurn(id: "steer-\(id)", role: .user, blocks: blocks, timestamp: timestamp)
+        MessageTurn(id: "steer-\(id)", role: .user, blocks: blocks, timestamp: timestamp, spoken: spoken)
     }
 }
 
@@ -144,6 +146,10 @@ struct SteerAnchor: Hashable, Sendable {
 @Observable
 final class LiveTextRun: Identifiable {
     nonisolated let id = UUID().uuidString
+    /// The sub-agent that wrote this run (`parent_tool_use_id`); nil for the
+    /// agent's own (main-thread) text. Rendered the same either way; Talk
+    /// reads only the main thread aloud.
+    nonisolated let parentToolUseId: String?
 
     /// What views render. Published at most ~every 50ms while streaming.
     private(set) var text: String
@@ -169,9 +175,10 @@ final class LiveTextRun: Identifiable {
         }
     }
 
-    init(_ text: String) {
+    init(_ text: String, parentToolUseId: String? = nil) {
         self.text = text
         self.buffer = text
+        self.parentToolUseId = parentToolUseId
     }
 
     /// Authoritative full content, regardless of any pending flush. Snapshots and
@@ -254,13 +261,44 @@ final class LiveTurn: Identifiable {
 
     // MARK: - Mutation (event handlers call these on the main actor)
 
-    func appendText(_ delta: String) {
+    /// Append streamed reply text. `subAgent` is the `parent_tool_use_id` of
+    /// text a sub-agent wrote: it goes into a run of its own (flagged with
+    /// it), so the agent's own words never mix with a sub-agent's. Rendered
+    /// the same as any other text.
+    func appendText(_ delta: String, subAgent: String? = nil) {
         guard !delta.isEmpty else { return }
-        if case .text(let run)? = segments.last {
+        if case .text(let run)? = segments.last, run.parentToolUseId == subAgent {
             run.append(delta)
         } else {
-            segments.append(.text(LiveTextRun(delta)))
+            segments.append(.text(LiveTextRun(delta, parentToolUseId: subAgent)))
         }
+    }
+
+    /// What the agent has said so far in its own voice: the main-thread text
+    /// runs in order, with a paragraph break ("\n\n") where a tool ran or a
+    /// message of the user's came in. Reasoning and sub-agent text are left
+    /// out. While the turn streams it only grows at the end, so Talk can
+    /// keep a cursor into it (a reconnect rebuilds the same text).
+    var mainThreadText: String {
+        var out = ""
+        var pendingBreak = false
+        for segment in segments {
+            switch segment {
+            case .text(let run):
+                guard run.parentToolUseId == nil else { continue }
+                let text = run.fullText
+                guard !text.isEmpty else { continue }
+                if pendingBreak, !out.isEmpty { out += "\n\n" }
+                pendingBreak = false
+                out += text
+            case .tool, .steered:
+                pendingBreak = true
+            case .thinking:
+                continue
+            }
+        }
+        if pendingBreak, !out.isEmpty { out += "\n\n" }
+        return out
     }
 
     func appendThinking(_ delta: String) {
@@ -301,7 +339,7 @@ final class LiveTurn: Identifiable {
     /// id and by server note id (the echo and the response both report it).
     @discardableResult
     func insertSteered(id: String, serverID: String?, text: String, blocks: [ContentBlock],
-                       timestamp: Date = Date()) -> Bool {
+                       timestamp: Date = Date(), spoken: Bool = false) -> Bool {
         if containsSteered(id: id, serverID: serverID) {
             if let serverID { bindSteered(id: id, serverID: serverID) }
             return false
@@ -310,7 +348,7 @@ final class LiveTurn: Identifiable {
         flushAllText()
         let message = SteeredMessage(id: id, serverID: serverID, text: text,
                                      blocks: blocks.isEmpty ? [.text(text)] : blocks,
-                                     timestamp: timestamp, anchor: currentAnchor())
+                                     timestamp: timestamp, anchor: currentAnchor(), spoken: spoken)
         segments.append(.steered(message))
         return true
     }
@@ -381,8 +419,8 @@ final class LiveTurn: Identifiable {
                 let length = full.utf8.count
                 if remaining < length {
                     let split = Self.splitIndex(in: full, utf8Offset: remaining)
-                    let head = LiveTextRun(String(full[..<split]))
-                    let tail = LiveTextRun(String(full[split...]))
+                    let head = LiveTextRun(String(full[..<split]), parentToolUseId: run.parentToolUseId)
+                    let tail = LiveTextRun(String(full[split...]), parentToolUseId: run.parentToolUseId)
                     let isThinking: Bool
                     if case .thinking = segments[index] { isThinking = true } else { isThinking = false }
                     segments.replaceSubrange(index...index, with: [
