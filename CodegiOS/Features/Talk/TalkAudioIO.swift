@@ -178,11 +178,11 @@ enum EarconTone {
 ///   a rebuild keeps the session active, so it works there too.
 @MainActor
 final class TalkAudioEngine: TalkAudioIO {
-    static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "codeg", category: "talk-audio")
+    nonisolated static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "codeg", category: "talk-audio")
     /// Speech plays at BlueTTS's own rate; other rates are resampled to it.
-    static let playerSampleRate: Double = 44_100
+    nonisolated static let playerSampleRate: Double = 44_100
     /// The speech's volume while ducked.
-    static let duckedVolume: Float = 0.12
+    nonisolated static let duckedVolume: Float = 0.12
 
     let frames: AsyncStream<MicFrame>
     let events: AsyncStream<TalkAudioEvent>
@@ -527,7 +527,7 @@ final class TalkAudioEngine: TalkAudioIO {
         return out
     }
 
-    static func pcmBuffer(_ samples: [Float], format: AVAudioFormat) -> AVAudioPCMBuffer? {
+    nonisolated static func pcmBuffer(_ samples: [Float], format: AVAudioFormat) -> AVAudioPCMBuffer? {
         guard !samples.isEmpty,
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
               let channel = buffer.floatChannelData?[0] else { return nil }

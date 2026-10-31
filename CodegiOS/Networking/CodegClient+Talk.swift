@@ -109,10 +109,13 @@ final class TalkServerSupport: @unchecked Sendable {
         _ = lock.withLock { accepted.remove(Self.key(baseURL)) }
     }
 
-    /// The server doesn't have the endpoint (an older codeg).
+    /// The server doesn't have the endpoint (an older codeg answers 501
+    /// `not_implemented`). A 404 `not_found` is about the conversation, not
+    /// the endpoint.
     static func isMissingRoute(_ error: Error) -> Bool {
-        guard case APIError.server(let status, _, _) = error else { return false }
-        return [404, 405, 501].contains(status)
+        guard case APIError.server(let status, let code, _) = error else { return false }
+        if status == 501 || status == 405 { return true }
+        return status == 404 && (code == nil || code == "not_implemented")
     }
 
     private static func key(_ baseURL: URL) -> String {

@@ -11,10 +11,11 @@ enum WSClientMessage: Encodable, Sendable {
     case ping
     /// Who is looking (codeg fork `crate::presence`): this client is visible,
     /// focused, how long since the user touched it, and which sessions it shows.
-    /// `talking`: the sessions the person is talking with in Talk, which the
-    /// server keeps quiet about even with the screen locked; nil leaves the
-    /// key out (a server without Talk).
-    case presence(visible: Bool, focused: Bool, idleSecs: UInt64, conversationIds: [Int], talking: [Int]? = nil)
+    /// `talking`: the person is in a Talk conversation with the sessions in
+    /// `conversationIds`, which the server keeps quiet about even with the
+    /// screen locked (`docs/talk-mode.md` §6); nil leaves the key out (a
+    /// server without Talk).
+    case presence(visible: Bool, focused: Bool, idleSecs: UInt64, conversationIds: [Int], talking: Bool? = nil)
 
     private enum CodingKeys: String, CodingKey {
         case action
@@ -332,7 +333,7 @@ final class EventStream: @unchecked Sendable {
 
     /// Report this client's presence (see ``WSClientMessage/presence``).
     func reportPresence(visible: Bool, focused: Bool, idleSecs: UInt64 = 0, conversationIds: [Int],
-                        talking: [Int]? = nil) {
+                        talking: Bool? = nil) {
         send(.presence(visible: visible, focused: focused, idleSecs: idleSecs, conversationIds: conversationIds,
                        talking: talking))
     }

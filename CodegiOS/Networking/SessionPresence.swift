@@ -10,9 +10,10 @@ import Observation
 /// The report rides its own event socket, declared iOS with the
 /// `codeg-client.ios` subprotocol, opened while a session is on screen and the
 /// app is in the foreground, or while the person talks with it in Talk (then
-/// also with the screen locked: `talking`, which the server keeps quiet about).
-/// It repeats every 25 s (the server drops reports older than 90 s) and says
-/// `visible: false` (and, to a server with Talk, no `talking`) before closing.
+/// also with the screen locked: `talking: true` with the session in
+/// `conversation_ids`, which the server keeps quiet about). It repeats every
+/// 25 s (the server drops reports older than 90 s) and says `visible: false`
+/// (and, to a server with Talk, `talking: false`) before closing.
 @MainActor
 final class SessionPresenceReporter {
     private let baseURL: URL
@@ -109,13 +110,12 @@ final class SessionPresenceReporter {
 
     private func report() {
         guard ready, let stream else { return }
-        let ids = looking ? conversationID.map { [$0] } ?? [] : []
-        // Only a server that took `set_conversation_talk_mode` reads it.
-        let talkingIDs: [Int]? = TalkServerSupport.shared.accepts(baseURL)
-            ? (talking ? conversationID.map { [$0] } ?? [] : [])
-            : nil
+        // The session it shows, or talks with in Talk (`talking` says which).
+        let ids = looking || talking ? conversationID.map { [$0] } ?? [] : []
+        // Only a server that took `set_conversation_talk_mode` gets the key.
+        let talkingFlag: Bool? = TalkServerSupport.shared.accepts(baseURL) ? talking : nil
         stream.reportPresence(visible: looking, focused: looking, idleSecs: 0, conversationIds: ids,
-                              talking: talkingIDs)
+                              talking: talkingFlag)
     }
 
     private func startHeartbeat() {
