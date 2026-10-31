@@ -73,6 +73,10 @@ final class AgentOptionsModel {
     /// are saved (nil while unknown).
     var sessionAgent: (() -> AgentType?)?
 
+    /// Told about a pick made while picks wait for the connect: the user is
+    /// setting up this agent.
+    var onPickBeforeConnect: (() -> Void)?
+
     private(set) var phase: Phase = .idle
     private(set) var snapshot: AgentOptionsSnapshot?
 
@@ -227,11 +231,25 @@ final class AgentOptionsModel {
         savedOptions?()?.options(for: agent) ?? cache[agent]
     }
 
-    /// Keep `options` as the lists last seen for `agent` on this server.
+    /// Keep `options` as the lists last seen for `agent` on this server (an
+    /// agent with none is remembered here only).
     private func remember(_ options: AgentOptionsSnapshot, for agent: AgentType) {
-        guard !options.isEmpty else { return }
         cache[agent] = options
+        guard !options.isEmpty else { return }
         savedOptions?()?.save(options, for: agent)
+    }
+
+    /// What the sheet shows as chosen for `agent`, once it showed its lists:
+    /// every config option's value, and the mode where the sheet shows the
+    /// mode list (an agent without config options). A new session starts with
+    /// these, as the sheet says.
+    func selectionsShown(for agent: AgentType) -> SelectorPrefs? {
+        guard agentType == agent, phase == .loaded, let snapshot else { return nil }
+        let shownIDs = Set(snapshot.configOptions.map(\.id))
+        let values = selectedConfig.filter { shownIDs.contains($0.key) }
+        let showsModeList = snapshot.configOptions.isEmpty && !(snapshot.modes?.availableModes.isEmpty ?? true)
+        return SelectorPrefs(modeId: showsModeList ? selectedModeId : nil,
+                             configValues: values.isEmpty ? nil : values)
     }
 
     /// The session's own lists, from its events: they replace what is kept
@@ -295,6 +313,7 @@ final class AgentOptionsModel {
             guard modeId != selectedModeId else { return }
             selectedModeId = modeId
             if let agentType { SelectorPrefsStore.saveMode(agent: agentType, modeId: modeId) }
+            onPickBeforeConnect?()
             return
         }
         guard modeId != selectedModeId, canApply(Self.modeKey) else { return }
@@ -315,6 +334,7 @@ final class AgentOptionsModel {
             guard selectedConfig[optionId] != valueId else { return }
             selectedConfig[optionId] = valueId
             if let agentType { SelectorPrefsStore.saveConfig(agent: agentType, configId: optionId, valueId: valueId) }
+            onPickBeforeConnect?()
             return
         }
         guard selectedConfig[optionId] != valueId, canApply(optionId) else { return }

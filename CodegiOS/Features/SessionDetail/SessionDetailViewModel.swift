@@ -214,7 +214,15 @@ final class SessionDetailViewModel {
     /// can resolve a worktree's root and locate a registered target folder by id.
     private(set) var allFolders: [FolderDetail] = []
     /// True once a draft's first send begins — locks the agent/folder pickers.
-    private(set) var hasStartedFirstSend = false
+    private(set) var hasStartedFirstSend = false {
+        didSet {
+            // What was shown when it went is what it goes to: a fetch of the
+            // lists landing meanwhile doesn't move it to another default.
+            guard hasStartedFirstSend, !oldValue, folder != nil else { return }
+            folderPicked = true
+            if selectedAgent != nil { agentPicked = true }
+        }
+    }
     /// Where a new session's choices are kept between launches: the agents and
     /// folders the server last offered and each agent's option lists
     /// (``DraftCatalogStore``). A draft opens with them, so nothing waits for
@@ -540,6 +548,7 @@ final class SessionDetailViewModel {
         agentOptions.picksWaitForConnect = { [weak self] in self?.optionsWaitForConnect ?? false }
         agentOptions.savedOptions = { [weak self] in self?.savedAgentOptions }
         agentOptions.sessionAgent = { [weak self] in self?.summary?.agentType ?? self?.selectedAgent }
+        agentOptions.onPickBeforeConnect = { [weak self] in self?.agentPicked = true }
 
         // Quick messages + experts are connection-independent catalog reads.
         // Slash commands come from the cheap by-conversation snapshot (empty until
@@ -643,13 +652,13 @@ final class SessionDetailViewModel {
     /// whose choices don't wait for the server.
     var showsAgentButton: Bool { phase == .loaded || isDraftEditable }
 
-    /// A new session with no connection yet (until its first prompt is
-    /// accepted): an option picked now is kept as the agent's preference and
-    /// goes with the connect (`preferredSelectors`), and the options sheet
-    /// shows the lists last seen for the agent instead of starting it on the
-    /// server to read them.
+    /// A new session with no connection, whose next connect starts its agent
+    /// session afresh (it has no agent session id yet): an option picked now
+    /// is kept as the agent's preference and goes with the connect
+    /// (`preferredSelectors`), and the options sheet shows the lists last seen
+    /// for the agent instead of starting it on the server to read them.
     var optionsWaitForConnect: Bool {
-        isNewSession && connectionID == nil && (conversationID == nil || draftCreatedConversationID != nil)
+        isNewSession && connectionID == nil && summary?.externalId == nil
     }
 
     /// This server's saved option lists (``DraftCatalogStore``).
@@ -968,10 +977,17 @@ final class SessionDetailViewModel {
         if let agents = saved?.agents, !agents.isEmpty { availableAgents = agents }
         if let all = saved?.allFolders { allFolders = all }
         if let open = saved?.openFolders { availableFolders = DraftChoices.offeredFolders(open) }
-        folder = DraftChoices.folder(keeping: nil, preselectedID: request.preselectedFolderID,
-                                     offered: availableFolders, all: allFolders)
+        // A preselected folder the saved lists don't have yet (a worktree just
+        // opened) comes with the server's: nothing else stands in for it.
+        let preselectedKnown = request.preselectedFolderID.map { id in
+            (availableFolders + allFolders).contains { $0.id == id }
+        } ?? true
+        folder = preselectedKnown ? DraftChoices.folder(keeping: nil, preselectedID: request.preselectedFolderID,
+                                                        offered: availableFolders, all: allFolders) : nil
         currentBranch = folder?.gitBranch
-        selectedAgent = DraftChoices.agent(keeping: request.agent, folder: folder, available: saved?.agents)
+        // The request's agent is checked against the server's lists, not the
+        // saved ones, which may predate it.
+        selectedAgent = request.agent ?? DraftChoices.agent(keeping: nil, folder: folder, available: saved?.agents)
         if let agent = selectedAgent { insertModel.agentType = agent }
     }
 
@@ -1042,7 +1058,7 @@ final class SessionDetailViewModel {
         if let agent = selectedAgent { insertModel.agentType = agent }
         if selectedAgent != previousAgent || folder?.id != previousFolder?.id {
             resetDraftConnection()
-            if selectedAgent != previousAgent, agentOptions.isSheetShown {
+            if agentOptions.isSheetShown {
                 agentOptions.prepare(agentType: agentTypeForUI, workingDir: folder?.path)
             }
         }
@@ -1692,7 +1708,17 @@ final class SessionDetailViewModel {
     /// `connect` so a fresh session starts with their saved selections (mirrors
     /// the web client). Empty/nil values are omitted by the request encoder.
     private var preferredSelectors: SelectorPrefs {
-        SelectorPrefsStore.prefs(for: agentTypeForUI)
+        var prefs = SelectorPrefsStore.prefs(for: agentTypeForUI)
+        // A new session starts as its options sheet said: what it showed as
+        // chosen goes too (the saved picks are among it).
+        if isNewSession, summary?.externalId == nil,
+           let shown = agentOptions.selectionsShown(for: agentTypeForUI) {
+            if let mode = shown.modeId { prefs.modeId = mode }
+            if let values = shown.configValues {
+                prefs.configValues = (prefs.configValues ?? [:]).merging(values) { _, shown in shown }
+            }
+        }
+        return prefs
     }
 
     private func resolveConnection() async throws -> String {
@@ -1707,6 +1733,7 @@ final class SessionDetailViewModel {
            )?.connectionId {
             return found
         }
+        let picked = SelectorPrefsStore.prefs(for: agentTypeForUI)
         let prefs = preferredSelectors
         let sessionID = summary?.externalId
         let conn = try await client.connect(
@@ -1718,7 +1745,7 @@ final class SessionDetailViewModel {
         )
         if sessionID == nil {
             connectionID = conn
-            await applySelectorsPickedWhileConnecting(sentWith: prefs, connectionID: conn)
+            await applySelectorsPickedWhileConnecting(pickedBefore: picked, connectionID: conn)
         }
         return conn
     }
@@ -1726,8 +1753,8 @@ final class SessionDetailViewModel {
     /// A new session's options picked while its connect was on its way went
     /// with no connect: set them now, before the first prompt (the server
     /// applies them in order).
-    private func applySelectorsPickedWhileConnecting(sentWith sent: SelectorPrefs, connectionID conn: String) async {
-        let now = preferredSelectors
+    private func applySelectorsPickedWhileConnecting(pickedBefore sent: SelectorPrefs, connectionID conn: String) async {
+        let now = SelectorPrefsStore.prefs(for: agentTypeForUI)
         if let mode = now.modeId, mode != sent.modeId {
             try? await client.setMode(connectionId: conn, modeId: mode)
         }

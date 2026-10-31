@@ -53,6 +53,9 @@ final class DraftPresetsTests: XCTestCase {
     nonisolated static let gamma = FolderDetail(id: 3, name: "gamma", path: "/work/gamma", gitBranch: "main",
                                     defaultAgentType: .pi, lastOpenedAt: Date(timeIntervalSince1970: 3_000),
                                     sortOrder: 2, color: "inherit")
+    nonisolated static let delta = FolderDetail(id: 4, name: "delta", path: "/work/delta", gitBranch: "main",
+                                    defaultAgentType: nil, lastOpenedAt: Date(timeIntervalSince1970: 4_000),
+                                    sortOrder: 3, color: "inherit")
 
     /// Claude's lists: mode, model and effort as config options.
     static var claudeOptions: AgentOptionsSnapshot {
@@ -206,6 +209,67 @@ final class DraftPresetsTests: XCTestCase {
         XCTAssertEqual(model.selectedAgent, .pi, "with its default agent, as on a first load")
     }
 
+    func testTheRequestsAgentIsCheckedAgainstTheServersListNotTheSavedOne() async {
+        // An edited first message keeps its session's agent, newer than the saved list.
+        seed(agents: [.claudeCode, .pi])
+        let gate = hold()
+        serveLists(agents: ["claude_code", "pi", "codex"], gate: gate)
+        let model = makeDraft(NewSessionRequest(agent: .codex))
+        XCTAssertEqual(model.selectedAgent, .codex)
+        model.loadIfNeeded()
+        gate.open()
+        let refreshed = await eventually { model.availableAgents.contains(.codex) }
+        XCTAssertTrue(refreshed)
+        XCTAssertEqual(model.selectedAgent, .codex, "the server offers it")
+
+        // One the server doesn't offer falls back.
+        let other = makeDraft(NewSessionRequest(agent: .grok))
+        await other.load()
+        XCTAssertEqual(other.selectedAgent, .claudeCode)
+    }
+
+    func testAPreselectedFolderTheSavedListsDontHaveComesWithTheServers() async {
+        seed()
+        let gate = hold()
+        serveLists(folders: [Self.alpha, Self.beta, Self.gamma], gate: gate)
+        serveFirstSend()
+        let model = makeDraft(NewSessionRequest(preselectedFolderID: 3))
+        XCTAssertNil(model.folder, "no other folder stands in for it")
+        model.loadIfNeeded()
+        model.draft = "Check the worktree"
+        model.sendFromComposer()
+        XCTAssertEqual(model.pendingUserTurns.count, 1)
+
+        gate.open()
+        let prompted = await eventually { self.server.calls("acp_prompt").count == 1 }
+        XCTAssertTrue(prompted)
+        let created = server.calls("create_conversation").first
+        XCTAssertEqual(created?.body["folderId"] as? Int, 3)
+        XCTAssertEqual(created?.body["agentType"] as? String, "pi", "the folder's default agent")
+    }
+
+    func testAMessageGoesToTheFolderAndAgentShownWhenItWasSent() async {
+        seed()
+        let gate = hold()
+        // Meanwhile another folder became the most recently opened, with another default agent.
+        serveLists(folders: [Self.alpha, Self.beta, Self.gamma], gate: gate)
+        serveFirstSend()
+        let model = makeDraft()
+        model.loadIfNeeded()
+        XCTAssertEqual(model.folder?.id, 1)
+        XCTAssertEqual(model.selectedAgent, .claudeCode)
+
+        model.draft = "Run the tests"
+        model.sendFromComposer()
+        gate.open()
+        let prompted = await eventually { self.server.calls("acp_prompt").count == 1 }
+        XCTAssertTrue(prompted)
+        let created = server.calls("create_conversation").first
+        XCTAssertEqual(created?.body["folderId"] as? Int, 1, "where it was sent, not the newer default")
+        XCTAssertEqual(created?.body["agentType"] as? String, "claude_code")
+        XCTAssertEqual(model.folder?.id, 1)
+    }
+
     func testAChoiceTheServerNoLongerOffersFallsBackAsOnAFirstLoad() async {
         seed(agents: [.claudeCode, .pi, .codex], folders: [Self.alpha, Self.beta])
         serveLists(agents: ["claude_code"], folders: [Self.alpha, Self.gamma])
@@ -293,7 +357,9 @@ final class DraftPresetsTests: XCTestCase {
         XCTAssertEqual(connect?.body["agentType"] as? String, "claude_code")
         XCTAssertEqual(connect?.body["workingDir"] as? String, "/work/alpha")
         XCTAssertNil(connect?.body["sessionId"], "a new session")
-        XCTAssertEqual(connect?.body["preferredConfigValues"] as? [String: String], ["model": "sonnet", "mode": "plan"])
+        XCTAssertEqual(connect?.body["preferredConfigValues"] as? [String: String],
+                       ["model": "sonnet", "mode": "plan", "effort": "high"],
+                       "the picks, and the rest as the sheet showed them")
         XCTAssertTrue(server.calls("acp_set_config_option").isEmpty, "the connect carried them")
         XCTAssertTrue(server.calls("acp_set_mode").isEmpty)
     }
@@ -374,6 +440,30 @@ final class DraftPresetsTests: XCTestCase {
         XCTAssertTrue(server.calls("acp_set_config_option").isEmpty)
     }
 
+    func testTheSheetStartsOverWhenTheFolderChangesUnderAnOptionsLoad() async {
+        seed(options: [:])
+        let lists = hold()
+        serveLists(folders: [Self.alpha, Self.beta, Self.delta], gate: lists)
+        let probe = hold()
+        server.on("acp_describe_agent_options") { _ in .held(probe, .body("{}")) }
+        let model = makeDraft()
+        model.loadIfNeeded()
+        let options = model.agentOptions
+        options.isSheetShown = true
+        options.prepare(agentType: .claudeCode, workingDir: model.folder?.path)
+        XCTAssertEqual(options.phase, .atConnect)
+        options.load()
+        let loading = await eventually { options.phase == .loading }
+        XCTAssertTrue(loading)
+
+        // The server's lists move the default folder; the agent stays.
+        lists.open()
+        let moved = await eventually { model.folder?.id == 4 }
+        XCTAssertTrue(moved)
+        XCTAssertEqual(model.selectedAgent, .claudeCode)
+        XCTAssertEqual(options.phase, .atConnect, "not left loading")
+    }
+
     // MARK: - Sending before the draft is ready
 
     func testAMessageSentBeforeTheDraftIsReadyGoesOnceItIs() async {
@@ -405,6 +495,8 @@ final class DraftPresetsTests: XCTestCase {
         XCTAssertEqual(created?.body["folderId"] as? Int, 2)
         XCTAssertEqual(created?.body["agentType"] as? String, "pi", "the folder's default agent")
         XCTAssertEqual(server.calls("acp_connect").first?.body["workingDir"] as? String, "/work/beta")
+        XCTAssertNil(server.calls("acp_connect").first?.body["preferredConfigValues"],
+                     "no picks, and no sheet that showed any")
         XCTAssertTrue(server.calls("acp_prompt")[0].text.contains("Summarize the README"))
         XCTAssertEqual(model.pendingUserTurns.count, 1)
         XCTAssertNil(model.notice)
