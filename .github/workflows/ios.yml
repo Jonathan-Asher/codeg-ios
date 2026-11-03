@@ -24,6 +24,14 @@ on:
 permissions:
   contents: read
 
+# Where the build, device and test jobs run: GitHub's macos-26, or Jonathan's
+# Mac (the self-hosted runner m4-ios, label codeg-m4-ios) while the repository
+# variable IOS_RUNS_ON is '["self-hosted","codeg-m4-ios"]'. The runner guard on
+# the build box sets that variable: the Mac only while codeg's own CI is on it
+# and the Mac is plugged in, fully awake and has 25 GB free. Pull requests
+# always stay on GitHub's runners, so a pull request's code never runs on the
+# Mac. TestFlight uploads stay on GitHub's runners too.
+
 jobs:
   # A manual run (usually a TestFlight upload) for a commit whose push run has
   # passed, or is still running, does not build and test that commit again.
@@ -115,7 +123,7 @@ jobs:
     name: Simulator build
     needs: prior
     if: ${{ !cancelled() && needs.prior.outputs.skip != 'true' }}
-    runs-on: macos-26
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request') && '"macos-26"' || vars.IOS_RUNS_ON || '"macos-26"') }}
     timeout-minutes: 45
     concurrency:
       group: ios-build-${{ github.event_name }}-${{ github.ref }}
@@ -125,40 +133,55 @@ jobs:
 
       - name: Show toolchain
         run: |
+          echo "Runner: $RUNNER_NAME ($RUNNER_ENVIRONMENT)"
+          sw_vers
           xcodebuild -version
-          xcrun --sdk iphonesimulator --show-sdk-version
+          echo "iOS SDK $(xcrun --sdk iphoneos --show-sdk-version), simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          xcrun metal --version 2>&1 | head -1
 
       - name: Install XcodeGen
+        if: runner.environment != 'self-hosted'
         run: brew install xcodegen
 
       # SwiftTerm ships a Metal shader; Xcode 26+ installs the Metal compiler
       # as a separate component.
       - name: Ensure the Metal toolchain
+        if: runner.environment != 'self-hosted'
         run: |
           if ! xcrun metal --version >/dev/null 2>&1; then
             xcodebuild -downloadComponent MetalToolchain
           fi
 
+      # On the Mac: no Homebrew, nothing downloaded into Xcode, DerivedData
+      # kept between runs (see scripts/ci-mac-runner.sh).
+      - name: Prepare the Mac runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-mac-runner.sh prepare
+
       - name: Generate the Xcode project
-        run: xcodegen generate
+        run: |
+          xcodegen --version
+          xcodegen generate
 
       - name: Build for the iOS Simulator
         run: |
           set -o pipefail
           fmt=cat
           if command -v xcbeautify >/dev/null 2>&1; then fmt="xcbeautify --renderer github-actions"; fi
+          read -r -a extra <<<"${XCODEBUILD_EXTRA:-}"
           xcodebuild build \
             -project CodegiOS.xcodeproj \
             -scheme CodegiOS \
             -configuration Debug \
             -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build/DerivedData \
+            -derivedDataPath "${DERIVED_DATA:-build/DerivedData}" \
             -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            ${extra[@]+"${extra[@]}"} \
             2>&1 | tee "$RUNNER_TEMP/xcodebuild.log" | $fmt
 
       - name: Check the app identity
-        run: scripts/check-app-identity.sh build/DerivedData/Build/Products/Debug-iphonesimulator/Codeg.app
+        run: scripts/check-app-identity.sh "${DERIVED_DATA:-build/DerivedData}/Build/Products/Debug-iphonesimulator/Codeg.app"
 
       - name: Upload the build log
         if: failure()
@@ -175,7 +198,7 @@ jobs:
     name: Device build
     needs: prior
     if: ${{ !cancelled() && needs.prior.outputs.skip != 'true' }}
-    runs-on: macos-26
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request') && '"macos-26"' || vars.IOS_RUNS_ON || '"macos-26"') }}
     timeout-minutes: 60
     concurrency:
       group: ios-device-${{ github.event_name }}-${{ github.ref }}
@@ -183,35 +206,57 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Show toolchain
+        run: |
+          echo "Runner: $RUNNER_NAME ($RUNNER_ENVIRONMENT)"
+          sw_vers
+          xcodebuild -version
+          echo "iOS SDK $(xcrun --sdk iphoneos --show-sdk-version), simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          xcrun metal --version 2>&1 | head -1
+
       - name: Install XcodeGen
+        if: runner.environment != 'self-hosted'
         run: brew install xcodegen
 
+      # SwiftTerm ships a Metal shader; Xcode 26+ installs the Metal compiler
+      # as a separate component.
       - name: Ensure the Metal toolchain
+        if: runner.environment != 'self-hosted'
         run: |
           if ! xcrun metal --version >/dev/null 2>&1; then
             xcodebuild -downloadComponent MetalToolchain
           fi
 
+      # On the Mac: no Homebrew, nothing downloaded into Xcode, DerivedData
+      # kept between runs (see scripts/ci-mac-runner.sh).
+      - name: Prepare the Mac runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-mac-runner.sh prepare
+
       - name: Generate the Xcode project
-        run: xcodegen generate
+        run: |
+          xcodegen --version
+          xcodegen generate
 
       - name: Build for an iPhone
         run: |
           set -o pipefail
           fmt=cat
           if command -v xcbeautify >/dev/null 2>&1; then fmt="xcbeautify --renderer github-actions"; fi
+          read -r -a extra <<<"${XCODEBUILD_EXTRA:-}"
           xcodebuild build \
             -project CodegiOS.xcodeproj \
             -scheme CodegiOS \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -derivedDataPath build/DerivedData \
+            -derivedDataPath "${DERIVED_DATA:-build/DerivedData}" \
             -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            ${extra[@]+"${extra[@]}"} \
             2>&1 | tee "$RUNNER_TEMP/xcodebuild-device.log" | $fmt
 
       - name: Check the linked binary for a second ONNX Runtime or espeak-ng
-        run: scripts/check-linked-symbols.sh build/DerivedData/Build/Products/Release-iphoneos/Codeg.app/Codeg
+        run: scripts/check-linked-symbols.sh "${DERIVED_DATA:-build/DerivedData}/Build/Products/Release-iphoneos/Codeg.app/Codeg"
 
       - name: Upload the build log
         if: failure()
@@ -225,7 +270,7 @@ jobs:
     name: Unit tests
     needs: prior
     if: ${{ !cancelled() && needs.prior.outputs.skip != 'true' }}
-    runs-on: macos-26
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request') && '"macos-26"' || vars.IOS_RUNS_ON || '"macos-26"') }}
     timeout-minutes: 45
     concurrency:
       group: ios-test-${{ github.event_name }}-${{ github.ref }}
@@ -233,21 +278,42 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Show toolchain
+        run: |
+          echo "Runner: $RUNNER_NAME ($RUNNER_ENVIRONMENT)"
+          sw_vers
+          xcodebuild -version
+          echo "iOS SDK $(xcrun --sdk iphoneos --show-sdk-version), simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          xcrun metal --version 2>&1 | head -1
+
       - name: Install XcodeGen
+        if: runner.environment != 'self-hosted'
         run: brew install xcodegen
 
+      # SwiftTerm ships a Metal shader; Xcode 26+ installs the Metal compiler
+      # as a separate component.
       - name: Ensure the Metal toolchain
+        if: runner.environment != 'self-hosted'
         run: |
           if ! xcrun metal --version >/dev/null 2>&1; then
             xcodebuild -downloadComponent MetalToolchain
           fi
 
+      # On the Mac: no Homebrew, nothing downloaded into Xcode, DerivedData
+      # kept between runs (see scripts/ci-mac-runner.sh).
+      - name: Prepare the Mac runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-mac-runner.sh prepare
+
       - name: Generate the Xcode project
-        run: xcodegen generate
+        run: |
+          xcodegen --version
+          xcodegen generate
 
       # The list screenshots are taken at the simulator's screen size, so an
       # iPhone 17 Pro Max (Jonathan's phone) is preferred when the runtime has one.
       - name: Pick an iPhone simulator
+        if: runner.environment != 'self-hosted'
         run: |
           udid="$(xcrun simctl list devices available -j | python3 -c '
           import json, re, sys
@@ -271,6 +337,11 @@ jobs:
           echo "SIM_UDID=$udid" >>"$GITHUB_ENV"
           xcrun simctl list devices available | grep "$udid"
 
+      # On the Mac: a simulator of its own, erased for every run.
+      - name: Use the Codeg CI simulator
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-mac-runner.sh simulator
+
       - name: Run the unit tests
         run: |
           set -o pipefail
@@ -280,14 +351,16 @@ jobs:
           export TEST_RUNNER_COMPOSE_SHOTS_DIR="$PWD/build/compose-shots"
           fmt=cat
           if command -v xcbeautify >/dev/null 2>&1; then fmt="xcbeautify --renderer github-actions"; fi
+          read -r -a extra <<<"${XCODEBUILD_EXTRA:-}"
           xcodebuild test \
             -project CodegiOS.xcodeproj \
             -scheme CodegiOS \
             -configuration Debug \
             -destination "platform=iOS Simulator,id=$SIM_UDID" \
-            -derivedDataPath build/DerivedData \
+            -derivedDataPath "${DERIVED_DATA:-build/DerivedData}" \
             -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            ${extra[@]+"${extra[@]}"} \
             2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log" | $fmt
 
       - name: Upload the session list screenshots
@@ -315,6 +388,10 @@ jobs:
           name: xcodebuild-test-log
           path: ${{ runner.temp }}/xcodebuild-test.log
           retention-days: 7
+
+      - name: Shut the simulator down and erase it
+        if: always() && runner.environment == 'self-hosted'
+        run: scripts/ci-mac-runner.sh shutdown
 
   # Manual only. Disabled until the repository variable TESTFLIGHT_ENABLED is
   # set to "true", which should happen once the ASC_KEY_ID, ASC_ISSUER_ID and
@@ -364,7 +441,12 @@ jobs:
           echo "ASC_KEY_PATH=$key" >>"$GITHUB_ENV"
 
       - name: Show toolchain
-        run: xcodebuild -version
+        run: |
+          echo "Runner: $RUNNER_NAME ($RUNNER_ENVIRONMENT)"
+          sw_vers
+          xcodebuild -version
+          echo "iOS SDK $(xcrun --sdk iphoneos --show-sdk-version), simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          xcrun metal --version 2>&1 | head -1
 
       - name: Install XcodeGen
         run: brew install xcodegen

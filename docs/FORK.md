@@ -3591,9 +3591,10 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
 - **`sherpa-onnx.yml`** builds and publishes the sherpa-onnx XCFramework
   when its script changes; **`talk-engines.yml`** tests the SherpaOnnx and
   SmartTurn packages on macOS with the real models when they change.
-- **`build`** runs on every push and pull request on GitHub-hosted `macos-26`
-  with its default Xcode. It runs `brew install xcodegen`, `xcodegen generate`,
-  then an unsigned `xcodebuild build` for `generic/platform=iOS Simulator`.
+- **`build`** runs on every push and pull request, on GitHub-hosted `macos-26`
+  with its default Xcode or on Jonathan's Mac (see "Jonathan's Mac runner"
+  below). It runs `brew install xcodegen`, `xcodegen generate`, then an
+  unsigned `xcodebuild build` for `generic/platform=iOS Simulator`.
   Finally [`scripts/check-app-identity.sh`](../scripts/check-app-identity.sh)
   checks that the built `Info.plist` carries the fork's bundle id, name and URL
   scheme, and that the notification service extension is embedded.
@@ -3621,6 +3622,55 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
   `testflight` starts when `build` passed, or when `build` was skipped and
   `prior` succeeded. A dispatch whose push run passed reaches the
   upload in about a minute instead of after the simulator build.
+
+### Jonathan's Mac runner (m4-ios)
+
+`build`, `device` and `test` run on Jonathan's M4 Max instead of GitHub's
+`macos-26` while the repository variable `IOS_RUNS_ON` is
+`["self-hosted","codeg-m4-ios"]` (GitHub's runners while it is `"macos-26"`).
+Pull requests always stay on GitHub's runners, whatever the variable says, so
+a pull request's code never runs on the Mac, and `testflight` always runs on
+`macos-26`.
+
+- **The runner.** `m4-ios`, label `codeg-m4-ios`, in `~/actions-runner/ios` on
+  the Mac: a launchd user agent at Nice 10, with `HOME` and
+  `CFFIXED_USER_HOME` both set to `~/actions-runner/_home/ios` (Xcode and
+  SwiftPM take the home folder from the user record unless
+  `CFFIXED_USER_HOME` is set) and a minimal `PATH`. It was registered with `~/codeg-ci/runner-setup.sh`
+  (`REPO=codeg-ios NAMES=ios`, the registration token on stdin). The Mac has
+  the Metal toolchain and the iOS simulator runtime installed for its Xcode.
+- **Routing.** The runner guard on the build box
+  (`~/codeg-e2e/tools/runner-guard.sh`) sets `IOS_RUNS_ON`. iPhone jobs go to
+  the Mac only while codeg's own CI is on the Mac (`codeg-runners on|auto`) and
+  the Mac is on AC power, fully awake (not a dark wake) and has at least 25 GB
+  free, on two checks a minute apart. They go back to GitHub after two missed
+  checks, or at once on `codeg-runners off`. Runs left waiting for the Mac are
+  cancelled and run again on GitHub's runners, except a run whose TestFlight
+  upload has started. `codeg-runners status` on the Mac shows the `ios`
+  runner.
+- **What the jobs do differently on the Mac**
+  ([`scripts/ci-mac-runner.sh`](../scripts/ci-mac-runner.sh), steps with
+  `if: runner.environment == 'self-hosted'`):
+  - no `brew install`: pinned XcodeGen and xcbeautify releases are downloaded
+    once into `$HOME/tools`, checksums verified;
+  - nothing is downloaded into Xcode: a missing Metal toolchain fails the job
+    with the command to install it;
+  - DerivedData stays in `$HOME/dd/codeg-ios` between runs (started afresh
+    past 10 GB), the job needs 20 GB free, builds pass
+    `COMPILER_INDEX_STORE_ENABLE=NO`, and result bundles go to `RUNNER_TEMP`;
+  - `test` uses its own simulator, "Codeg CI iPhone 17 Pro Max", erased for
+    every run, then shut down and erased again at the end so its data (about
+    2 GB) doesn't stay on the Mac (never `simctl shutdown all`).
+
+  Every job prints the runner, macOS, Xcode, SDK and Metal versions first. The
+  Mac's Xcode can be newer than `macos-26`'s, so a push can pass on one and
+  fail on the other.
+- **Turning it off.** `codeg-runners off` on the Mac moves iPhone jobs (and
+  codeg's) to GitHub's runners within a minute. Don't set `IOS_RUNS_ON` by hand
+  while the guard runs: it only writes the variable when its own decision
+  changes. To remove the runner: `cd ~/actions-runner/ios && ./svc.sh stop &&
+  ./svc.sh uninstall && ./config.sh remove --token <T>` (token from
+  `gh api -X POST repos/Jonathan-Asher/codeg-ios/actions/runners/remove-token`).
 
 ### Turning on the TestFlight job
 
