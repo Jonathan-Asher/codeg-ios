@@ -13,13 +13,108 @@ on:
         description: Build number (CURRENT_PROJECT_VERSION) for the upload; defaults to the run number
         type: string
         required: false
+      tests:
+        description: "auto: skip the build and test jobs when a push run for this commit passed or is still running. run: always run them"
+        type: choice
+        options:
+          - auto
+          - run
+        default: auto
 
 permissions:
   contents: read
 
 jobs:
+  # A manual run (usually a TestFlight upload) for a commit whose push run has
+  # passed, or is still running, does not build and test that commit again.
+  # Anything unexpected (no push run, a failed or cancelled one, an API error)
+  # means the build and test jobs run.
+  prior:
+    name: Prior push run
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      skip: ${{ steps.find.outputs.skip }}
+      watch: ${{ steps.find.outputs.watch }}
+    steps:
+      - name: Find the push run for this commit
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTS: ${{ inputs.tests }}
+        run: |
+          skip=false watch=""
+          say() { echo "$*"; echo "$*" >>"$GITHUB_STEP_SUMMARY"; }
+          runs_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs"
+          if [[ "$TESTS" == run ]]; then
+            say "tests=run: the build and test jobs run."
+          elif ! runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ios.yml/runs?event=push&head_sha=$GITHUB_SHA&per_page=50" \
+              --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID) | {id, status, conclusion}]")"; then
+            say "Could not look up the push runs of $GITHUB_SHA: the build and test jobs run."
+          else
+            passed="$(jq -r 'map(select(.status == "completed" and .conclusion == "success")) | first | .id // empty' <<<"$runs" || true)"
+            running="$(jq -r 'map(select(.status != "completed")) | first | .id // empty' <<<"$runs" || true)"
+            if [[ "$passed" =~ ^[0-9]+$ ]]; then
+              skip=true
+              say "The push run $runs_url/$passed passed for $GITHUB_SHA: the build and test jobs are skipped."
+            elif [[ "$running" =~ ^[0-9]+$ ]]; then
+              skip=true watch="$running"
+              say "The push run $runs_url/$running is still running for $GITHUB_SHA: the build and test jobs are skipped, and \"Push run result\" waits for it."
+            else
+              say "No push run of $GITHUB_SHA passed or is running: the build and test jobs run."
+            fi
+          fi
+          echo "skip=$skip" >>"$GITHUB_OUTPUT"
+          echo "watch=$watch" >>"$GITHUB_OUTPUT"
+
+  # Keeps a manual run's colour honest when it skipped the tests for a push run
+  # that had not finished: it ends as that push run ends.
+  push-result:
+    name: Push run result
+    needs: prior
+    if: needs.prior.outputs.watch != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: read
+    steps:
+      - name: Wait for the push run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ needs.prior.outputs.watch }}
+        run: |
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN"
+          echo "Waiting for $url"
+          cancelled_at=""
+          while :; do
+            if ! state="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq '"\(.status) \(.conclusion // "none") \(.run_attempt)"')"; then
+              sleep 30; continue
+            fi
+            read -r status conclusion attempt <<<"$state"
+            if [[ "$status" != completed ]]; then cancelled_at=""; sleep 30; continue; fi
+            # When the Mac goes away, the runner guard moves a run that waits
+            # for it to GitHub's runners by cancelling it and running it again:
+            # give a cancelled run five minutes to start its next attempt.
+            if [[ "$conclusion" == cancelled ]]; then
+              now="$(date +%s)"; cancelled_at="${cancelled_at:-$now}"
+              if (( now - cancelled_at < 300 )); then sleep 30; continue; fi
+            fi
+            break
+          done
+          if [[ "$conclusion" == success ]]; then
+            echo "The push run passed (attempt $attempt): $url"
+          else
+            echo "::error::The push run of this commit ended '$conclusion' (attempt $attempt): $url. Run this workflow again with tests=run to build and test here."
+            exit 1
+          fi
+
   build:
     name: Simulator build
+    needs: prior
+    if: ${{ !cancelled() && needs.prior.outputs.skip != 'true' }}
     runs-on: macos-26
     timeout-minutes: 45
     concurrency:
@@ -63,25 +158,7 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/xcodebuild.log" | $fmt
 
       - name: Check the app identity
-        run: |
-          plist="$(ls -d build/DerivedData/Build/Products/Debug-iphonesimulator/*.app | head -1)/Info.plist"
-          plutil -p "$plist" | grep -E 'CFBundleIdentifier|CFBundleDisplayName|CFBundleURLSchemes|CodegURLScheme|ITSAppUsesNonExemptEncryption' -A2
-          check() {
-            local got
-            got="$(/usr/libexec/PlistBuddy -c "Print :$1" "$plist")"
-            if [[ "$got" != "$2" ]]; then echo "::error::$1 is '$got', expected '$2'"; exit 1; fi
-          }
-          check CFBundleIdentifier io.ashurov.codeg
-          check CFBundleDisplayName "Codeg Plus"
-          check CFBundleURLTypes:0:CFBundleURLSchemes:0 codegplus
-          check CodegURLScheme codegplus
-          check ITSAppUsesNonExemptEncryption false
-          # The notification service extension (answer buttons on question pushes).
-          ext="$(dirname "$plist")/PlugIns/NotificationService.appex/Info.plist"
-          if [[ ! -f "$ext" ]]; then echo "::error::the notification service extension is not embedded"; exit 1; fi
-          plist="$ext"
-          check CFBundleIdentifier io.ashurov.codeg.NotificationService
-          check NSExtension:NSExtensionPointIdentifier com.apple.usernotifications.service
+        run: scripts/check-app-identity.sh build/DerivedData/Build/Products/Debug-iphonesimulator/Codeg.app
 
       - name: Upload the build log
         if: failure()
@@ -96,6 +173,8 @@ jobs:
   # espeak-ng, with sherpa-onnx using BlueTTSKit's runtime.
   device:
     name: Device build
+    needs: prior
+    if: ${{ !cancelled() && needs.prior.outputs.skip != 'true' }}
     runs-on: macos-26
     timeout-minutes: 60
     concurrency:
@@ -144,6 +223,8 @@ jobs:
 
   test:
     name: Unit tests
+    needs: prior
+    if: ${{ !cancelled() && needs.prior.outputs.skip != 'true' }}
     runs-on: macos-26
     timeout-minutes: 45
     concurrency:
@@ -237,11 +318,19 @@ jobs:
 
   # Manual only. Disabled until the repository variable TESTFLIGHT_ENABLED is
   # set to "true", which should happen once the ASC_KEY_ID, ASC_ISSUER_ID and
-  # ASC_KEY_P8 secrets exist (see docs/FORK.md).
+  # ASC_KEY_P8 secrets exist (see docs/FORK.md). Starts once the simulator
+  # build passed, or straight away when `prior` skipped the build for a push
+  # run of the same commit; the archive itself checks the app identity.
   testflight:
     name: TestFlight upload
-    if: github.event_name == 'workflow_dispatch' && inputs.testflight && vars.TESTFLIGHT_ENABLED == 'true'
-    needs: build
+    needs: [prior, build]
+    if: >-
+      ${{
+        !cancelled()
+        && github.event_name == 'workflow_dispatch' && inputs.testflight && vars.TESTFLIGHT_ENABLED == 'true'
+        && (needs.build.result == 'success'
+            || (needs.build.result == 'skipped' && needs.prior.result == 'success'))
+      }}
     runs-on: macos-26
     timeout-minutes: 60
     concurrency:

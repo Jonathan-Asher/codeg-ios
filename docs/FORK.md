@@ -3594,15 +3594,33 @@ No PR from the list was skipped. Not carried: #3 (iOS 18 support), #5
 - **`build`** runs on every push and pull request on GitHub-hosted `macos-26`
   with its default Xcode. It runs `brew install xcodegen`, `xcodegen generate`,
   then an unsigned `xcodebuild build` for `generic/platform=iOS Simulator`.
-  Finally it checks that the built `Info.plist` carries the fork's bundle id,
-  name and URL scheme.
+  Finally [`scripts/check-app-identity.sh`](../scripts/check-app-identity.sh)
+  checks that the built `Info.plist` carries the fork's bundle id, name and URL
+  scheme, and that the notification service extension is embedded.
 - **`testflight`** archives and uploads to App Store Connect with cloud-managed
   signing, through [`scripts/archive.sh`](../scripts/archive.sh). That is the
   same archive, export and `altool` upload that `scripts/release.sh --archive`
   uses. It runs only on a manual dispatch with the `testflight` box ticked, and
   only when the repository variable `TESTFLIGHT_ENABLED` is `true`.
+  `archive.sh` runs `check-app-identity.sh` on the archived Release app before
+  it exports or uploads anything.
   Each upload keeps its dSYMs as the `dsyms-<version>-<build>` artifact (see
   "Crash reports", Symbolicating).
+- **Manual runs reuse the push run** (`prior` and `push-result`). Before a
+  manual run builds anything, `prior` looks up the push runs of the same commit
+  (`GET /actions/workflows/ios.yml/runs?event=push&head_sha=…`, excluding its
+  own run):
+  - one passed: `build`, `device` and `test` are skipped, and `testflight`
+    starts at once;
+  - one is still running: the same, and `push-result` waits for that run and
+    ends as it ends, so the manual run's colour stays honest;
+  - none, only failed or cancelled ones, or the lookup fails: the three jobs
+    run as before, and `testflight` waits for `build`.
+
+  The `tests` input is `auto` by default; `run` always runs the three jobs.
+  `testflight` starts when `build` passed, or when `build` was skipped and
+  `prior` succeeded. A dispatch whose push run passed reaches the
+  upload in about a minute instead of after the simulator build.
 
 ### Turning on the TestFlight job
 
