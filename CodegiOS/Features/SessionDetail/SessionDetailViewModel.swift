@@ -359,6 +359,11 @@ final class SessionDetailViewModel {
     }
     /// Background tasks still running (0 = none or count unknown).
     private(set) var backgroundOutstanding = 0
+    /// How the latest turn on this screen ended (ACP's stop reason: `end_turn`,
+    /// `max_tokens`, `cancelled`, …): its `turn_complete`, or what the live
+    /// snapshot says (`last_stop_reason`) when this screen didn't see it end.
+    /// Cleared when the next turn starts, as the server clears its own.
+    private(set) var lastStopReason: String?
     /// The latest `attach_progress` phase while the session is being opened.
     private(set) var attachPhase: String?
     /// With `attachPhase` `pool_wait`: when the account pool's first account
@@ -1577,6 +1582,8 @@ final class SessionDetailViewModel {
         backgroundOutstanding = 0
         retireSettledNotes()
         turnSerial &+= 1
+        // A new turn: the last one's end (the output-limit notice) is behind it.
+        lastStopReason = nil
         notice = nil
         echoedUserMessageIDs = []
         // This send attaches its own stream; a cold reattach still waiting to
@@ -2121,7 +2128,8 @@ final class SessionDetailViewModel {
                         // The turn ended while the socket was down, so its
                         // `turn_complete` never reached this screen. Without this the
                         // reply stays "working" for good and the queue never moves.
-                        settleIfTurnEnded(live: live, connectionID: conn, reading: snap.turnPhase)
+                        settleIfTurnEnded(live: live, connectionID: conn, reading: snap.turnPhase,
+                                          endedWith: snap.lastStopReason)
                     }
                 }
                 if isCurrent { resumeReady(throwing: nil) }
@@ -2365,14 +2373,17 @@ final class SessionDetailViewModel {
                     // "working" for good with the queue stuck behind it. Frames
                     // that still arrive feed it meanwhile.
                     live = current
-                    settleIfTurnEnded(live: current, connectionID: conn, reading: snap.turnPhase)
+                    settleIfTurnEnded(live: current, connectionID: conn, reading: snap.turnPhase,
+                                      endedWith: snap.lastStopReason)
                 } else if keepsStreamAttached {
                     // Idle connection, and Talk keeps it attached: this socket
                     // goes on as the idle watch (see `idleWatch`).
+                    noteLastStop(from: snap)
                     enterIdleWatch(generation: generation, stream: stream)
                     if serverSaysLive { Task { [weak self] in await self?.reconcileAfterMissedLive() } }
                 } else {
                     // Idle connection: nothing in flight. Release it.
+                    noteLastStop(from: snap)
                     closeStream()
                     connectionID = nil
                     // If the server had claimed a live turn at load, it finished
@@ -2679,6 +2690,14 @@ final class SessionDetailViewModel {
         if awaitingBackground { drainIntoHeldTurnIfPossible() }
     }
 
+    /// An attach found no turn running: how the connection's last turn ended,
+    /// when the server says (`last_stop_reason`), so a reply cut off at the
+    /// output limit keeps its notice after a reopen. An older server never
+    /// says, and what this screen saw stays.
+    private func noteLastStop(from snap: LiveSessionSnapshot) {
+        if let reason = snap.lastStopReason { lastStopReason = reason }
+    }
+
     /// The attach snapshot of a freshly spawned agent can predate its
     /// handshake, so ask once more after the prompt is accepted.
     private func refreshSteeringAvailability(connectionID conn: String) {
@@ -2725,7 +2744,11 @@ final class SessionDetailViewModel {
 
     // MARK: - Finalize / fail
 
-    private func finalize(live: LiveTurn, stopReason: String) {
+    /// End the turn on screen. `stopReason` is its `turn_complete`'s, or
+    /// "end_turn" for a turn whose `turn_complete` never reached this screen
+    /// (Talk is told that one, as before); `endedWith` is then how the server
+    /// says it ended (the snapshot's `last_stop_reason`), when it says.
+    private func finalize(live: LiveTurn, stopReason: String, endedWith: String? = nil) {
         guard isTurnActive else { return }
         isTurnActive = false
         // Read before clearing: this is the one transition that delivers parked
@@ -2739,6 +2762,9 @@ final class SessionDetailViewModel {
         live.isStreaming = false
         live.stopReason = stopReason
         signalTalkTurnEnded(live, stopReason: stopReason)
+        // How the reply ended (the output-limit notice), before the queue below
+        // can start the next turn.
+        lastStopReason = endedWith ?? stopReason
         sendState = .idle
         completedTurnTick &+= 1
         // Talk keeps the socket attached while idle; otherwise it closes.
@@ -2932,16 +2958,20 @@ final class SessionDetailViewModel {
     /// `turn_complete` would have: finalize and reconcile with the transcript,
     /// which also sends the next queued message. A connection that is down or
     /// gone goes through ``reconcileOrFail(live:reason:)`` instead. `reading`
-    /// is the reconnect's own snapshot, used when the server can't be asked.
+    /// and `endedWith` are the reconnect's own snapshot's phase and
+    /// `last_stop_reason`, used when the server can't be asked.
     private func settleIfTurnEnded(live: LiveTurn, connectionID conn: String,
-                                   reading: LiveSessionSnapshot.TurnPhase = .ended) {
+                                   reading: LiveSessionSnapshot.TurnPhase = .ended, endedWith seen: String? = nil) {
         guard liveTurn === live, isTurnActive else { return }
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
             guard let self, self.liveTurn === live, self.isTurnActive, !self.promptInFlight else { return }
             var phase: LiveSessionSnapshot.TurnPhase? = reading
+            var endedWith = seen
             do {
-                phase = try await self.client.liveSessionSnapshot(connectionId: conn)?.turnPhase
+                let snap = try await self.client.liveSessionSnapshot(connectionId: conn)
+                phase = snap?.turnPhase
+                endedWith = snap?.lastStopReason ?? seen
             } catch {
                 // The server didn't answer: go by what the reconnect saw.
             }
@@ -2951,7 +2981,9 @@ final class SessionDetailViewModel {
                 // A turn runs after all; its frames reach the attached socket.
                 return
             case .ended?:
-                self.finalize(live: live, stopReason: "end_turn")
+                // How it ended is the server's word, when it has one (an output
+                // limit keeps its notice through the reconnect).
+                self.finalize(live: live, stopReason: "end_turn", endedWith: endedWith)
             case .connectionDown?, nil:
                 await self.reconcileOrFail(live: live, reason: nil)
             }
@@ -3031,18 +3063,18 @@ final class SessionDetailViewModel {
             return Task.isCancelled || !(liveTurn === live && isTurnActive)
         }
         if landed { return true }
-        let phase: LiveSessionSnapshot.TurnPhase?
+        let snap: LiveSessionSnapshot?
         do {
-            phase = try await client.liveSessionSnapshot(connectionId: conn)?.turnPhase
+            snap = try await client.liveSessionSnapshot(connectionId: conn)
         } catch {
             return Task.isCancelled || !(liveTurn === live && isTurnActive)
         }
         guard !Task.isCancelled, liveTurn === live, isTurnActive else { return true }
-        switch phase {
+        switch snap?.turnPhase {
         case .running?, .starting?:
             return false
         case .ended?:
-            finalize(live: live, stopReason: "end_turn")
+            finalize(live: live, stopReason: "end_turn", endedWith: snap?.lastStopReason)
             return true
         case .connectionDown?, nil:
             failLive(live, message: Self.lostConnectionMessage)
@@ -3723,6 +3755,8 @@ final class SessionDetailViewModel {
     /// open only for background work (then it goes into the held turn).
     var canOfferContinue: Bool {
         guard summary != nil, !isDraftEditable else { return false }
+        // The notice at the end of a reply cut off at the output limit has its own.
+        guard !showsOutputLimitNotice else { return false }
         guard draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty,
               queuedMessages.isEmpty else { return false }
         guard localAttention == nil else { return false }
@@ -3732,6 +3766,13 @@ final class SessionDetailViewModel {
         case .background: return canDeliverIntoHeldTurn
         default: return false
         }
+    }
+
+    /// The latest reply hit the model's output limit (stop reason
+    /// `max_tokens`, any agent): the transcript says so at its end, with
+    /// Continue. Gone while a turn runs, and for good once the next one starts.
+    var showsOutputLimitNotice: Bool {
+        OutputLimitNotice.applies(to: lastStopReason) && !isInFlight
     }
 
     /// One tap: send the fork's Continue prompt ("continue").
@@ -3820,6 +3861,7 @@ final class SessionDetailViewModel {
             watchSnapshotRequested = false
             applyLiveSignals(from: snap)
             guard let rebuilt = buildLiveTurn(from: snap) else {
+                noteLastStop(from: snap)
                 stream.setStreaming(false)
                 return .keep
             }
@@ -3942,6 +3984,7 @@ final class SessionDetailViewModel {
             promoteUnreconciled(prior)
         }
         turnSerial &+= 1
+        lastStopReason = nil
         liveTurn = rebuilt
         // This live turn is the snapshot's in-flight reply; the transcript
         // hides the partial copy the agent has begun persisting into `turns`
@@ -4625,8 +4668,10 @@ final class SessionDetailViewModel {
         cacheSaveTask?.cancel()
         if let cache = transcriptCache { await cache.remove(serverKey: cacheServerKey, conversationID: id) }
         forgetReadingPosition()
-        // A reply streamed here before the fork belongs to the old history.
+        // A reply streamed here before the fork belongs to the old history,
+        // and so does how the last turn ended (the output-limit notice).
         if let live = liveTurn, !live.isStreaming { liveTurn = nil }
+        lastStopReason = nil
         openedFromCache = false
         var onFork = false
         for attempt in 0..<4 {
@@ -4661,6 +4706,8 @@ final class SessionDetailViewModel {
         if let conn { adoptForkConnection(conn) }
         openedFromCache = false
         forgetReadingPosition()
+        // How the original's last turn ended is not the fork's to say.
+        lastStopReason = nil
         do {
             let outcome = try await TranscriptSync.fetch(client: client, id: id, held: nil, overlap: 0)
             summary = outcome.detail.summary

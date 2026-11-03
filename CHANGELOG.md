@@ -12,6 +12,14 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- A reply cut off at the model's output limit says so (1.4.2). When the agent's
+  latest reply ended because the model ran out of output (with any agent),
+  its end shows "This reply hit the model's output limit" with Continue,
+  which sends "continue" as the Continue chip does (the chip stands aside
+  meanwhile). It goes as soon as the next turn starts, is never there while
+  a turn runs, and shows for no other ending. With a codeg server that says
+  how the last turn ended, it also stays through reopening the session and
+  through a reconnect that missed the end of the turn.
 - Talk (1.4.0): a hands-free voice conversation with a session, in Hebrew
   with English terms where they're natural. Tap the Talk button at the top
   of a session (with the agent avatar), speak, and pause: a soft tick plays

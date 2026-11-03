@@ -685,6 +685,11 @@ enum Wire {
 
     static let turnComplete = event(#""type": "turn_complete", "stop_reason": "end_turn""#)
 
+    /// The turn ended with this ACP stop reason (`max_tokens`, `refusal`, …).
+    static func turnEnded(_ stopReason: String) -> EventStream.Frame {
+        event(#""type": "turn_complete", "stop_reason": "# + Fixtures.quoted(stopReason))
+    }
+
     private static func event(_ fields: String) -> EventStream.Frame {
         Fixtures.event(#"{"seq": 20, "connection_id": "conn-1", "# + fields + "}")
     }

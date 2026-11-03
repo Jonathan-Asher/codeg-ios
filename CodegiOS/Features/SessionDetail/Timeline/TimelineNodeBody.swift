@@ -70,6 +70,8 @@ struct NodeBody: View {
             InlineTurnError(message: message)
         case .unsupported(let type):
             UnsupportedBlock(type: type)
+        case .outputLimit(let notice):
+            notice
         }
     }
 }

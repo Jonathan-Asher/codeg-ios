@@ -432,6 +432,14 @@ struct SessionDetailView: View {
         .animation(Theme.Motion.content, value: model.isFindingJumpTarget)
     }
 
+    /// After the latest reply, when the model's output limit cut it off: the
+    /// notice, whose Continue sends "continue" as the chip does.
+    private var outputLimitNotice: OutputLimitNotice? {
+        guard model.showsOutputLimitNotice else { return nil }
+        let model = self.model
+        return OutputLimitNotice { model.sendContinue() }
+    }
+
     private var loadedBody: some View {
         TranscriptView(
             turns: model.turns,
@@ -457,7 +465,8 @@ struct SessionDetailView: View {
             jump: model.transcriptJump,
             onJumpLanded: { model.jumpLanded($0) },
             mediaContext: model.mediaPathContext,
-            mediaPresence: model.mediaEnvironment?.library.presence
+            mediaPresence: model.mediaEnvironment?.library.presence,
+            outputLimitNotice: outputLimitNotice
         ) {
             // No top banner on an existing session — its identity + stats now
             // live in the nav-bar "…" → Session Details, so messages start at

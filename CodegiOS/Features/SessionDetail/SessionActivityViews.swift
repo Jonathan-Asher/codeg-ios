@@ -280,6 +280,59 @@ struct ContinueChip: View {
     }
 }
 
+/// At the end of the latest reply, when the model's output limit cut it off
+/// (ACP stop reason `max_tokens`, any agent): says so, with Continue, which
+/// sends "continue" as the chip above the message bar does (the chip stands
+/// aside meanwhile). The transcript shows it until the next turn starts.
+struct OutputLimitNotice: View {
+    /// The stop reason of a turn the model's output limit ended.
+    static let stopReason = "max_tokens"
+
+    let onContinue: () -> Void
+
+    /// A turn that ended with `stopReason` hit the output limit.
+    static func applies(to stopReason: String?) -> Bool { stopReason == Self.stopReason }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("This reply hit the model's output limit")
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            // The Continue chip's face, smaller. Built from a glyph and a
+            // line of text rather than a bordered `Label`: in the
+            // transcript's list rows that showed the glyph alone and sized
+            // the button as if its title wrapped.
+            Button(action: onContinue) {
+                HStack(spacing: 4) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 9, weight: .bold))
+                    Text("Continue")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Theme.accent)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .background(Theme.accent.opacity(0.12), in: Capsule())
+                .overlay(Capsule().strokeBorder(Theme.accent.opacity(0.35), lineWidth: 0.75))
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            .accessibilityHint(Text("Sends “continue” so the agent keeps going"))
+            .accessibilityIdentifier("output-limit-continue")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Theme.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
+        .hairlineBorder(Theme.Radius.sm, color: Theme.warning.opacity(0.35))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("output-limit-notice")
+    }
+}
+
 /// Above the message bar of a session paused on a usage limit (codeg's
 /// `LimitPausedBanner`): why it waits and when it continues by itself, with
 /// Cancel auto-continue and Continue now. Once the continuation is going out

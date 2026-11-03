@@ -287,7 +287,8 @@ enum Fixtures {
     static func snapshotJSON(status: String, liveText: String? = nil, awaitingBackground: Bool = false,
                              nativeSteering: Bool = false, backgroundOutstanding: Int = 0,
                              pendingUserMessageID: String? = nil,
-                             feedback: [(id: String, text: String)] = []) -> String {
+                             feedback: [(id: String, text: String)] = [],
+                             lastStopReason: String? = nil) -> String {
         var fields = [
             #""connection_id": "conn-1""#,
             #""conversation_id": 7"#,
@@ -309,16 +310,21 @@ enum Fixtures {
             }
             fields.append("\"feedback\": [\(items.joined(separator: ", "))]")
         }
+        if let lastStopReason {
+            fields.append("\"last_stop_reason\": \(quoted(lastStopReason))")
+        }
         return "{" + fields.joined(separator: ", ") + "}"
     }
 
     static func snapshot(status: String, liveText: String? = nil, awaitingBackground: Bool = false,
                          nativeSteering: Bool = false, backgroundOutstanding: Int = 0,
                          pendingUserMessageID: String? = nil,
-                         feedback: [(id: String, text: String)] = []) -> LiveSessionSnapshot {
+                         feedback: [(id: String, text: String)] = [],
+                         lastStopReason: String? = nil) -> LiveSessionSnapshot {
         let json = snapshotJSON(status: status, liveText: liveText, awaitingBackground: awaitingBackground,
                                 nativeSteering: nativeSteering, backgroundOutstanding: backgroundOutstanding,
-                                pendingUserMessageID: pendingUserMessageID, feedback: feedback)
+                                pendingUserMessageID: pendingUserMessageID, feedback: feedback,
+                                lastStopReason: lastStopReason)
         return try! CodegJSON.decoder.decode(LiveSessionSnapshot.self, from: Data(json.utf8))
     }
 

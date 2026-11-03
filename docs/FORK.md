@@ -244,7 +244,9 @@ remains.
   (`awaiting_background`) and steering is available, send delivers at once, and
   the queue drains into the held turn one message at a time.
 - **Continue.** After an agent reply, with an empty composer, a Continue chip
-  sends `continue` (the fork's `CONTINUE_PROMPT`). User turns that are exactly
+  sends `continue` (the fork's `CONTINUE_PROMPT`); a reply cut off at the
+  output limit offers it in its own notice instead (see "A reply cut off at
+  the output limit" below). User turns that are exactly
   `continue`, the resume-after-restart prompt, or the continue-after-limit-reset
   prompt render as slim "▶ Continued", "Resumed after restart" and "Continued
   after limit reset" dividers.
@@ -2084,6 +2086,51 @@ for the open session's own Fork Session, the fork goes as before. Tests in
   replaced by a session's own, fallbacks, an existing session). The mock
   server can hold a reply until the test opens its `ReplyGate`. Screenshots:
   `draft-options-saved` and `draft-options-at-connect` in the
+  `compose-screenshots` artifact.
+
+### A reply cut off at the output limit
+
+`OutputLimitNotice` (`Features/SessionDetail/SessionActivityViews.swift`),
+`SessionDetailViewModel.lastStopReason` and `showsOutputLimitNotice`,
+`TranscriptTimeline.outputLimitNode`.
+
+- **When.** The latest turn ended with ACP stop reason `max_tokens` (the
+  `stop_reason` of `turn_complete`), for any agent. The transcript then adds
+  one row after everything else (after the reply's footer, or after the live
+  reply until it reconciles), with the warning marker on the rail: "This
+  reply hit the model's output limit" and Continue. It is never there while
+  a turn runs, and goes when the next turn starts: any send (Continue, a
+  typed message, the queue, Talk) and a running turn adopted from an attach
+  (one another client started); a fork that replaces the history (Edit
+  Message, a fork in place) takes it away too. Any other stop reason
+  (`end_turn`, `refusal`, `max_turn_requests`, `cancelled`), and a turn that
+  failed, was cancelled or was settled from the transcript alone, shows
+  nothing.
+- **Continue** is the chip's `sendContinue()`: "continue" goes through
+  `startSend` like a typed message (the "▶ Continued" divider at once, the
+  live placeholder, kept as "Not sent" when it doesn't go). While the notice
+  shows, `canOfferContinue` is false, so the chip above the message bar
+  doesn't repeat it.
+- **The server's word.** `LiveSessionSnapshot.lastStopReason` decodes
+  `last_stop_reason` (codeg `fix/output-limit`: set when a turn completes,
+  cleared when the next prompt starts, left out when there is none). An
+  attach that finds the connection idle (the cold reattach on opening or
+  returning to the session, Talk's idle watch) takes it when it is there, so
+  the notice survives a reopen. A reconnect that missed the turn's
+  `turn_complete` settles the turn with it (`settleIfTurnEnded`, from the
+  server's fresh snapshot or else the reconnect's, and
+  `settleAfterLongOutage`); Talk is still told `end_turn` there, as before. A
+  send's own attach snapshot predates its prompt and is not read for it. An
+  older server leaves the field out: what this screen saw stays, and a
+  missed end reads as `end_turn` (no notice), as before.
+- **Strings.** "This reply hit the model's output limit", "Continue" (the
+  chip's too, untranslated until now) and the chip's hint, in English and
+  Simplified Chinese.
+- Tests: `OutputLimitTests` (the stop reasons, the snapshot field, the
+  notice and its Continue, a typed message hiding it, an ordinary end, a
+  reopen with and without the server's word, a turn started elsewhere, a
+  fork in place, a reconnect that missed the end with and without it).
+  Screenshots: `output-limit-notice-light`, `-dark` and `-zh-light` in the
   `compose-screenshots` artifact.
 
 ## Session lists
