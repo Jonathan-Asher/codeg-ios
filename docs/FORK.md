@@ -3655,8 +3655,11 @@ a pull request's code never runs on the Mac, and `testflight` always runs on
     once into `$HOME/tools`, checksums verified;
   - nothing is downloaded into Xcode: a missing Metal toolchain fails the job
     with the command to install it;
-  - DerivedData stays in `$HOME/dd/codeg-ios` between runs (started afresh
-    past 10 GB), the job needs 20 GB free, builds pass
+  - DerivedData stays between runs in `$HOME/dd/codeg-ios/<job>`, one folder
+    per job (the generic simulator build and the test build compile with
+    different settings, so sharing a folder would rebuild the app every time)
+    with the package checkouts shared, and is started afresh past 10 GB in
+    all. The job needs 20 GB free, builds pass
     `COMPILER_INDEX_STORE_ENABLE=NO`, and result bundles go to `RUNNER_TEMP`;
   - `test` uses its own simulator, "Codeg CI iPhone 17 Pro Max", erased for
     every run, then shut down and erased again at the end so its data (about

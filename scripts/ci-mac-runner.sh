@@ -10,6 +10,11 @@
 #              $HOME/tools, checksums verified), keeps DerivedData in
 #              $HOME/dd/codeg-ios under 10 GB, makes sure 20 GB are free, and
 #              exports DERIVED_DATA and XCODEBUILD_EXTRA for the later steps.
+#              Each job keeps its own DerivedData ($HOME/dd/codeg-ios/<job>):
+#              the generic simulator build and the test build for one
+#              simulator compile with different settings, so in one folder
+#              each would rebuild the whole app after the other. The package
+#              checkouts are shared.
 #   simulator  Erases the dedicated "Codeg CI iPhone 17 Pro Max" simulator on
 #              the newest iOS runtime (creating it the first time) and exports
 #              SIM_UDID.
@@ -28,7 +33,8 @@ XCODEGEN_VERSION=2.46.0
 XCODEGEN_SHA256=4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
 XCBEAUTIFY_VERSION=3.2.1
 XCBEAUTIFY_SHA256=ed32972e41bc3aa19588f8b0f4a0209ef70c663ad60bbf4ad84a2de73355d637
-DD="$HOME/dd/codeg-ios"
+DD_ROOT="$HOME/dd/codeg-ios"
+DD="$DD_ROOT/${GITHUB_JOB:-build}"
 DD_CAP_GB=10
 MIN_FREE_GB=20
 SIM_NAME="Codeg CI iPhone 17 Pro Max"
@@ -53,7 +59,7 @@ fetch() {
 }
 
 free_gb() { df -g "$HOME" | awk 'NR == 2 { print $4 }'; }
-dd_gb() { if [[ -d "$DD" ]]; then echo $(( $(du -sk "$DD" | cut -f1) / 1048576 )); else echo 0; fi; }
+dd_gb() { if [[ -d "$DD_ROOT" ]]; then echo $(( $(du -sk "$DD_ROOT" | cut -f1) / 1048576 )); else echo 0; fi; }
 
 prepare() {
   # SwiftTerm ships a Metal shader. Xcode 26+ installs the Metal compiler as a
@@ -82,24 +88,24 @@ prepare() {
   size="$(dd_gb)"
   if (( size >= DD_CAP_GB )); then
     echo "DerivedData is $size GB, over the $DD_CAP_GB GB cap: starting it afresh."
-    rm -rf "$DD"
+    rm -rf "$DD_ROOT"
     mkdir -p "$DD"
   fi
   free="$(free_gb)"
-  if (( free < MIN_FREE_GB )) && [[ -n "$(ls -A "$DD")" ]]; then
+  if (( free < MIN_FREE_GB )) && [[ -n "$(ls -A "$DD_ROOT")" ]]; then
     echo "Only $free GB free: dropping this runner's DerivedData."
-    rm -rf "$DD"
+    rm -rf "$DD_ROOT"
     mkdir -p "$DD"
     free="$(free_gb)"
   fi
   if (( free < MIN_FREE_GB )); then
     err "Only $free GB free on the Mac; an iPhone job needs $MIN_FREE_GB GB. The runner guard moves iPhone jobs to GitHub's runners below 25 GB; run this job again once it has."
   fi
-  echo "DerivedData $DD: $(dd_gb) GB. Free on the Mac: $free GB."
+  echo "DerivedData $DD ($DD_ROOT: $(dd_gb) GB). Free on the Mac: $free GB."
 
   {
     echo "DERIVED_DATA=$DD"
-    echo "XCODEBUILD_EXTRA=COMPILER_INDEX_STORE_ENABLE=NO -resultBundlePath $RUNNER_TEMP/result.xcresult"
+    echo "XCODEBUILD_EXTRA=COMPILER_INDEX_STORE_ENABLE=NO -resultBundlePath $RUNNER_TEMP/result.xcresult -clonedSourcePackagesDirPath $DD_ROOT/SourcePackages"
   } >>"$GITHUB_ENV"
 }
 
@@ -163,5 +169,5 @@ case "${1:-}" in
   prepare)   prepare ;;
   simulator) simulator ;;
   shutdown)  shutdown_simulator ;;
-  *)         sed -n '2,23p' "$0"; exit 2 ;;
+  *)         sed -n '2,28p' "$0"; exit 2 ;;
 esac
