@@ -2130,6 +2130,8 @@ for the open session's own Fork Session, the fork goes as before. Tests in
   notice and its Continue, a typed message hiding it, an ordinary end, a
   reopen with and without the server's word, a turn started elsewhere, a
   fork in place, a reconnect that missed the end with and without it).
+  Screenshots: `output-limit-notice-light`, `-dark` and `-zh-light` in the
+  `compose-screenshots` artifact.
 
 ## Session lists
 

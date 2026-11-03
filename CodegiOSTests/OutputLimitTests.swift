@@ -295,6 +295,43 @@ final class OutputLimitTests: XCTestCase {
         XCTAssertEqual(model.lastStopReason, "end_turn")
         XCTAssertFalse(model.showsOutputLimitNotice)
     }
+
+    // MARK: - How it looks
+
+    /// The end of a reply the output limit cut off, as the transcript draws
+    /// it (the reply, its footer, then the notice), in light and dark and in
+    /// Simplified Chinese: `output-limit-notice-*.png` in `$COMPOSE_SHOTS_DIR`.
+    func testTheNoticeAtTheEndOfTheReply() throws {
+        let now = Date()
+        let turns = [
+            MessageTurn(id: "u-1", role: .user, blocks: [.text("Write the migration guide for the new schema")],
+                        timestamp: now.addingTimeInterval(-120)),
+            MessageTurn(id: "a-1", role: .assistant, blocks: [.text("""
+                ## Migration guide
+
+                1. Back up the database with `pg_dump`.
+                2. Run the schema migration, then check that every table
+                """)], timestamp: now.addingTimeInterval(-110), durationMs: 104_000,
+                        completedAt: now.addingTimeInterval(-6)),
+        ]
+        func transcript(_ locale: Locale) -> some View {
+            ZStack {
+                CodegBackground()
+                TranscriptView(turns: turns, pendingUserTurns: [], liveTurn: nil, agent: .pi, turnsVersion: 1,
+                               scrollTick: 0, stickTick: 0, onPinnedChange: { _ in },
+                               outputLimitNotice: OutputLimitNotice {}) { EmptyView() }
+            }
+            .environment(\.locale, locale)
+        }
+        for style in Shot.styles {
+            try Shot.capture("output-limit-notice", style, in: Shot.composeDirectory, settle: 1.5) {
+                transcript(Locale(identifier: "en"))
+            }
+        }
+        try Shot.capture("output-limit-notice-zh", .light, in: Shot.composeDirectory, settle: 1.5) {
+            transcript(Locale(identifier: "zh-Hans"))
+        }
+    }
 }
 
 /// The reply the output limit cut off, as the server keeps it.
