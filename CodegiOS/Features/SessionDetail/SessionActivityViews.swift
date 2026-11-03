@@ -300,12 +300,26 @@ struct OutputLimitNotice: View {
                 .foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            // The Continue chip's face, smaller. Built from a glyph and a
+            // line of text rather than a bordered `Label`: in the
+            // transcript's list rows that showed the glyph alone and sized
+            // the button as if its title wrapped.
             Button(action: onContinue) {
-                Label("Continue", systemImage: "play.fill")
+                HStack(spacing: 4) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 9, weight: .bold))
+                    Text("Continue")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Theme.accent)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .background(Theme.accent.opacity(0.12), in: Capsule())
+                .overlay(Capsule().strokeBorder(Theme.accent.opacity(0.35), lineWidth: 0.75))
+                .contentShape(Capsule())
             }
-            .font(.caption.weight(.semibold))
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.plain)
             .fixedSize()
             .accessibilityHint(Text("Sends “continue” so the agent keeps going"))
             .accessibilityIdentifier("output-limit-continue")
