@@ -226,6 +226,9 @@ enum MarkerKind {
     case plan
     case thinking
     case error
+    /// Something to know about the reply before going on (it hit the model's
+    /// output limit): an exclamation mark in the warning tint.
+    case warning
     case footer
     /// A context-compaction boundary. Like `.footer` it is a *marker on* the
     /// spine, not an event hanging off it, so the rail runs straight through.
@@ -286,6 +289,8 @@ struct NodeMarker: View {
             }
         case .error:
             chip(icon: "exclamationmark", tint: Theme.danger, filled: true)
+        case .warning:
+            chip(icon: "exclamationmark", tint: Theme.warning)
         case .footer:
             // A small solid tick sitting *on* the spine (which runs through it, not
             // around), so the rail reads as continuous through a turn boundary

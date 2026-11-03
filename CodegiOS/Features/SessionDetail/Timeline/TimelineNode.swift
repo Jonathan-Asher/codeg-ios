@@ -68,6 +68,10 @@ struct TimelineNode: Identifiable {
         case thinking
         case error(String)
         case unsupported(String)
+        /// After the latest reply, when the model's output limit cut it off:
+        /// the notice with Continue. Never part of a turn; the transcript
+        /// adds it last (``TranscriptTimeline/outputLimitNode(_:agent:)``).
+        case outputLimit(OutputLimitNotice)
     }
 
     /// The gutter marker for this node — drives the icon and the state tint.
@@ -109,6 +113,7 @@ struct TimelineNode: Identifiable {
         case .thinking: return .thinking
         case .error: return .error
         case .unsupported: return .system
+        case .outputLimit: return .warning
         }
     }
 }
@@ -313,6 +318,16 @@ enum TranscriptTimeline {
     static func buildLive(_ live: LiveTurn, agent: AgentType) -> [TimelineNode] {
         liveNodes(live, agent: agent)
     }
+
+    /// The notice after the latest reply when the model's output limit cut it
+    /// off. It goes after everything else (the live reply, or the persisted
+    /// reply's footer) under one id, so its row stays put while the reply
+    /// above it goes from live to persisted.
+    static func outputLimitNode(_ notice: OutputLimitNotice, agent: AgentType) -> TimelineNode {
+        TimelineNode(id: outputLimitNodeID, content: .outputLimit(notice), agent: agent)
+    }
+
+    static let outputLimitNodeID = "output-limit-notice"
 
     // MARK: Assistant reply → nodes
 

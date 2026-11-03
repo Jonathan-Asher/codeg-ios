@@ -389,6 +389,10 @@ struct LiveSessionSnapshot: Sendable, Decodable {
     /// (`fork_while_running`: Claude Code, and pi-acp from 0.0.34-steering.3).
     /// nil from a server that doesn't say.
     let forkWhileRunning: Bool?
+    /// How the connection's last turn ended (`last_stop_reason`: ACP's stop
+    /// reason, `end_turn`, `max_tokens`, …). Set when a turn completes and
+    /// cleared when the next prompt starts; nil from an older server.
+    let lastStopReason: String?
 
     private enum CodingKeys: String, CodingKey {
         case connectionId, conversationId, folderId, status, externalId, eventSeq
@@ -397,6 +401,7 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         case pendingUserMessage, feedback
         case modes, currentMode, configOptions
         case forkSupported, forkWhileRunning
+        case lastStopReason
     }
 
     private struct PendingUserMessageRef: Decodable {
@@ -427,6 +432,7 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         configOptions = (try? c.decodeIfPresent([SessionConfigOption].self, forKey: .configOptions)) ?? nil
         forkSupported = (try? c.decodeIfPresent(Bool.self, forKey: .forkSupported)) ?? nil
         forkWhileRunning = (try? c.decodeIfPresent(Bool.self, forKey: .forkWhileRunning)) ?? nil
+        lastStopReason = (try? c.decodeIfPresent(String.self, forKey: .lastStopReason)) ?? nil
     }
 }
 

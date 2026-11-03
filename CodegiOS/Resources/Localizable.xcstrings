@@ -11262,6 +11262,36 @@
         }
       }
     },
+    "Continue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "继续"
+          }
+        }
+      }
+    },
+    "This reply hit the model's output limit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此回复已达到模型的输出上限"
+          }
+        }
+      }
+    },
+    "Sends “continue” so the agent keeps going" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送“continue”，让智能体继续工作"
+          }
+        }
+      }
+    },
     "Don’t continue by itself: leave the turn interrupted, with Continue" : {
       "localizations" : {
         "zh-Hans" : {

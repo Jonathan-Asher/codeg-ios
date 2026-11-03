@@ -115,6 +115,9 @@ struct TranscriptView<Header: View>: View {
     var mediaContext: MediaPathContext?
     /// Which of those files are on the server; a card shows once its file is found.
     var mediaPresence: MediaPresence?
+    /// The latest reply hit the model's output limit: this notice, with
+    /// Continue, after it. Nil otherwise.
+    var outputLimitNotice: OutputLimitNotice?
     /// Scrolls with the content as the first element (header above the first
     /// node). Kept generic so the transcript stays agnostic of the header's type.
     @ViewBuilder var header: () -> Header
@@ -129,6 +132,7 @@ struct TranscriptView<Header: View>: View {
          onViewportChange: @escaping (TranscriptViewport) -> Void = { _ in },
          jump: TranscriptJump? = nil, onJumpLanded: @escaping (TranscriptJump) -> Void = { _ in },
          mediaContext: MediaPathContext? = nil, mediaPresence: MediaPresence? = nil,
+         outputLimitNotice: OutputLimitNotice? = nil,
          @ViewBuilder header: @escaping () -> Header) {
         self.turns = turns
         self.pendingUserTurns = pendingUserTurns
@@ -152,6 +156,7 @@ struct TranscriptView<Header: View>: View {
         self.onJumpLanded = onJumpLanded
         self.mediaContext = mediaContext
         self.mediaPresence = mediaPresence
+        self.outputLimitNotice = outputLimitNotice
         self.header = header
         let anchored = restore != .bottom
         _stuckToBottom = State(initialValue: !anchored)
@@ -368,6 +373,10 @@ struct TranscriptView<Header: View>: View {
         if let liveTurn {
             all.append(contentsOf: TranscriptTimeline.buildLive(liveTurn, agent: agent))
         }
+        // After everything: the latest reply hit the model's output limit.
+        if let outputLimitNotice {
+            all.append(TranscriptTimeline.outputLimitNode(outputLimitNotice, agent: agent))
+        }
         // Terminate the rail at its endpoints, on the *combined* list. The top
         // terminates only when the window starts at the true beginning of the
         // conversation; otherwise the spine continues up into the not-yet-loaded
@@ -438,6 +447,7 @@ struct TranscriptView<Header: View>: View {
             media: mediaContext, presence: mediaContext == nil ? nil : mediaPresence
         ).count
         if let liveTurn { count += TranscriptTimeline.buildLive(liveTurn, agent: agent).count }
+        if outputLimitNotice != nil { count += 1 }
         return count
     }
 
