@@ -2101,9 +2101,11 @@ for the open session's own Fork Session, the fork goes as before. Tests in
   reply hit the model's output limit" and Continue. It is never there while
   a turn runs, and goes when the next turn starts: any send (Continue, a
   typed message, the queue, Talk) and a running turn adopted from an attach
-  (one another client started). Any other stop reason (`end_turn`,
-  `refusal`, `max_turn_requests`, `cancelled`), and a turn that failed, was
-  cancelled or was settled from the transcript alone, shows nothing.
+  (one another client started); a fork that replaces the history (Edit
+  Message, a fork in place) takes it away too. Any other stop reason
+  (`end_turn`, `refusal`, `max_turn_requests`, `cancelled`), and a turn that
+  failed, was cancelled or was settled from the transcript alone, shows
+  nothing.
 - **Continue** is the chip's `sendContinue()`: "continue" goes through
   `startSend` like a typed message (the "▶ Continued" divider at once, the
   live placeholder, kept as "Not sent" when it doesn't go). While the notice
@@ -2127,7 +2129,7 @@ for the open session's own Fork Session, the fork goes as before. Tests in
 - Tests: `OutputLimitTests` (the stop reasons, the snapshot field, the
   notice and its Continue, a typed message hiding it, an ordinary end, a
   reopen with and without the server's word, a turn started elsewhere, a
-  reconnect that missed the end with and without it).
+  fork in place, a reconnect that missed the end with and without it).
 
 ## Session lists
 

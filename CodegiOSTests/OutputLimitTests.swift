@@ -152,7 +152,7 @@ final class OutputLimitTests: XCTestCase {
         XCTAssertTrue(model.canOfferContinue, "the Continue chip is back for an ordinary reply")
     }
 
-    func testTheNoticeIsTheTranscriptsLastRowWithItsOwnContinue() {
+    func testTheNoticesRowHasItsOwnIDMarkerAndContinue() {
         var tapped = 0
         let node = TranscriptTimeline.outputLimitNode(OutputLimitNotice { tapped += 1 }, agent: .pi)
         XCTAssertEqual(node.id, TranscriptTimeline.outputLimitNodeID)
@@ -238,6 +238,18 @@ final class OutputLimitTests: XCTestCase {
         factory.opened[1].push(Wire.turnComplete)
         let ended = await eventually { !model.isInFlight }
         XCTAssertTrue(ended)
+        XCTAssertFalse(model.showsOutputLimitNotice)
+    }
+
+    func testAForkInPlaceLeavesTheNoticeWithTheOriginal() async {
+        let factory = StreamFactory([.attach(Fixtures.snapshot(status: "connected", lastStopReason: "max_tokens"))])
+        let model = await reopen(factory)
+        XCTAssertTrue(model.showsOutputLimitNotice)
+
+        // This row now holds the forked session, whose history ends at the fork.
+        server.on("get_folder_conversation") { _ in .body(Wire.detail(Array(cutOffTurns.prefix(1)))) }
+        await model.reloadAfterInPlaceFork(connectionID: nil)
+        XCTAssertNil(model.lastStopReason)
         XCTAssertFalse(model.showsOutputLimitNotice)
     }
 

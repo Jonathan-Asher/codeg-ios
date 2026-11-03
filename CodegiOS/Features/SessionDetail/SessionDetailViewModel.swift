@@ -4668,8 +4668,10 @@ final class SessionDetailViewModel {
         cacheSaveTask?.cancel()
         if let cache = transcriptCache { await cache.remove(serverKey: cacheServerKey, conversationID: id) }
         forgetReadingPosition()
-        // A reply streamed here before the fork belongs to the old history.
+        // A reply streamed here before the fork belongs to the old history,
+        // and so does how the last turn ended (the output-limit notice).
         if let live = liveTurn, !live.isStreaming { liveTurn = nil }
+        lastStopReason = nil
         openedFromCache = false
         var onFork = false
         for attempt in 0..<4 {
@@ -4704,6 +4706,8 @@ final class SessionDetailViewModel {
         if let conn { adoptForkConnection(conn) }
         openedFromCache = false
         forgetReadingPosition()
+        // How the original's last turn ended is not the fork's to say.
+        lastStopReason = nil
         do {
             let outcome = try await TranscriptSync.fetch(client: client, id: id, held: nil, overlap: 0)
             summary = outcome.detail.summary
