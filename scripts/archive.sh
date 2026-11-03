@@ -2,7 +2,8 @@
 #
 # scripts/archive.sh — archive, export and (optionally) upload an App Store
 # Connect build. Shared by `scripts/release.sh --archive` and the `testflight`
-# job in .github/workflows/ios.yml.
+# job in .github/workflows/ios.yml. The archived app's identity is checked
+# (scripts/check-app-identity.sh) before anything is exported or uploaded.
 #
 # Usage: scripts/archive.sh [--tag NAME] [--build-number N]
 #
@@ -41,7 +42,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag)          [[ $# -ge 2 ]] || die "--tag requires a value"; TAG="$2"; shift 2 ;;
     --build-number) [[ $# -ge 2 ]] || die "--build-number requires a value"; BUILD_NUMBER="$2"; shift 2 ;;
-    -h|--help)      sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help)      sed -n '2,26p' "$0"; exit 0 ;;
     *)              die "unknown argument: $1" ;;
   esac
 done
@@ -92,6 +93,11 @@ run xcodebuild -project CodegiOS.xcodeproj -scheme CodegiOS -configuration Relea
 # such a bundle (ITMS-90208), so drop every embedded framework the app binary
 # does not load before export re-signs the app.
 APP_DIR="$ARCHIVE_PATH/Products/Applications/Codeg.app"
+
+# The archived Release app must carry the fork's bundle id, name and URL
+# scheme before anything is exported or uploaded.
+run "$SCRIPT_DIR/check-app-identity.sh" "$APP_DIR"
+
 if [[ "$DRY_RUN" != 1 ]]; then
   for fw in "$APP_DIR"/Frameworks/*.framework; do
     [[ -e "$fw" ]] || continue

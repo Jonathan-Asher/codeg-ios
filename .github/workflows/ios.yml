@@ -13,14 +13,117 @@ on:
         description: Build number (CURRENT_PROJECT_VERSION) for the upload; defaults to the run number
         type: string
         required: false
+      tests:
+        description: "auto: skip the build and test jobs when a push run for this commit passed or is still running. run: always run them"
+        type: choice
+        options:
+          - auto
+          - run
+        default: auto
 
 permissions:
   contents: read
 
+# Where the build, device and test jobs run: GitHub's macos-26, or Jonathan's
+# Mac (the self-hosted runner m4-ios, label codeg-m4-ios) while the repository
+# variable IOS_RUNS_ON is '["self-hosted","codeg-m4-ios"]'. The runner guard on
+# the build box sets that variable: the Mac only while codeg's own CI is on it
+# and the Mac is plugged in, fully awake and has 25 GB free. Pull requests
+# always stay on GitHub's runners, so a pull request's code never runs on the
+# Mac. TestFlight uploads stay on GitHub's runners too.
+
 jobs:
+  # A manual run (usually a TestFlight upload) for a commit whose push run has
+  # passed, or is still running, does not build and test that commit again.
+  # Anything unexpected (no push run, a failed or cancelled one, an API error)
+  # means the build and test jobs run.
+  prior:
+    name: Prior push run
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      skip: ${{ steps.find.outputs.skip }}
+      watch: ${{ steps.find.outputs.watch }}
+    steps:
+      - name: Find the push run for this commit
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTS: ${{ inputs.tests }}
+        run: |
+          skip=false watch=""
+          say() { echo "$*"; echo "$*" >>"$GITHUB_STEP_SUMMARY"; }
+          runs_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs"
+          if [[ "$TESTS" == run ]]; then
+            say "tests=run: the build and test jobs run."
+          elif ! runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ios.yml/runs?event=push&head_sha=$GITHUB_SHA&per_page=50" \
+              --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID) | {id, status, conclusion}]")"; then
+            say "Could not look up the push runs of $GITHUB_SHA: the build and test jobs run."
+          else
+            passed="$(jq -r 'map(select(.status == "completed" and .conclusion == "success")) | first | .id // empty' <<<"$runs" || true)"
+            running="$(jq -r 'map(select(.status != "completed")) | first | .id // empty' <<<"$runs" || true)"
+            if [[ "$passed" =~ ^[0-9]+$ ]]; then
+              skip=true
+              say "The push run $runs_url/$passed passed for $GITHUB_SHA: the build and test jobs are skipped."
+            elif [[ "$running" =~ ^[0-9]+$ ]]; then
+              skip=true watch="$running"
+              say "The push run $runs_url/$running is still running for $GITHUB_SHA: the build and test jobs are skipped, and \"Push run result\" waits for it."
+            else
+              say "No push run of $GITHUB_SHA passed or is running: the build and test jobs run."
+            fi
+          fi
+          echo "skip=$skip" >>"$GITHUB_OUTPUT"
+          echo "watch=$watch" >>"$GITHUB_OUTPUT"
+
+  # Keeps a manual run's colour honest when it skipped the tests for a push run
+  # that had not finished: it ends as that push run ends.
+  push-result:
+    name: Push run result
+    needs: prior
+    if: needs.prior.outputs.watch != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: read
+    steps:
+      - name: Wait for the push run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ needs.prior.outputs.watch }}
+        run: |
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN"
+          echo "Waiting for $url"
+          cancelled_at=""
+          while :; do
+            if ! state="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq '"\(.status) \(.conclusion // "none") \(.run_attempt)"')"; then
+              sleep 30; continue
+            fi
+            read -r status conclusion attempt <<<"$state"
+            if [[ "$status" != completed ]]; then cancelled_at=""; sleep 30; continue; fi
+            # When the Mac goes away, the runner guard moves a run that waits
+            # for it to GitHub's runners by cancelling it and running it again:
+            # give a cancelled run five minutes to start its next attempt.
+            if [[ "$conclusion" == cancelled ]]; then
+              now="$(date +%s)"; cancelled_at="${cancelled_at:-$now}"
+              if (( now - cancelled_at < 300 )); then sleep 30; continue; fi
+            fi
+            break
+          done
+          if [[ "$conclusion" == success ]]; then
+            echo "The push run passed (attempt $attempt): $url"
+          else
+            echo "::error::The push run of this commit ended '$conclusion' (attempt $attempt): $url. Run this workflow again with tests=run to build and test here."
+            exit 1
+          fi
+
   build:
     name: Simulator build
-    runs-on: macos-26
+    needs: prior
+    if: ${{ !cancelled() && needs.prior.outputs.skip != 'true' }}
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request') && '"macos-26"' || vars.IOS_RUNS_ON || '"macos-26"') }}
     timeout-minutes: 45
     concurrency:
       group: ios-build-${{ github.event_name }}-${{ github.ref }}
@@ -30,58 +133,55 @@ jobs:
 
       - name: Show toolchain
         run: |
+          echo "Runner: $RUNNER_NAME ($RUNNER_ENVIRONMENT)"
+          sw_vers
           xcodebuild -version
-          xcrun --sdk iphonesimulator --show-sdk-version
+          echo "iOS SDK $(xcrun --sdk iphoneos --show-sdk-version), simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          xcrun metal --version 2>&1 | head -1
 
       - name: Install XcodeGen
+        if: runner.environment != 'self-hosted'
         run: brew install xcodegen
 
       # SwiftTerm ships a Metal shader; Xcode 26+ installs the Metal compiler
       # as a separate component.
       - name: Ensure the Metal toolchain
+        if: runner.environment != 'self-hosted'
         run: |
           if ! xcrun metal --version >/dev/null 2>&1; then
             xcodebuild -downloadComponent MetalToolchain
           fi
 
+      # On the Mac: no Homebrew, nothing downloaded into Xcode, DerivedData
+      # kept between runs (see scripts/ci-mac-runner.sh).
+      - name: Prepare the Mac runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-mac-runner.sh prepare
+
       - name: Generate the Xcode project
-        run: xcodegen generate
+        run: |
+          xcodegen --version
+          xcodegen generate
 
       - name: Build for the iOS Simulator
         run: |
           set -o pipefail
           fmt=cat
           if command -v xcbeautify >/dev/null 2>&1; then fmt="xcbeautify --renderer github-actions"; fi
+          read -r -a extra <<<"${XCODEBUILD_EXTRA:-}"
           xcodebuild build \
             -project CodegiOS.xcodeproj \
             -scheme CodegiOS \
             -configuration Debug \
             -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build/DerivedData \
+            -derivedDataPath "${DERIVED_DATA:-build/DerivedData}" \
             -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            ${extra[@]+"${extra[@]}"} \
             2>&1 | tee "$RUNNER_TEMP/xcodebuild.log" | $fmt
 
       - name: Check the app identity
-        run: |
-          plist="$(ls -d build/DerivedData/Build/Products/Debug-iphonesimulator/*.app | head -1)/Info.plist"
-          plutil -p "$plist" | grep -E 'CFBundleIdentifier|CFBundleDisplayName|CFBundleURLSchemes|CodegURLScheme|ITSAppUsesNonExemptEncryption' -A2
-          check() {
-            local got
-            got="$(/usr/libexec/PlistBuddy -c "Print :$1" "$plist")"
-            if [[ "$got" != "$2" ]]; then echo "::error::$1 is '$got', expected '$2'"; exit 1; fi
-          }
-          check CFBundleIdentifier io.ashurov.codeg
-          check CFBundleDisplayName "Codeg Plus"
-          check CFBundleURLTypes:0:CFBundleURLSchemes:0 codegplus
-          check CodegURLScheme codegplus
-          check ITSAppUsesNonExemptEncryption false
-          # The notification service extension (answer buttons on question pushes).
-          ext="$(dirname "$plist")/PlugIns/NotificationService.appex/Info.plist"
-          if [[ ! -f "$ext" ]]; then echo "::error::the notification service extension is not embedded"; exit 1; fi
-          plist="$ext"
-          check CFBundleIdentifier io.ashurov.codeg.NotificationService
-          check NSExtension:NSExtensionPointIdentifier com.apple.usernotifications.service
+        run: scripts/check-app-identity.sh "${DERIVED_DATA:-build/DerivedData}/Build/Products/Debug-iphonesimulator/Codeg.app"
 
       - name: Upload the build log
         if: failure()
@@ -96,7 +196,9 @@ jobs:
   # espeak-ng, with sherpa-onnx using BlueTTSKit's runtime.
   device:
     name: Device build
-    runs-on: macos-26
+    needs: prior
+    if: ${{ !cancelled() && needs.prior.outputs.skip != 'true' }}
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request') && '"macos-26"' || vars.IOS_RUNS_ON || '"macos-26"') }}
     timeout-minutes: 60
     concurrency:
       group: ios-device-${{ github.event_name }}-${{ github.ref }}
@@ -104,35 +206,57 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Show toolchain
+        run: |
+          echo "Runner: $RUNNER_NAME ($RUNNER_ENVIRONMENT)"
+          sw_vers
+          xcodebuild -version
+          echo "iOS SDK $(xcrun --sdk iphoneos --show-sdk-version), simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          xcrun metal --version 2>&1 | head -1
+
       - name: Install XcodeGen
+        if: runner.environment != 'self-hosted'
         run: brew install xcodegen
 
+      # SwiftTerm ships a Metal shader; Xcode 26+ installs the Metal compiler
+      # as a separate component.
       - name: Ensure the Metal toolchain
+        if: runner.environment != 'self-hosted'
         run: |
           if ! xcrun metal --version >/dev/null 2>&1; then
             xcodebuild -downloadComponent MetalToolchain
           fi
 
+      # On the Mac: no Homebrew, nothing downloaded into Xcode, DerivedData
+      # kept between runs (see scripts/ci-mac-runner.sh).
+      - name: Prepare the Mac runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-mac-runner.sh prepare
+
       - name: Generate the Xcode project
-        run: xcodegen generate
+        run: |
+          xcodegen --version
+          xcodegen generate
 
       - name: Build for an iPhone
         run: |
           set -o pipefail
           fmt=cat
           if command -v xcbeautify >/dev/null 2>&1; then fmt="xcbeautify --renderer github-actions"; fi
+          read -r -a extra <<<"${XCODEBUILD_EXTRA:-}"
           xcodebuild build \
             -project CodegiOS.xcodeproj \
             -scheme CodegiOS \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -derivedDataPath build/DerivedData \
+            -derivedDataPath "${DERIVED_DATA:-build/DerivedData}" \
             -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            ${extra[@]+"${extra[@]}"} \
             2>&1 | tee "$RUNNER_TEMP/xcodebuild-device.log" | $fmt
 
       - name: Check the linked binary for a second ONNX Runtime or espeak-ng
-        run: scripts/check-linked-symbols.sh build/DerivedData/Build/Products/Release-iphoneos/Codeg.app/Codeg
+        run: scripts/check-linked-symbols.sh "${DERIVED_DATA:-build/DerivedData}/Build/Products/Release-iphoneos/Codeg.app/Codeg"
 
       - name: Upload the build log
         if: failure()
@@ -144,7 +268,9 @@ jobs:
 
   test:
     name: Unit tests
-    runs-on: macos-26
+    needs: prior
+    if: ${{ !cancelled() && needs.prior.outputs.skip != 'true' }}
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request') && '"macos-26"' || vars.IOS_RUNS_ON || '"macos-26"') }}
     timeout-minutes: 45
     concurrency:
       group: ios-test-${{ github.event_name }}-${{ github.ref }}
@@ -152,21 +278,42 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Show toolchain
+        run: |
+          echo "Runner: $RUNNER_NAME ($RUNNER_ENVIRONMENT)"
+          sw_vers
+          xcodebuild -version
+          echo "iOS SDK $(xcrun --sdk iphoneos --show-sdk-version), simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          xcrun metal --version 2>&1 | head -1
+
       - name: Install XcodeGen
+        if: runner.environment != 'self-hosted'
         run: brew install xcodegen
 
+      # SwiftTerm ships a Metal shader; Xcode 26+ installs the Metal compiler
+      # as a separate component.
       - name: Ensure the Metal toolchain
+        if: runner.environment != 'self-hosted'
         run: |
           if ! xcrun metal --version >/dev/null 2>&1; then
             xcodebuild -downloadComponent MetalToolchain
           fi
 
+      # On the Mac: no Homebrew, nothing downloaded into Xcode, DerivedData
+      # kept between runs (see scripts/ci-mac-runner.sh).
+      - name: Prepare the Mac runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-mac-runner.sh prepare
+
       - name: Generate the Xcode project
-        run: xcodegen generate
+        run: |
+          xcodegen --version
+          xcodegen generate
 
       # The list screenshots are taken at the simulator's screen size, so an
       # iPhone 17 Pro Max (Jonathan's phone) is preferred when the runtime has one.
       - name: Pick an iPhone simulator
+        if: runner.environment != 'self-hosted'
         run: |
           udid="$(xcrun simctl list devices available -j | python3 -c '
           import json, re, sys
@@ -190,6 +337,11 @@ jobs:
           echo "SIM_UDID=$udid" >>"$GITHUB_ENV"
           xcrun simctl list devices available | grep "$udid"
 
+      # On the Mac: a simulator of its own, erased for every run.
+      - name: Use the Codeg CI simulator
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-mac-runner.sh simulator
+
       - name: Run the unit tests
         run: |
           set -o pipefail
@@ -199,14 +351,16 @@ jobs:
           export TEST_RUNNER_COMPOSE_SHOTS_DIR="$PWD/build/compose-shots"
           fmt=cat
           if command -v xcbeautify >/dev/null 2>&1; then fmt="xcbeautify --renderer github-actions"; fi
+          read -r -a extra <<<"${XCODEBUILD_EXTRA:-}"
           xcodebuild test \
             -project CodegiOS.xcodeproj \
             -scheme CodegiOS \
             -configuration Debug \
             -destination "platform=iOS Simulator,id=$SIM_UDID" \
-            -derivedDataPath build/DerivedData \
+            -derivedDataPath "${DERIVED_DATA:-build/DerivedData}" \
             -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            ${extra[@]+"${extra[@]}"} \
             2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log" | $fmt
 
       - name: Upload the session list screenshots
@@ -235,13 +389,25 @@ jobs:
           path: ${{ runner.temp }}/xcodebuild-test.log
           retention-days: 7
 
+      - name: Shut the simulator down and erase it
+        if: always() && runner.environment == 'self-hosted'
+        run: scripts/ci-mac-runner.sh shutdown
+
   # Manual only. Disabled until the repository variable TESTFLIGHT_ENABLED is
   # set to "true", which should happen once the ASC_KEY_ID, ASC_ISSUER_ID and
-  # ASC_KEY_P8 secrets exist (see docs/FORK.md).
+  # ASC_KEY_P8 secrets exist (see docs/FORK.md). Starts once the simulator
+  # build passed, or straight away when `prior` skipped the build for a push
+  # run of the same commit; the archive itself checks the app identity.
   testflight:
     name: TestFlight upload
-    if: github.event_name == 'workflow_dispatch' && inputs.testflight && vars.TESTFLIGHT_ENABLED == 'true'
-    needs: build
+    needs: [prior, build]
+    if: >-
+      ${{
+        !cancelled()
+        && github.event_name == 'workflow_dispatch' && inputs.testflight && vars.TESTFLIGHT_ENABLED == 'true'
+        && (needs.build.result == 'success'
+            || (needs.build.result == 'skipped' && needs.prior.result == 'success'))
+      }}
     runs-on: macos-26
     timeout-minutes: 60
     concurrency:
@@ -275,7 +441,12 @@ jobs:
           echo "ASC_KEY_PATH=$key" >>"$GITHUB_ENV"
 
       - name: Show toolchain
-        run: xcodebuild -version
+        run: |
+          echo "Runner: $RUNNER_NAME ($RUNNER_ENVIRONMENT)"
+          sw_vers
+          xcodebuild -version
+          echo "iOS SDK $(xcrun --sdk iphoneos --show-sdk-version), simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          xcrun metal --version 2>&1 | head -1
 
       - name: Install XcodeGen
         run: brew install xcodegen
