@@ -137,52 +137,60 @@ final class PromptCardFoldTests: XCTestCase {
     func testFoldingKeepsTheAnswersChosenAndTyped() throws {
         let typed = "Redis, it already runs there"
         let driver = FoldDriver()
-        let (window, card) = try host(QuestionCardHost(driver: driver, questions: [database, rollout], selections: [
+        let window = try host(QuestionCardHost(driver: driver, questions: [database, rollout], selections: [
             "q0": AskQuestionSelection(chosen: [], otherText: typed),
             "q1": AskQuestionSelection(chosen: ["Yes"], otherText: ""),
         ]))
         settle(0.6)
-        let open = height(of: card, in: window)
+        let open = driver.cardHeight
+        XCTAssertGreaterThan(open, 200, "open, with its questions")
         let field = try XCTUnwrap(input(showing: typed, in: window), "the Other answer as typed")
 
-        driver.fold.fold("r1")
-        settle(0.6)
-        XCTAssertLessThan(height(of: card, in: window), 100, "folded to its bar")
+        change { driver.fold.fold("r1") }
+        XCTAssertLessThan(driver.cardHeight, 100, "folded to its bar")
         XCTAssertTrue(input(showing: typed, in: window) === field, "the card kept its field, hidden, while folded")
 
-        driver.fold.unfold()
-        settle(0.6)
-        XCTAssertEqual(height(of: card, in: window), open, accuracy: 1, "open again, as it was")
+        change { driver.fold.unfold() }
+        XCTAssertEqual(driver.cardHeight, open, accuracy: 1, "open again, as it was")
         XCTAssertTrue(input(showing: typed, in: window) === field,
                       "the same field with the same answer: Other is still chosen and its text kept")
     }
 
     func testANewRequestIntoTheSameCardArrivesUnfolded() throws {
+        let typed = "Redis"
         let driver = FoldDriver()
-        let (window, card) = try host(QuestionCardHost(driver: driver, questions: [database]))
-        settle(0.5)
-        let open = height(of: card, in: window)
-        driver.fold.fold("r1")
-        settle(0.5)
-        XCTAssertLessThan(height(of: card, in: window), 100)
-        driver.requestID = "r2"
-        settle(0.5)
-        XCTAssertEqual(height(of: card, in: window), open, accuracy: 1, "the next request arrives unfolded")
+        let window = try host(QuestionCardHost(driver: driver, questions: [database], selections: [
+            "q0": AskQuestionSelection(chosen: [], otherText: typed),
+        ]))
+        settle(0.6)
+        let open = driver.cardHeight
+        let field = try XCTUnwrap(input(showing: typed, in: window))
+        change { driver.fold.fold("r1") }
+        let folded = driver.cardHeight
+        XCTAssertLessThan(folded, 100, "folded to its bar")
+        XCTAssertGreaterThan(open, folded + 100)
+
+        // The next request, into the same card (no new identity): its view
+        // state carries over, the fold doesn't.
+        change { driver.requestID = "r2" }
+        XCTAssertTrue(driver.fold.isFolded("r1"), "the fold still holds the first request")
+        XCTAssertTrue(input(showing: typed, in: window) === field, "the same card, with its state")
+        XCTAssertEqual(driver.cardHeight, open, accuracy: 1, "the next request arrives unfolded")
     }
 
     func testTheAnsweredRecordInTheTranscriptNeverFolds() throws {
         let driver = FoldDriver()
         driver.requestID = "result"
         driver.fold = PromptFold(folded: "result")
-        let (window, card) = try host(QuestionCardHost(driver: driver, questions: [database], readOnly: true))
-        settle(0.5)
-        XCTAssertGreaterThan(height(of: card, in: window), 120, "the replay shows the question in full")
+        _ = try host(QuestionCardHost(driver: driver, questions: [database], readOnly: true))
+        settle(0.6)
+        XCTAssertGreaterThan(driver.cardHeight, 120, "the replay shows the question in full, though its fold says folded")
     }
 
     func testFoldingLetsGoOfTheKeyboard() throws {
         let typed = "Redis"
         let driver = FoldDriver()
-        let (window, _) = try host(QuestionCardHost(driver: driver, questions: [database], selections: [
+        let window = try host(QuestionCardHost(driver: driver, questions: [database], selections: [
             "q0": AskQuestionSelection(chosen: [], otherText: typed),
         ]))
         window.makeKey()
@@ -191,17 +199,16 @@ final class PromptCardFoldTests: XCTestCase {
         _ = field.becomeFirstResponder()
         settle(0.5)
         try XCTSkipUnless(field.isFirstResponder, "the simulator gave the field no keyboard focus")
-        driver.fold.fold("r1")
-        settle(0.6)
+        change { driver.fold.fold("r1") }
         XCTAssertFalse(field.isFirstResponder, "folding let go of the keyboard")
     }
 
     func testATranscriptAtTheLatestMessageStaysThereWithTheRoomTheCardGaveUp() throws {
         let driver = FoldDriver()
         var pinned: [Bool] = []
-        let (window, _) = try host(TranscriptWithCard(driver: driver, turns: longTranscript(),
-                                                      questions: [database, rollout],
-                                                      onPinnedChange: { pinned.append($0) }))
+        let window = try host(TranscriptWithCard(driver: driver, turns: longTranscript(),
+                                                 questions: [database, rollout],
+                                                 onPinnedChange: { pinned.append($0) }))
         settle(1.5)
         let list = try XCTUnwrap(collectionView(in: window), "the transcript's list")
         let gap = gapBelowLatest(list)
@@ -322,16 +329,15 @@ final class PromptCardFoldTests: XCTestCase {
 
     // MARK: - Hosting
 
-    private func host<V: View>(_ view: V) throws -> (UIWindow, UIHostingController<V>) {
+    private func host<V: View>(_ view: V) throws -> UIWindow {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
         window.frame = scene.screen.bounds
         window.windowLevel = .alert + 1
-        let controller = UIHostingController(rootView: view)
-        window.rootViewController = controller
+        window.rootViewController = UIHostingController(rootView: view)
         window.isHidden = false
         windows.append(window)
-        return (window, controller)
+        return window
     }
 
     private func settle(_ seconds: TimeInterval) {
@@ -341,9 +347,13 @@ final class PromptCardFoldTests: XCTestCase {
         }
     }
 
-    /// The card's height at the window's width.
-    private func height<V: View>(of card: UIHostingController<V>, in window: UIWindow) -> CGFloat {
-        card.sizeThatFits(in: CGSize(width: window.bounds.width, height: 2_000)).height
+    /// Makes a change with animations off and lets the layout settle, so
+    /// what is measured next is where the card ends up.
+    private func change(_ body: () -> Void) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction, body)
+        settle(0.6)
     }
 
     /// The UIKit field showing `text` (a multi-line TextField is a UITextView).
@@ -379,6 +389,10 @@ final class PromptCardFoldTests: XCTestCase {
 private final class FoldDriver: ObservableObject {
     @Published var fold = PromptFold()
     @Published var requestID = "r1"
+    /// The card's own height as laid out (the hosting controller's fitting
+    /// size would add the window's safe area). Not published: measuring
+    /// changes nothing.
+    var cardHeight: CGFloat = 0
 }
 
 private struct QuestionCardHost: View {
@@ -391,6 +405,7 @@ private struct QuestionCardHost: View {
         AskQuestionCard(pending: PendingQuestion(questionId: driver.requestID, questions: questions),
                         onAnswer: { _ in true }, readOnly: readOnly, initialSelections: selections,
                         fold: $driver.fold)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { driver.cardHeight = $0 }
     }
 }
 
