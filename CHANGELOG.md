@@ -12,6 +12,18 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- A permission, question or plan card waiting on you folds down to one line,
+  so you can read what's behind it (1.4.3). The chevron at the right of the
+  card's header, or a swipe down on the header, folds it to a slim bar in the
+  same place, with the card's icon and title, the first question (or the
+  command, or the plan's first line), how many of several questions are
+  answered, and a chevron. Tap the bar, or swipe it up, to open the card
+  again, with what you chose and typed, and a submit under way, as it was. A
+  new request always arrives open. The transcript gets the room the card gave
+  up, and if it was at the latest message it stays there. VoiceOver reads the
+  bar as one item with a Show action. Folding changes nothing for the agent:
+  Talk asks and answers as before, and an answered question replayed in the
+  transcript doesn't fold.
 - A reply cut off at the model's output limit says so (1.4.2). When the agent's
   latest reply ended because the model ran out of output (with any agent),
   its end shows "This reply hit the model's output limit" with Continue,

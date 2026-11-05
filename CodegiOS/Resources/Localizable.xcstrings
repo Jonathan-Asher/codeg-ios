@@ -4002,6 +4002,76 @@
         }
       }
     },
+    "Hide question" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏问题"
+          }
+        }
+      }
+    },
+    "Show question" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示问题"
+          }
+        }
+      }
+    },
+    "Hide permission request" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏权限请求"
+          }
+        }
+      }
+    },
+    "Show permission request" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示权限请求"
+          }
+        }
+      }
+    },
+    "Hide plan" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏计划"
+          }
+        }
+      }
+    },
+    "Show plan" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示计划"
+          }
+        }
+      }
+    },
+    "%@, %lld of %lld answered" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@，已回答 %lld / %lld"
+          }
+        }
+      }
+    },
     "Answered:" : {
       "localizations" : {
         "zh-Hans" : {

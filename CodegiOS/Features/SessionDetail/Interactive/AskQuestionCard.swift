@@ -4,7 +4,9 @@ import SwiftUI
 /// the compose bar while the agent is blocked. Mirrors codeg web's
 /// `ask-question-card.tsx`: one or more questions, each single- (radio) or
 /// multi-select (checkbox), with a free-text "Other", and a Skip / Submit footer.
-/// Skip submits a declined answer (the agent uses its own judgment).
+/// Skip submits a declined answer (the agent uses its own judgment). Pinned, it
+/// folds down to a one-line bar (`PromptCardFold`) to show the transcript
+/// behind it; the read-only replay doesn't fold.
 struct AskQuestionCard: View {
     let pending: PendingQuestion
     /// Submit (or decline) the answer. Returns true on success — the model then
@@ -16,6 +18,8 @@ struct AskQuestionCard: View {
     var readOnly = false
     var titleOverride: LocalizedStringKey?
     var subtitleOverride: LocalizedStringKey?
+    /// Drives the fold from outside (tests and screenshots).
+    private let fold: Binding<PromptFold>?
 
     /// Sentinel key for the "Other" choice (kept out of the submitted labels —
     /// the typed text is sent instead).
@@ -26,18 +30,22 @@ struct AskQuestionCard: View {
     @State private var otherText: [String: String]
     @State private var submitting = false
     @State private var failed = false
+    /// The question whose "Other" answer has the keyboard.
+    @FocusState private var focusedQuestion: String?
 
     init(pending: PendingQuestion,
          onAnswer: @escaping (QuestionAnswer) async -> Bool,
          readOnly: Bool = false,
          initialSelections: [String: AskQuestionSelection] = [:],
          titleOverride: LocalizedStringKey? = nil,
-         subtitleOverride: LocalizedStringKey? = nil) {
+         subtitleOverride: LocalizedStringKey? = nil,
+         fold: Binding<PromptFold>? = nil) {
         self.pending = pending
         self.onAnswer = onAnswer
         self.readOnly = readOnly
         self.titleOverride = titleOverride
         self.subtitleOverride = subtitleOverride
+        self.fold = fold
         // Seed the selection state from a pre-filled record (read-only replay).
         var chosen: [String: Set<String>] = [:]
         var other: [String: String] = [:]
@@ -57,9 +65,11 @@ struct AskQuestionCard: View {
     private var complete: Bool { pending.questions.allSatisfy(isAnswered) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        PromptCardFold(id: pending.questionId,
+                       summary: Self.foldSummary(for: pending, answered: answeredCount),
+                       foldable: !readOnly, fold: fold, willFold: { focusedQuestion = nil }) {
             header
-
+        } content: {
             questionsList
                 .allowsHitTesting(!readOnly)
 
@@ -71,10 +81,25 @@ struct AskQuestionCard: View {
 
             if !readOnly { footer }
         }
-        .padding(14)
         .background(Theme.bgElevated, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
         .hairlineBorder(Theme.Radius.lg)
         .modifier(AskCardChrome(enabled: !readOnly))
+    }
+
+    /// The card folded: the first question, and with several, how many are
+    /// answered.
+    static func foldSummary(for pending: PendingQuestion, answered: Int) -> PromptFoldSummary {
+        let first = pending.questions.first
+        let text = first.map { $0.question.isEmpty ? $0.header : $0.question } ?? ""
+        return PromptFoldSummary(
+            icon: "bubble.left.and.text.bubble.right.fill",
+            title: pending.questions.count > 1 ? "Questions" : "Question",
+            preview: PromptFoldSummary.oneLine(text),
+            answered: answered,
+            total: pending.questions.count,
+            hideLabel: "Hide question",
+            showLabel: "Show question"
+        )
     }
 
     /// In stream (read-only) the card sits in a timeline row, which owns scrolling
@@ -280,6 +305,7 @@ struct AskQuestionCard: View {
                 TextField("Type your answer…", text: otherBinding(question.id), axis: .vertical)
                     .font(.subheadline)
                     .lineLimit(1...3)
+                    .focused($focusedQuestion, equals: question.id)
                     .blockDirection(TextDirection.detect(otherText[question.id] ?? ""))
                     .padding(8)
                     .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
@@ -307,6 +333,7 @@ struct AskQuestionCard: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .privacySensitive()
+                    .focused($focusedQuestion, equals: question.id)
             }
         }
         .padding(8)

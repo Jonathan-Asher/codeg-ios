@@ -2133,6 +2133,69 @@ for the open session's own Fork Session, the fork goes as before. Tests in
   Screenshots: `output-limit-notice-light`, `-dark` and `-zh-light` in the
   `compose-screenshots` artifact.
 
+### Folding a prompt card (1.4.3)
+
+`PromptCardFold`, `PromptFold` and `PromptFoldSummary`
+(`Features/SessionDetail/Interactive/PromptCardFold.swift`), used by
+`PermissionRequestCard`, `AskQuestionCard` and `PlanApprovalCard`.
+
+- **Why.** A pinned card (a question set's list up to 360 pt, a permission's
+  body up to 300 pt, a plan up to 320 pt) and the compose bar left little of
+  the transcript, which is where the agent explains what it asks.
+- **Folding.** A chevron at the right of the card's header (a 44 pt target
+  that reaches into the card's padding, so the header is no taller), or a
+  swipe down on the header, folds the card. Only the header takes the swipe,
+  so the card's scrolling body keeps its own. Folded, the card is a 44 pt bar
+  in the same place: its icon and title (Question or Questions, Permission,
+  Plan), one line of what it asks (the first question; the permission's
+  title, and for a plan that comes as a permission, ExitPlanMode, the plan's
+  first line; Grok's plan's first line, or "The agent didn't include a
+  plan."), with inline Markdown as its plain words, the answered/total count
+  from two questions up, and a chevron. A tap anywhere on the bar, or a swipe
+  up on it, opens the card.
+- **What stays.** The card never leaves the hierarchy: folded, its content is
+  kept at no height, hidden from sight and VoiceOver, disabled and out of hit
+  testing, so the options chosen, the "Other" text, the plan notes and a
+  submit under way (its spinner, then its result) are as they were when it
+  opens. `PromptFold` is keyed by the request's id, besides the cards' own
+  `.id`, so a new request always arrives open. A text field of the card with
+  the keyboard (`@FocusState`) lets go of it as the card folds, by any route.
+- **The transcript.** The cards sit in the compose bar's safe-area inset, so
+  the height a folded card gives up goes to the transcript. At the latest
+  message, `TranscriptView` keeps it there through the inset change, as it
+  does for the keyboard (`ScrollMetrics` sees the inset move); scrolled up,
+  the reader's row stays where it is, and a reader who now sees the end is at
+  the latest message again. Jump to latest, the queue, the notes and the
+  Continue chip stay between the card and the compose bar. `SessionDetailView`
+  is unchanged: the fold is the cards' own state.
+- **Motion and touch.** The transcript's `.snappy(duration: 0.28)`, and no
+  animation under Reduce Motion. A light impact on each fold and unfold.
+- **VoiceOver.** The buttons are "Hide question" and "Show question" ("Hide
+  permission request", "Hide plan" and the Show equivalents). The bar is one
+  element: the title as its label, the preview (and "1 of 3 answered") as its
+  value, with a Show action. Focus moves to the bar as the card folds, and to
+  Hide as it opens.
+- **Never folded.** An answered question replayed in the transcript
+  (`AskQuestionResultCard`, the read-only `AskQuestionCard`) passes
+  `foldable: false` and renders as before; the permission and plan cards have
+  no in-stream use.
+- **Talk.** Folding is view state only. Talk asks and takes answers from the
+  model's pending request (`TalkSessionPort`, `SpokenPrompts`), which is the
+  same folded or not, and an answer by voice clears the card either way.
+- **Strings.** "Hide question", "Show question", "Hide permission request",
+  "Show permission request", "Hide plan", "Show plan" and "%@, %lld of %lld
+  answered", in English and Simplified Chinese; the titles reuse "Question",
+  "Questions", "Permission" and "Plan".
+- Tests: `PromptCardFoldTests` (a new request arrives unfolded, the swipe,
+  the one-line preview and a plan's first line, what each card's bar says,
+  folding keeps the options chosen and the typed answer in the same field, a
+  new request into the same card arrives open, the replay never folds,
+  folding lets go of the keyboard, a transcript at the latest message stays
+  there with the room the card gave up and again when it opens). Screenshots:
+  `prompt-fold-open`, `prompt-fold-folded` and `prompt-fold-bars` (`-light`,
+  `-dark`) and `prompt-fold-bars-zh-light` in the `compose-screenshots`
+  artifact.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one
@@ -3339,7 +3402,8 @@ is spoken ("כן", "השנייה", or in the person's own words) or tapped on th
 sheet's big buttons; an unclear answer is asked again once, then left on
 the screen. A sub-agent's answer goes to the server
 (`acp_respond_permission`, `acp_answer_question`, `acp_answer_plan_approval`
-with the item's connection and request).
+with the item's connection and request). A card folded on the screen (see
+"Folding a prompt card") is asked and answered the same way.
 
 ### Mute
 
