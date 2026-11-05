@@ -4,13 +4,17 @@ import SwiftUI
 /// whose proposed plan renders in the body. Pinned above the compose bar while
 /// the agent is blocked. Mirrors codeg web's `permission-dialog.tsx`: a header,
 /// a contextual body (command / diff / plan / allowed actions / web / raw), and
-/// the agent-supplied option buttons (filled to allow, bordered to reject).
+/// the agent-supplied option buttons (filled to allow, bordered to reject). It
+/// folds down to a one-line bar (`PromptCardFold`) to show the transcript
+/// behind it.
 struct PermissionRequestCard: View {
     let pending: PendingPermission
     /// Set once the session's mode changed while this card waited (switching
     /// to Bypass permissions mid-turn, say): the request was made before the
     /// switch and the agent still waits for an answer to it, as on the desktop.
     var modeNote: String? = nil
+    /// Drives the fold from outside (tests and screenshots).
+    var fold: Binding<PromptFold>? = nil
     /// Resolve with the chosen `option_id`. Returns true on success — the model
     /// then clears the card; false keeps it and re-enables the buttons.
     let onRespond: (String) async -> Bool
@@ -28,9 +32,9 @@ struct PermissionRequestCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        PromptCardFold(id: pending.requestId, summary: Self.foldSummary(for: pending), fold: fold) {
             header
-
+        } content: {
             if bodyScrolls {
                 ScrollView { bodyContent }
                     .frame(maxHeight: 300)
@@ -57,12 +61,34 @@ struct PermissionRequestCard: View {
                 }
             }
         }
-        .padding(14)
         .background(Theme.bgElevated, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
         .hairlineBorder(Theme.Radius.lg)
         .shadow(color: .black.opacity(0.14), radius: 12, y: 3)
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
+    }
+
+    /// The card folded: the tool or command it asks about, or for a plan, the
+    /// plan's first line.
+    static func foldSummary(for pending: PendingPermission) -> PromptFoldSummary {
+        let parsed = pending.parsed
+        var preview = PromptFoldSummary.oneLine(parsed.title)
+        if parsed.isPlan {
+            if let plan = parsed.planMarkdown.flatMap(PromptFoldSummary.firstLine(ofMarkdown:)) {
+                preview = plan
+            } else if let entry = parsed.planEntries.first {
+                preview = PromptFoldSummary.oneLine(entry.text)
+            }
+        } else if preview.isEmpty, let command = parsed.command {
+            preview = PromptFoldSummary.oneLine(command)
+        }
+        return PromptFoldSummary(
+            icon: parsed.isPlan ? "list.bullet.clipboard" : "exclamationmark.shield.fill",
+            title: parsed.isPlan ? "Plan" : "Permission",
+            preview: preview,
+            hideLabel: parsed.isPlan ? "Hide plan" : "Hide permission request",
+            showLabel: parsed.isPlan ? "Show plan" : "Show permission request"
+        )
     }
 
     // MARK: Header

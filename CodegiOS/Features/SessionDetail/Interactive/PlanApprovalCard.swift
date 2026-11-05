@@ -11,9 +11,12 @@ import SwiftUI
 ///
 /// Follows `AskQuestionCard`'s in-flight pattern: on success the backend's
 /// `plan_approval_resolved` clears the pending state and unmounts this card, so
-/// the controls stay disabled rather than flashing back on.
+/// the controls stay disabled rather than flashing back on. It folds down to a
+/// one-line bar (`PromptCardFold`) to show the transcript behind it.
 struct PlanApprovalCard: View {
     let pending: PendingPlanApproval
+    /// Drives the fold from outside (tests and screenshots).
+    var fold: Binding<PromptFold>? = nil
     /// Submit the decision. Returns true on success — the model then clears the
     /// card; false keeps it and re-enables the controls.
     let onAnswer: (PlanApprovalDecision, String?) async -> Bool
@@ -22,6 +25,7 @@ struct PlanApprovalCard: View {
     @State private var failed = false
     @State private var changesOpen = false
     @State private var feedback = ""
+    @FocusState private var notesFocused: Bool
     /// Measured height of the rendered plan. A bare `ScrollView` always takes the
     /// full height offered, so a three-line plan would sit in a 320pt void; this
     /// lets the card shrink to the content and only scroll once it overflows.
@@ -33,8 +37,10 @@ struct PlanApprovalCard: View {
     private var notes: String { feedback.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        PromptCardFold(id: pending.approvalId, summary: Self.foldSummary(for: pending), fold: fold,
+                       willFold: { notesFocused = false }) {
             header
+        } content: {
             planBody
             if changesOpen { notesField }
             if failed {
@@ -44,12 +50,23 @@ struct PlanApprovalCard: View {
             }
             actions
         }
-        .padding(14)
         .background(Theme.bgElevated, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
         .hairlineBorder(Theme.Radius.lg)
         .shadow(color: .black.opacity(0.14), radius: 12, y: 3)
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
+    }
+
+    /// The card folded: the plan's first line.
+    static func foldSummary(for pending: PendingPlanApproval) -> PromptFoldSummary {
+        PromptFoldSummary(
+            icon: "checklist",
+            title: "Plan",
+            preview: PromptFoldSummary.firstLine(ofMarkdown: pending.planMarkdown)
+                ?? String(localized: "The agent didn’t include a plan."),
+            hideLabel: "Hide plan",
+            showLabel: "Show plan"
+        )
     }
 
     // MARK: Header / body
@@ -95,6 +112,7 @@ struct PlanApprovalCard: View {
         TextField("What should change?", text: $feedback, axis: .vertical)
             .font(.subheadline)
             .lineLimit(2...5)
+            .focused($notesFocused)
             .padding(8)
             .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
             .hairlineBorder(Theme.Radius.sm)
