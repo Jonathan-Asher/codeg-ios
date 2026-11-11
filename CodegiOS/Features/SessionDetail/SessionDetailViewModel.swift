@@ -448,6 +448,19 @@ final class SessionDetailViewModel {
     /// rolled back before then, this row is deleted so no empty conversation
     /// lingers on other clients and the draft's pickers re-open.
     private var draftCreatedConversationID: Int?
+    /// The server has said which agent session the conversation's row holds
+    /// (its `external_id`, or that it holds none) since the screen opened or
+    /// was shown again: `summary` came from its detail. The session list's
+    /// copy and the transcript cache's don't count (a fork may have moved the
+    /// row since), and neither does a summary that named no session once a
+    /// prompt from here bound one to the row. See ``sessionIDForConnect()``.
+    @ObservationIgnored private var sessionIDConfirmed = false
+    /// The screen's reads of the conversation's detail on their way (the
+    /// open, a return to the screen): a connect waits for them first.
+    @ObservationIgnored private var detailReads = 0
+    /// A read of the row's agent session made for a connect, shared by the
+    /// connects that wait at once (a send and an option change, say).
+    @ObservationIgnored private var sessionIDRead: Task<String?, Error>?
     private var stream: (any SessionEventStream)?
     /// Opens the event socket (an ``EventStream``; a scripted one in tests).
     private let makeEventStream: @MainActor () -> any SessionEventStream
@@ -819,6 +832,9 @@ final class SessionDetailViewModel {
     /// the loading spinner first) and `refreshOnForeground()` (which does not, so
     /// resuming the app doesn't flash the transcript away and back).
     private func syncExisting(id: Int, stickToBottom: Bool, overlap: Int = TranscriptSync.reopenOverlap) async {
+        // A connect waiting for the row's session id waits for this read.
+        detailReads += 1
+        defer { detailReads -= 1 }
         do {
             let held: TranscriptWindow? = turns.isEmpty && turnsOffset == 0 ? nil : heldWindow
             let version = turnsVersion
@@ -829,6 +845,7 @@ final class SessionDetailViewModel {
             let detail = outcome.detail
 
             summary = detail.summary
+            sessionIDConfirmed = true
             // Another path (a turn reconciling, an older page) changed the
             // turns while this fetch ran: its copy is newer.
             if turnsVersion == version { adoptWindow(outcome, allowShrink: true) }
@@ -1043,6 +1060,8 @@ final class SessionDetailViewModel {
         guard !isSuspended else { return }
         teardown()
         isSuspended = true
+        // What it knows of the row's agent session is a kept copy now.
+        sessionIDConfirmed = false
     }
 
     /// The session is on screen again after `suspend()`: reconnect a turn
@@ -1657,11 +1676,12 @@ final class SessionDetailViewModel {
                                userTurnID: String, previous: SendFailure?, spoken: Bool = false) async {
         do {
             closeStream()
+            let sessionID = try await sessionIDForConnect()
             let prefs = preferredSelectors
             let conn = try await client.connect(
                 agentType: agentTypeForUI,
                 workingDir: folder?.path,
-                sessionId: summary?.externalId,
+                sessionId: sessionID,
                 preferredModeId: prefs.modeId,
                 preferredConfigValues: prefs.configValues
             )
@@ -1735,6 +1755,9 @@ final class SessionDetailViewModel {
         // Prompt accepted — the created conversation is now legitimately in use,
         // so it must not be rolled back by a later stream failure.
         draftCreatedConversationID = nil
+        // A row that held no agent session, as far as this screen knows, now
+        // holds the connection's: a later connect asks the server for it.
+        if summary?.externalId == nil { sessionIDConfirmed = false }
         if duplicate { return true }
         attachPhase = nil
         refreshSteeringAvailability(connectionID: conn)
@@ -1823,19 +1846,21 @@ final class SessionDetailViewModel {
 
     private func resolveConnection() async throws -> String {
         if let existing = connectionID { return existing }
+        // The row's agent session as the server says it: what a live
+        // connection is found by, and what a fresh one resumes.
+        let sessionID = try await sessionIDForConnect()
         // Only a linked conversation can have a server-side connection to find;
         // a new task always spawns fresh (no sessionId → a brand-new session).
         if let id = conversationID,
            let found = try await client.findConnection(
                conversationId: id,
-               sessionId: summary?.externalId,
+               sessionId: sessionID,
                agentType: agentTypeForUI
            )?.connectionId {
             return found
         }
         let picked = SelectorPrefsStore.prefs(for: agentTypeForUI)
         let prefs = preferredSelectors
-        let sessionID = summary?.externalId
         let conn = try await client.connect(
             agentType: agentTypeForUI,
             workingDir: folder?.path,
@@ -1848,6 +1873,38 @@ final class SessionDetailViewModel {
             await applySelectorsPickedWhileConnecting(pickedBefore: picked, connectionID: conn)
         }
         return conn
+    }
+
+    /// The agent session to connect this conversation with (`acp_connect`'s
+    /// `sessionId`, and what its live connection is found by). With none the
+    /// server starts a brand-new agent session, and the next prompt binds it
+    /// to the row: for a conversation the server has, that is a session with
+    /// none of its history, and the history moves to a row of its own (codeg
+    /// web waits for the session id the same way). So until the server has
+    /// said which session the row holds (``sessionIDConfirmed``), a connect
+    /// waits for the screen's own read of the conversation, and reads it
+    /// itself when none is on its way or it failed; a read that fails fails
+    /// the connect. A row the server says holds none starts a new one, as it
+    /// should. A draft before its first send, and the row that send just
+    /// created, hold none yet: they start one at once, as before.
+    private func sessionIDForConnect() async throws -> String? {
+        guard let id = conversationID, draftCreatedConversationID == nil else { return summary?.externalId }
+        while !sessionIDConfirmed, detailReads > 0 { try await Task.sleep(for: .milliseconds(50)) }
+        if sessionIDConfirmed { return summary?.externalId }
+        if let reading = sessionIDRead { return try await reading.value }
+        let read = Task { [weak self, client] () async throws -> String? in
+            let detail = try await client.conversationDetail(id: id, window: .tail(1))
+            guard let self else { throw CancellationError() }
+            if !self.sessionIDConfirmed, self.conversationID == id {
+                self.summary = detail.summary
+                self.insertModel.agentType = detail.summary.agentType
+                self.sessionIDConfirmed = true
+            }
+            return self.summary?.externalId
+        }
+        sessionIDRead = read
+        defer { sessionIDRead = nil }
+        return try await read.value
     }
 
     /// A new session's options picked while its connect was on its way went
@@ -1876,10 +1933,13 @@ final class SessionDetailViewModel {
         // so the server can't find its connection by it: it is the one the
         // send just made.
         if draftCreatedConversationID != nil, let conn = connectionID { return conn }
+        // A change made before the session loaded waits here for the row's
+        // agent session, shown as being applied, and goes once it is known.
+        let sessionID = try await sessionIDForConnect()
         if let id = conversationID,
            let found = try await client.findConnection(
                conversationId: id,
-               sessionId: summary?.externalId,
+               sessionId: sessionID,
                agentType: agentTypeForUI
            )?.connectionId {
             connectionID = found
@@ -1889,7 +1949,7 @@ final class SessionDetailViewModel {
         let conn = try await client.connect(
             agentType: agentTypeForUI,
             workingDir: folder?.path,
-            sessionId: summary?.externalId,
+            sessionId: sessionID,
             preferredModeId: prefs.modeId,
             preferredConfigValues: prefs.configValues
         )
