@@ -163,16 +163,19 @@ struct SessionDetailView: View {
         }
     }
 
-    /// The transcript over the background, with the link's capsule on top.
-    /// Its messages, code blocks and tool outputs offer Select Text (not the
-    /// sheets this screen presents, which would have the sheet presented
-    /// twice).
+    /// The transcript over the background, with the link's capsule on top,
+    /// and in its place while the link is fine, whether the transcript shown
+    /// is being updated (a saved copy, as when a notification opens the
+    /// session) or couldn't be. Its messages, code blocks and tool outputs
+    /// offer Select Text (not the sheets this screen presents, which would
+    /// have the sheet presented twice).
     private var backdrop: some View {
         ZStack {
             CodegBackground()
             content
         }
         .connectionCapsule(updatedAt: model.lastSyncedAt)
+        .transcriptFreshness(model.freshness) { model.retryUpdate() }
         .selectTextSheet()
     }
 
