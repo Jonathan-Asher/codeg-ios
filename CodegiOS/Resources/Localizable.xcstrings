@@ -1200,6 +1200,385 @@
         }
       }
     },
+    "Move to Project…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移动到项目…"
+          }
+        }
+      }
+    },
+    "Move to Project" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移动到项目"
+          }
+        }
+      }
+    },
+    "Search projects" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索项目"
+          }
+        }
+      }
+    },
+    "Projects" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "项目"
+          }
+        }
+      }
+    },
+    "Currently in %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前位于 %@"
+          }
+        }
+      }
+    },
+    "Loading projects…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载项目…"
+          }
+        }
+      }
+    },
+    "No other project is open." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有其他打开的项目。"
+          }
+        }
+      }
+    },
+    "No projects match “%@”." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有与“%@”匹配的项目。"
+          }
+        }
+      }
+    },
+    "Move" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移动"
+          }
+        }
+      }
+    },
+    "Moves the session and its files to %@. Its next message rereads the session once." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话及其文件将移动到 %@。它的下一条消息会重新读取一次会话。"
+          }
+        }
+      }
+    },
+    "%@ keeps its sessions tied to the folder they ran in, so this session can only be listed under %@. It keeps running in %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 的会话绑定在运行时所在的文件夹，因此这个会话只能列在 %2$@ 下，仍在 %3$@ 中运行。"
+          }
+        }
+      }
+    },
+    "The Claude Code adapter on the server is too old to move session files, so this session can only be listed under %@. It keeps running in %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务器上的 Claude Code 适配器版本过旧，无法移动会话文件，因此此会话只能列在 %1$@ 下，仍在 %2$@ 中运行。"
+          }
+        }
+      }
+    },
+    "This session’s files aren’t where %@ keeps them, so it can only be listed under %@. It keeps running in %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此会话的文件不在 %1$@ 保存它们的位置，因此只能列在 %2$@ 下，仍在 %3$@ 中运行。"
+          }
+        }
+      }
+    },
+    "This session can only be listed under %@. It keeps running in %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此会话只能列在 %1$@ 下，仍在 %2$@ 中运行。"
+          }
+        }
+      }
+    },
+    "Moved to %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已移动到 %@"
+          }
+        }
+      }
+    },
+    "Listed under %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已列在 %@ 下"
+          }
+        }
+      }
+    },
+    "It keeps running in %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仍在 %@ 中运行"
+          }
+        }
+      }
+    },
+    "Couldn’t move the session: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法移动会话：%@"
+          }
+        }
+      }
+    },
+    "Couldn’t check the move: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法检查移动：%@"
+          }
+        }
+      }
+    },
+    "Needs a Newer Server" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要更新的服务器"
+          }
+        }
+      }
+    },
+    "Moving sessions needs a newer codeg server." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移动会话需要更新的 codeg 服务器。"
+          }
+        }
+      }
+    },
+    "Runs in" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行于"
+          }
+        }
+      }
+    },
+    "This session no longer exists." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此会话已不存在。"
+          }
+        }
+      }
+    },
+    "That project is no longer in the workspace." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该项目已不在工作区中。"
+          }
+        }
+      }
+    },
+    "The session is already in that project." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话已在该项目中。"
+          }
+        }
+      }
+    },
+    "Chat sessions have no project to move from." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "聊天会话没有可移出的项目。"
+          }
+        }
+      }
+    },
+    "A session can’t be moved into a chat." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话不能移动到聊天中。"
+          }
+        }
+      }
+    },
+    "A sub-session moves with the session that started it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "子会话会随启动它的会话一起移动。"
+          }
+        }
+      }
+    },
+    "This kind of session can’t be moved." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此类会话无法移动。"
+          }
+        }
+      }
+    },
+    "A work task runs this session; it stays with the task’s project." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此会话由工作任务运行，会留在该任务的项目中。"
+          }
+        }
+      }
+    },
+    "The session is working. Move it once its reply has finished." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话正在工作，请在回复完成后再移动。"
+          }
+        }
+      }
+    },
+    "The session is about to continue by itself. Move it once that’s done, or turn its automatic continuation off." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话即将自动继续。请在完成后再移动，或关闭它的自动继续。"
+          }
+        }
+      }
+    },
+    "Claude Code is running this session outside codeg. Move it once that process has finished." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Claude Code 正在 codeg 之外运行此会话。请在该进程结束后再移动。"
+          }
+        }
+      }
+    },
+    "The session’s agent is still closing. Try again in a moment." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话的智能体仍在关闭，请稍后再试。"
+          }
+        }
+      }
+    },
+    "The session’s files couldn’t be moved, so nothing was changed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法移动会话的文件，因此未做任何更改。"
+          }
+        }
+      }
+    },
+    "Its %lld sub-sessions move with it." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Its sub-session moves with it."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Its %lld sub-sessions move with it."
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "它的 %lld 个子会话会一起移动。"
+          }
+        }
+      }
+    },
     "Opens a new session that continues from this reply" : {
       "localizations" : {
         "zh-Hans" : {

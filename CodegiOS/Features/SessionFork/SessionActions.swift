@@ -13,13 +13,22 @@ enum ForkOrigin: Equatable, Sendable {
 
 /// The app-wide session actions a row's long-press menu and the session
 /// screen share: forking (with its progress, errors and where the fork
-/// opens), and the list rows' Pin, Copy Title and Archive Folder. Owned by
-/// ``AppModel`` and handed to the views through the environment.
+/// opens), moving a session to another project, and the list rows' Pin, Copy
+/// Title and Archive Folder. Owned by ``AppModel`` and handed to the views
+/// through the environment.
 @MainActor
 @Observable
 final class SessionActions {
     @ObservationIgnored weak var app: AppModel?
     let capabilities: ForkCapabilities
+    /// Which servers can move a session to another project.
+    let moveCapabilities: SessionMoveCapabilities
+    /// The session "Move to Project…" was asked for, from a row or the
+    /// session's ⋯ menu (``SessionMoveSheetHost`` shows the picker).
+    var moveRequest: SessionMoveRequest?
+    /// What the last move did, for the banner at the top, for a few seconds.
+    private(set) var moveNotice: SessionMoveNotice?
+    @ObservationIgnored private var moveNoticeTask: Task<Void, Never>?
 
     /// The fork under way, if any. Forks run one at a time: while one runs,
     /// every fork button is greyed out and ``start`` takes no other, so a
@@ -29,8 +38,9 @@ final class SessionActions {
     /// A list row's action that failed, for the alert.
     var alert: SessionActionAlert?
 
-    init(capabilities: ForkCapabilities = .shared) {
+    init(capabilities: ForkCapabilities = .shared, moveCapabilities: SessionMoveCapabilities? = nil) {
         self.capabilities = capabilities
+        self.moveCapabilities = moveCapabilities ?? .shared
     }
 
     /// Conversations a fork is being taken from: the one in flight, if any.
@@ -85,7 +95,7 @@ final class SessionActions {
     func fork(_ summary: ConversationSummary) {
         guard let app, let client = app.selectedClient() else { return }
         let folder = app.activity.folders.first { $0.id == summary.folderId }
-        let target = ForkTarget(summary: summary, workingDir: folder?.path)
+        let target = ForkTarget(summary: summary, workingDir: summary.workingDirectory(folderPath: folder?.path))
         start(target, at: .latest, origin: .list, title: summary.title, client: client, wholeConversation: true,
               onError: { [weak self] message in
             self?.alert = SessionActionAlert(title: String(localized: "Couldn’t Fork the Session"), message: message)
@@ -151,6 +161,54 @@ final class SessionActions {
     /// so Back returns there (a delivered sub-agent result opens its session).
     func openSession(_ conversationID: Int) {
         app?.open(.conversation(conversationID))
+    }
+
+    /// What `client`'s server can do with sessions, checked once per server:
+    /// its fork endpoints, and whether it moves a session to another project.
+    func probeServerCapabilities(client: CodegClient) async {
+        async let fork = capabilities.probeIfNeeded(client: client)
+        async let move = moveCapabilities.probeIfNeeded(client: client)
+        _ = await (fork, move)
+    }
+
+    // MARK: - Moving to another project
+
+    /// Whether a session's menus offer "Move to Project…": a top-level regular
+    /// session, on a server not known to lack the move (`client`'s, else the
+    /// selected one's).
+    func offersMove(_ summary: ConversationSummary, client: CodegClient? = nil) -> Bool {
+        guard let baseURL = client?.baseURL ?? app?.selectedServer?.baseURL else { return false }
+        return SessionMoveRules.offersMove(summary, support: moveCapabilities.support(baseURL: baseURL))
+    }
+
+    /// Open the project picker for `summary`, on the selected server unless
+    /// `client` and `serverID` name the session screen's.
+    func requestMove(_ summary: ConversationSummary, client: CodegClient? = nil, serverID: UUID? = nil) {
+        guard let client = client ?? app?.selectedClient(),
+              let serverID = serverID ?? app?.selectedServerID else { return }
+        moveRequest = SessionMoveRequest(conversation: summary, client: client, serverID: serverID)
+    }
+
+    /// A move happened: close the picker, say where the session went, show it
+    /// there on a session screen that has it, and bring the lists up to date.
+    func didMove(_ result: SessionMoveResult, to folder: FolderDetail, request: SessionMoveRequest) {
+        if moveRequest?.id == request.id { moveRequest = nil }
+        showMoveNotice(SessionMoveRules.notice(result, project: folder.name))
+        guard let app else { return }
+        app.sessions.applyMove(serverID: request.serverID, client: request.client, result: result, folder: folder)
+        NotificationCenter.default.post(name: .conversationsDidChange, object: nil)
+        Task { await app.activity.refresh(client: app.selectedClient()) }
+    }
+
+    private func showMoveNotice(_ notice: SessionMoveNotice) {
+        moveNotice = notice
+        AccessibilityNotification.Announcement(notice.spoken).post()
+        moveNoticeTask?.cancel()
+        moveNoticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self, self.moveNotice?.id == notice.id else { return }
+            self.moveNotice = nil
+        }
     }
 
     // MARK: - Row extras

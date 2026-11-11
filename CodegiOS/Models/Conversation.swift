@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// A project/workspace on a codeg server (Rust `FolderDetail`). The iOS app
-/// treats folders as a filter dimension under a server, and uses `path` as the
-/// `workingDir` when (re)connecting an agent.
+/// treats folders as a filter dimension under a server. A session connects in
+/// its own `working_dir`, and in its folder's `path` where the server sends
+/// none (``ConversationSummary/workingDirectory(folderPath:)``).
 struct FolderDetail: Codable, Identifiable, Hashable, Sendable {
     let id: Int
     let name: String
@@ -248,6 +249,16 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
     /// Whether the server sent `talk_mode` at all: a server that predates
     /// Talk leaves this false.
     var talkModeReported: Bool = false
+    /// Where an agent session of this conversation runs (`working_dir`): its
+    /// folder's path, or the folder it ran in when it was moved to another
+    /// project without its files. Every connect uses it
+    /// (``workingDirectory(folderPath:)``). Nil from a server that predates
+    /// it.
+    var workingDir: String? = nil
+    /// What kind of row this is (`kind`): a `regular` session, or one of
+    /// codeg's chat, loop or delegation rows. Nil from a server that
+    /// predates it.
+    var kind: ConversationKind? = nil
 
     /// What the lists order by: the later of the last activity and the last
     /// time the user opened the session, as the desktop's Recent section does.
@@ -261,6 +272,7 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         case messageCount, createdAt, updatedAt, pinnedAt, lastViewedAt
         case turnState, critical, criticalStall, parentId, limitPause, limitAutoContinue, limitReason
         case background, talkMode
+        case workingDir, kind
     }
 
     init(from decoder: Decoder) throws {
@@ -292,6 +304,8 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         lastViewedAt = (try? c.decodeIfPresent(Date.self, forKey: .lastViewedAt)) ?? nil
         talkModeReported = c.contains(.talkMode)
         talkMode = Self.talkMode(c)
+        workingDir = (try? c.decodeIfPresent(String.self, forKey: .workingDir)) ?? nil
+        kind = (try? c.decodeIfPresent(ConversationKind.self, forKey: .kind)) ?? nil
     }
 
     /// `talk_mode` as a flag, or as the stored state (`on`, `ending`): only
@@ -333,6 +347,8 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
         try c.encodeIfPresent(background, forKey: .background)
         try c.encodeIfPresent(lastViewedAt, forKey: .lastViewedAt)
         if talkModeReported { try c.encode(talkMode, forKey: .talkMode) }
+        try c.encodeIfPresent(workingDir, forKey: .workingDir)
+        try c.encodeIfPresent(kind, forKey: .kind)
     }
 
     /// Non-empty, trimmed user-provided title, or `nil` for an unnamed session.
@@ -348,6 +364,34 @@ struct ConversationSummary: Codable, Identifiable, Hashable, Sendable {
     var displayTitle: String { trimmedTitle ?? "Untitled session" }
 
     var isPinned: Bool { pinnedAt != nil }
+
+    /// The folder to connect an agent session of this conversation in: the
+    /// server's `working_dir`, else `folderPath`, its folder's path (a server
+    /// that predates `working_dir`). A session moved to another project
+    /// without its files keeps running in the folder it ran in, which only
+    /// `working_dir` knows.
+    func workingDirectory(folderPath: String?) -> String? {
+        if let workingDir, !workingDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return workingDir
+        }
+        return folderPath
+    }
+}
+
+/// Rust `ConversationKind`: a `regular` session, a chat-mode session
+/// (`chat`), a `loop` row or a delegation sub-session (`delegate`). `.other`
+/// is the escape hatch for an unknown wire value.
+enum ConversationKind: String, Codable, Hashable, Sendable {
+    case regular
+    case chat
+    case loop
+    case delegate
+    case other = ""
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = ConversationKind(rawValue: raw) ?? .other
+    }
 }
 
 /// Rust `ConversationTurnState`.

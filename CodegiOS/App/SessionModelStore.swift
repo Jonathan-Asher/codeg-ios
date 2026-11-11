@@ -145,6 +145,22 @@ final class SessionModelStore {
         }
     }
 
+    /// A session moved to another project (Move to Project…): a kept model of
+    /// it shows the project it is in now and connects where it runs now
+    /// (``SessionDetailViewModel/adoptMove(_:folder:)``), on screen or not; a
+    /// kept model of a sub-session that moved with it reads its row again
+    /// before its next connect.
+    func applyMove(serverID: UUID, client: CodegClient, result: SessionMoveResult, folder: FolderDetail?) {
+        let endpoint = TranscriptCache.serverKey(for: client)
+        func kept(_ conversationID: Int) -> SessionDetailViewModel? {
+            entries[Key(server: serverID, endpoint: endpoint, target: .conversation(conversationID))]?.model
+        }
+        kept(result.conversation.id)?.adoptMove(result.conversation, folder: folder)
+        for child in result.movedChildren {
+            kept(child)?.adoptMove(nil, folder: folder)
+        }
+    }
+
     /// Conversations a screen shows right now.
     var heldConversationIDs: Set<Int> {
         Set(entries.compactMap { key, entry in

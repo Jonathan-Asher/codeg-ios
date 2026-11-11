@@ -48,6 +48,10 @@ struct RootView: View {
                 splitShell
             }
         }
+        // "Move to Project…" from a session row or a session's ⋯ menu, and
+        // the banner after a move (inside the tint and environment below,
+        // which the sheet takes).
+        .modifier(SessionMoveSheetHost(actions: model.actions, activity: model.activity))
         .tint(Theme.accent)
         // Theme: the accent palette flows through a bridged UIKit trait so every
         // `Theme.accent` recolors live; mode drives light/dark/system. The store
@@ -93,11 +97,12 @@ struct RootView: View {
             await model.pending.run(client: model.selectedClient(), serverProfileID: model.selectedServerID,
                                     ownSocket: PresenceTracker.shared.visible == nil)
         }
-        // Which fork endpoints the server has, checked once per server, so a
-        // fork the server can't take is greyed out before it is tapped.
+        // Which fork endpoints the server has, and whether it moves sessions,
+        // checked once per server, so a fork the server can't take is greyed
+        // out, and Move to Project… hidden, before either is tapped.
         .task(id: "\(activityPulseID)|fork") {
             guard scenePhase == .active, let client = model.selectedClient() else { return }
-            await model.actions.capabilities.probeIfNeeded(client: client)
+            await model.actions.probeServerCapabilities(client: client)
         }
         .sheet(isPresented: $model.serversSheetPresented) {
             ManageServersSheet(store: model.serverStore, selectedServerID: $model.selectedServerID)

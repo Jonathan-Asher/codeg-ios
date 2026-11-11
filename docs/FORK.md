@@ -2254,6 +2254,86 @@ for the open session's own Fork Session, the fork goes as before. Tests in
   session; a new draft) and, in `SessionForkTests`, a row listed without a
   session and the session screen's retry.
 
+### Moving a session to another project (1.4.7)
+
+`Models/SessionMove.swift` (the answer, the refusals, the rules),
+`Networking/CodegClient+SessionMove.swift`,
+`Features/SessionMove/SessionMoveModel.swift` (the per-server check and the
+picker's state) and `SessionMoveSheet.swift` (the picker, its host and the
+banner), with `SessionActions`, `SessionModelStore.applyMove` and
+`SessionDetailViewModel.adoptMove`. The server side is codeg fork.227's
+`move_conversation_to_folder` (`src-tauri/src/session_move/`).
+
+- **Where it runs.** Every summary carries `working_dir`: its folder's path,
+  or, for a session moved without its files, the folder it ran in
+  (`origin_cwd`). `ConversationSummary.workingDirectory(folderPath:)` picks it
+  over the folder's path, which an older server (no field) still gets. Every
+  connect uses it: `resolveConnection()`, `retrySendOnce`,
+  `resolveConnectionForOptions()`, the fork target (the session screen's
+  and a list row's) and the options probe (`describeAgentOptions`), through
+  `SessionDetailViewModel.workingDir`. Session Details shows it as "Runs
+  in" when it isn't the folder's path. `kind` is read too (lenient,
+  `ConversationKind`), and both survive the transcript cache.
+- **The menus.** "Move to Project…" sits after Fork Session in a row's
+  long-press menu (and its VoiceOver actions) and in the session's ⋯ menu,
+  for a top-level `regular` session, as codeg web's `canMoveToProject`
+  offers it (a chat has no project to leave, a sub-session moves with its
+  parent). Both set `SessionActions.moveRequest`, which
+  `SessionMoveSheetHost` on `RootView` presents (inside the tint and the
+  environment), so neither the session screen's modifier chain nor a row
+  hosts the sheet.
+- **Older servers.** `SessionMoveCapabilities` asks each server once, beside
+  the fork check (`SessionActions.probeServerCapabilities`, from RootView's
+  task): a dry run of conversation 0 into folder 0, which a server with the
+  move refuses with `conversation_not_found` and an older one answers with
+  501 `not_implemented` (`APIError.isEndpointMissing`). Unreachable stays
+  unknown, to be asked again. The item is hidden once the server is known
+  to lack the move, and offered while that isn't known yet; a dry run that
+  finds the endpoint missing says so in the picker and hides it from then
+  on. Keyed by the server's address, so a row's menu needs no client (the
+  token is in the Keychain).
+- **The picker.** The server's open projects as the Folders tab shows them
+  (`ActivityModel.displayFolders`: no chat folders, no worktree hidden under
+  its repo), without the session's own folder, active ones first and the
+  archived ones in their own section, each in the Folders tab's order, with
+  a search over name and path. A pick runs the dry run (`dryRun: true`,
+  nothing changes on the server), and only the latest pick's answer lands.
+  Full: "Moves the session and its files to <project>. Its next message
+  rereads the session once." Listed only: the session will be listed there
+  and keep running in its folder (`working_dir` of the dry run's
+  unchanged row), with the reason (`agent_unsupported`,
+  `claude_adapter_outdated`, `session_files_not_found`). Sub-sessions that
+  move with it are counted. Move sends the move itself (no `dryRun`); a
+  refusal then takes the preview's place and the picker stays open.
+- **Refusals.** codeg puts the code in the error body's `i18n_params.code`
+  (`i18n_key` is `errors.<code>`), beside the app error's own `code`: the
+  409s (`conversation_running`, `resume_pending`, `session_closing` are
+  `turn_in_progress`; `running_elsewhere` is `session_running_elsewhere`)
+  would read as a running turn through `send`, so the move reads its answer
+  with `CodegClient.exchange` (the status and body as they came; `send` now
+  uses it, with the old mapping in `refusalError`) and throws
+  `SessionMoveRefusal`. Each known code has its own plain message (the
+  desktop's words); an unknown one shows the server's sentence. A 401, and
+  a body without a move code, read as any other call.
+- **After a move.** `SessionActions.didMove` closes the picker, shows a
+  banner for 3 s ("Moved to <project>", or "Listed under <project>" with
+  where it keeps running; VoiceOver announces it), posts
+  `.conversationsDidChange` and refreshes the lists, as pinning does. A kept
+  session model (`SessionModelStore.applyMove`, on screen or not) takes the
+  moved row (keeping its `selector_state`, which the answer lacks), the new
+  folder and branch, and drops its connection, which the server closed for
+  the move, and an idle watch on it: the next message connects again where
+  the session runs now. A kept sub-session that moved with it reads its row
+  again before its next connect (`sessionIDConfirmed`).
+- Tests: `SessionMoveTests` (decoding `working_dir` and `kind`, with and
+  without, and through the cache; a message and a fork connecting in
+  `working_dir`, else in the folder; the dry run's and the move's bodies
+  and answers; every refusal code, a 409 kept apart from a running turn, a
+  code from the key alone, an unknown one, an older server, a 401; when the
+  menu offers the move and the check that hides it on an older server; the
+  picker's list, preview, refusals and latest pick; an open session
+  following a move, connecting in the new folder, and the lists refreshing).
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one

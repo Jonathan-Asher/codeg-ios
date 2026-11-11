@@ -63,7 +63,7 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: "YES"
     # One version for the app and its notification service extension (App
     # Store Connect wants them equal). `scripts/release.sh` bumps these two.
-    MARKETING_VERSION: "1.4.4"
+    MARKETING_VERSION: "1.4.7"
     CURRENT_PROJECT_VERSION: "2"
 
 targets:

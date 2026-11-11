@@ -12,6 +12,24 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Move a session to another project, with its files (1.4.7). Move to
+  Project… in a session's long-press menu and in its ⋯ menu lists the
+  server's open projects (not the one it's in, no chats), with search.
+  Pick one and the app asks the server what the move would do: the session
+  and its files move to that project, and its next message rereads the
+  session once; or, for an agent whose session files codeg can't move (or a
+  Claude Code session whose files aren't where Claude Code keeps them, or
+  whose adapter on the server is too old), it can only be listed there and
+  keeps running in its folder, which the picker says, with why. Move moves
+  it, a banner says where it went, the lists catch up, and a session that
+  is open follows at once. When it can't move now, the picker says why in
+  plain words: a reply is running, it's about to continue by itself, Claude
+  Code runs it outside codeg, it's a chat or a sub-session, and so on.
+  Sub-sessions it started in the same folder move with it. Every session
+  now connects in the folder it really runs in, so one listed under another
+  project keeps working where it ran; Session Details shows that folder
+  ("Runs in") when it isn't the project's. Needs a codeg server that moves
+  sessions (fork.227 or later); with an older one the item isn't there.
 - A permission, question or plan card waiting on you folds down to one line,
   so you can read what's behind it (1.4.3). The chevron at the right of the
   card's header, or a swipe down on the header, folds it to a slim bar in the
