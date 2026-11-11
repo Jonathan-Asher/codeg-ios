@@ -2254,6 +2254,63 @@ for the open session's own Fork Session, the fork goes as before. Tests in
   session; a new draft) and, in `SessionForkTests`, a row listed without a
   session and the session screen's retry.
 
+### Updating… over a saved copy (1.4.5)
+
+`SessionDetailViewModel.freshness`, set by `syncExisting`, and
+`Features/SessionDetail/TranscriptFreshness.swift`.
+
+- **What was wrong.** A tap on a notification opens the session on its saved
+  copy at once (see "Opening long sessions"), or on the copy a kept screen
+  held, and the server's detail replaces it once read. The codeg server's log
+  on 2026-11-10 and 11 shows that read taking 5.2 s after a question push on
+  a 3,833-turn session (4.9 s of it parsing a transcript that wasn't in
+  codeg's transcript cache) and 7.5 s after another (1.7 s of transcript,
+  5.8 s waiting for SQLite's write lock behind the message-search indexer,
+  for a model backfill with nothing to write). Nothing on screen said the
+  copy was old, so it read as stale and stuck. codeg's side is fixed there
+  (branch `perf/warm-on-push`: a pushed session's transcript is parsed in
+  the background before the tap, and a detail read no longer writes when the
+  row has its model). The phone's decoding was already off the main thread:
+  `CodegClient` and `TranscriptSync` run on the cooperative pool, the cache
+  on its actor, and the screen builds only its latest 50 turns.
+- **Updating….** While `syncExisting` reads the detail with a copy on screen
+  (`phase == .loaded`: the saved copy on open, a kept screen's on `resume()`,
+  the screen's own when the app comes back), `freshness` is `.updating`, and
+  `.current` once the server's copy is in. `TranscriptFreshnessCapsule` shows
+  "Updating…" with a small spinner at the top of the transcript, under the
+  navigation bar where `ConnectionCapsule` sits, after half a second
+  (`ConnectionDisplayTracker.updatingAfter`, as the link's own "Updating…"),
+  so a quick read passes without a flicker. VoiceOver reads "Showing the
+  saved copy. Updating to the latest messages." The link's capsule goes
+  first: while it says "Offline", "Reconnecting…" or "Back online", this one
+  waits. A first open with nothing saved keeps "Loading session…".
+- **Couldn't update.** A read that fails leaves the copy on screen with
+  "Couldn’t update" and Try Again (`retryUpdate()`), announced to VoiceOver,
+  and goes again by itself when the network comes back
+  (`connectivityChanged(.cameOnline)`). The last read on its way decides: a
+  failure while another read is still on its way, or after one brought the
+  server's copy, says nothing, and any read that brings the server's copy
+  (`adoptWindow`: a turn's refresh, a reconcile) clears it.
+- **The folder list doesn't hold the transcript.** `syncExisting` used to
+  wait for `list_all_folder_details` too before showing anything, and on a
+  busy server that list's query took 0.5 to 1.2 s in the same log. The
+  transcript now shows as soon as its detail is in; the folder (its path and
+  branch) follows with the list, and a list that doesn't come keeps the
+  folder already known (the saved copy's). A connect waiting for the row's
+  session (1.4.4) still goes once both are in, with the folder it connects
+  in.
+- **Where it lands.** Unchanged: a notification opens at the latest message
+  (`requestOpenAtLatest`), and the transcript, stuck to the bottom, follows
+  the server's copy as it comes in, with a question, permission or plan card
+  above the message bar once the running turn is attached. A reader who
+  scrolled up in the saved copy meanwhile stays where they are, with the
+  jump-to-latest button.
+- Tests: `TranscriptFreshnessTests` (a saved copy says it is updating until
+  the server's copy is in; a failed read says so and Try Again brings the
+  server's copy; it goes again when the network is back; a kept screen
+  shown again says it is updating; a first open with nothing saved shows
+  the spinner instead; the transcript shows while the folder list is held).
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one

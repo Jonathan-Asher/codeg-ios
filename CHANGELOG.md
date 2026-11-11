@@ -530,6 +530,22 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- Opening a session from a notification says when its transcript is being
+  brought up to date (1.4.5). The session opens at once on the copy saved on
+  the iPhone, which can be minutes or hours old, and for a long session the
+  server's copy could take several seconds to replace it, with nothing on
+  screen saying so: it looked stale and stuck. Now "Updating…" shows at the
+  top of the transcript while a saved copy, or the one a session kept from
+  earlier, is brought up to date (after half a second, so a quick update
+  passes without a flicker), and goes once the server's copy is in. If it
+  can't be read, "Couldn’t update" with Try Again says so, and it tries
+  again by itself when the network comes back. The transcript no longer
+  waits for the folder list, which could come later. VoiceOver reads both.
+  A notification still opens at the latest message, with a question or
+  permission card above the message bar. codeg itself now reads a pushed
+  session's transcript ahead of the tap, and no longer holds a session's
+  read behind other writes, so the update is also quicker.
+
 - Changing the model, mode or effort right after opening a session no longer
   starts a new, empty agent session for it (1.4.4). A session opened from its
   saved copy shows at once, before the server has said which agent session

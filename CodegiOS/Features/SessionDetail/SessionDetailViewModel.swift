@@ -90,6 +90,15 @@ final class SessionDetailViewModel {
     private var cacheSaveTask: Task<Void, Never>?
     /// The screen opened with the cached transcript.
     private(set) var openedFromCache = false
+    /// What the screen says about the copy of the transcript it shows: the
+    /// saved copy, or the one a kept screen held, while the server's is read
+    /// (`syncExisting`), and why it couldn't be (``TranscriptFreshness``).
+    private(set) var freshness: TranscriptFreshness = .current
+    /// Reads of the detail by `syncExisting` on their way: the last one to
+    /// fail is the one that says so.
+    @ObservationIgnored private var freshnessReads = 0
+    /// "Try Again" on an update that failed, on its way.
+    @ObservationIgnored private var retryUpdateTask: Task<Void, Never>?
     /// The first load, owned by the model rather than the view, so a view
     /// that goes away mid-load (a layout change) doesn't cancel it.
     private var loadTask: Task<Void, Never>?
@@ -835,31 +844,44 @@ final class SessionDetailViewModel {
         // A connect waiting for the row's session id waits for this read.
         detailReads += 1
         defer { detailReads -= 1 }
+        // A copy is on screen (the saved one, or the one a kept screen
+        // held): it says it is being updated until the server's is in.
+        freshnessReads += 1
+        defer { freshnessReads -= 1 }
+        if phase == .loaded { freshness = .updating }
         do {
             let held: TranscriptWindow? = turns.isEmpty && turnsOffset == 0 ? nil : heldWindow
             let version = turnsVersion
-            async let fetchReq = TranscriptSync.fetch(client: client, id: id, held: held, overlap: overlap)
+            // The folder list comes on its own: the transcript is shown as
+            // soon as it is in, not after a slower list.
             async let foldersReq = client.listFolders()
-            let outcome = try await fetchReq
-            let folders = try await foldersReq
+            let outcome = try await TranscriptSync.fetch(client: client, id: id, held: held, overlap: overlap)
             let detail = outcome.detail
 
             summary = detail.summary
-            sessionIDConfirmed = true
             // Another path (a turn reconciling, an older page) changed the
             // turns while this fetch ran: its copy is newer.
             if turnsVersion == version { adoptWindow(outcome, allowShrink: true) }
             settleJump(fetchNewer: false)
             sessionStats = detail.sessionStats
-            allFolders = folders
-            folder = folders.first { $0.id == detail.summary.folderId }
-            currentBranch = detail.summary.gitBranch ?? folder?.gitBranch
             insertModel.agentType = detail.summary.agentType
             phase = .loaded
             lastSyncedAt = Date()
+            freshness = .current
+            if stickToBottom { requestStickToBottom() }
+            // The folder (its path and branch) once the list is in. A list
+            // that didn't come keeps the folder already known: the saved
+            // copy's, or the kept screen's.
+            if let folders = try? await foldersReq {
+                allFolders = folders
+                folder = folders.first { $0.id == detail.summary.folderId }
+            }
+            currentBranch = detail.summary.gitBranch ?? folder?.gitBranch
+            // A connect that waited for the row's session goes now, with the
+            // folder it connects in.
+            sessionIDConfirmed = true
             if homePath == nil { Task { await loadHomePath() } }
             scheduleCacheSave()
-            if stickToBottom { requestStickToBottom() }
             // If a turn is still running on this session (started here earlier,
             // from codeg web, or before an app relaunch), attach so it streams
             // live and any pending permission/question card surfaces.
@@ -883,13 +905,29 @@ final class SessionDetailViewModel {
             reattachDrops = 0
             await reattachIfLive(serverSaysLive: serverSaysLive)
         } catch {
-            // A foreground refresh failing silently leaves the existing transcript
-            // on screen (better than replacing a working view with an error for a
-            // transient network blip); the initial `load()` path, which has nothing
-            // to fall back to, is the one that needs `phase = .failed`.
+            // A refresh failing leaves the existing transcript on screen
+            // (better than replacing a working view with an error for a
+            // transient network blip), saying it couldn't be updated, with
+            // Try Again; the initial `load()` path, which has nothing to fall
+            // back to, is the one that needs `phase = .failed`. Another read
+            // still on its way, or one that brought the server's copy
+            // meanwhile, has the last word.
             if phase != .loaded {
                 phase = .failed(Self.describe(error))
+            } else if freshness == .updating, freshnessReads == 1 {
+                freshness = .failed(Self.describe(error))
             }
+        }
+    }
+
+    /// "Try Again" on the update that failed: read the server's copy again.
+    /// Also when the network comes back (`connectivityChanged`).
+    func retryUpdate() {
+        guard case .existing(let id) = mode, case .failed = freshness, retryUpdateTask == nil else { return }
+        freshness = .updating
+        retryUpdateTask = Task { [weak self] in
+            await self?.syncExisting(id: id, stickToBottom: false)
+            self?.retryUpdateTask = nil
         }
     }
 
@@ -985,6 +1023,9 @@ final class SessionDetailViewModel {
         windowTotal = window.total
         turns = window.turns
         inFlightPromptID = outcome.detail.inFlightUserTurnId
+        // What shows is the server's copy as of now, whichever read brought
+        // it (a turn's refresh, a reconcile): nothing left to update.
+        freshness = .current
         scheduleCacheSave()
         return true
     }
@@ -3163,6 +3204,8 @@ final class SessionDetailViewModel {
     private func connectivityChanged(_ event: ConnectivityMonitor.Event) {
         switch event {
         case .cameOnline:
+            // An update that failed for the network goes again by itself.
+            if !isSuspended, case .failed = freshness { retryUpdate() }
             if let pending = pendingReconnect {
                 reconnectStream(into: pending.live, connectionID: pending.conn, reason: nil,
                                 reattach: pending.reattach, immediately: true)
