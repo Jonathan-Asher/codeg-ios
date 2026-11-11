@@ -2289,7 +2289,8 @@ for the open session's own Fork Session, the fork goes as before. Tests in
   and goes again by itself when the network comes back
   (`connectivityChanged(.cameOnline)`). The last read on its way decides: a
   failure while another read is still on its way, or after one brought the
-  server's copy, says nothing.
+  server's copy, says nothing, and any read that brings the server's copy
+  (`adoptWindow`: a turn's refresh, a reconcile) clears it.
 - **The folder list doesn't hold the transcript.** `syncExisting` used to
   wait for `list_all_folder_details` too before showing anything, and on a
   busy server that list's query took 0.5 to 1.2 s in the same log. The

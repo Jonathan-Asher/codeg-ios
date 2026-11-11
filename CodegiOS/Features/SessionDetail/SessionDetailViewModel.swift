@@ -1023,6 +1023,9 @@ final class SessionDetailViewModel {
         windowTotal = window.total
         turns = window.turns
         inFlightPromptID = outcome.detail.inFlightUserTurnId
+        // What shows is the server's copy as of now, whichever read brought
+        // it (a turn's refresh, a reconcile): nothing left to update.
+        freshness = .current
         scheduleCacheSave()
         return true
     }
@@ -4783,7 +4786,6 @@ final class SessionDetailViewModel {
             summary = outcome.detail.summary
             sessionStats = outcome.detail.sessionStats ?? sessionStats
             adoptWindow(outcome, allowShrink: true)
-            freshness = .current
             if !outcome.window.turns.isEmpty { return true }
         }
         return onFork
@@ -4815,7 +4817,6 @@ final class SessionDetailViewModel {
             sessionStats = outcome.detail.sessionStats ?? sessionStats
             adoptWindow(outcome, allowShrink: true)
             phase = .loaded
-            freshness = .current
             requestStickToBottom()
         } catch {
             // Never leave the original's history standing for the fork's: a
