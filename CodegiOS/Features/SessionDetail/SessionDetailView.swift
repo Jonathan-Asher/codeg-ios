@@ -155,6 +155,7 @@ struct SessionDetailView: View {
                             showRename = true
                         },
                         onFork: { startFork(at: .latest) },
+                        onChooseSound: chooseSound,
                         onShowDetails: { showDetails = true },
                         onDelete: { showDeleteConfirm = true }
                     )
@@ -360,6 +361,15 @@ struct SessionDetailView: View {
             onConnection: { model.adoptForkConnection($0) },
             onError: { model.notice = $0 }
         )
+    }
+
+    // MARK: - Notification sound
+
+    /// "Notification Sound…" in the ⋯ menu: this session's own sound on its
+    /// server.
+    private func chooseSound() {
+        guard let summary = model.summary else { return }
+        actions?.chooseSound(for: summary, server: server.id)
     }
 
     // MARK: - Talk
@@ -719,15 +729,16 @@ private struct NewSessionHeaderCard: View {
 // MARK: - Actions menu
 
 /// The nav-bar "…" menu of per-conversation actions, mirroring codeg web's
-/// per-conversation context menu: rename, pin, fork, details, status, delete.
-/// Presented just after the agent avatar once the conversation is
-/// server-linked.
+/// per-conversation context menu: rename, pin, fork, critical, notification
+/// sound, details, status, delete. Presented just after the agent avatar
+/// once the conversation is server-linked.
 private struct SessionActionsMenu: View {
     let model: SessionDetailViewModel
     /// "Fork Session": greyed out with the reason when it can't be taken now.
     let fork: ForkAvailability
     let onRename: () -> Void
     let onFork: () -> Void
+    let onChooseSound: () -> Void
     let onShowDetails: () -> Void
     let onDelete: () -> Void
 
@@ -751,6 +762,7 @@ private struct SessionActionsMenu: View {
                     Label(critical.title, systemImage: critical.symbol)
                 }
             }
+            NotificationSoundMenuItem(action: onChooseSound)
             Button(action: onShowDetails) {
                 Label("Session Details", systemImage: "info.circle")
             }

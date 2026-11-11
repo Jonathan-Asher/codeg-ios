@@ -60,10 +60,11 @@ branch `fork/solution-plan`). `App/PushRegistration.swift` does the work:
   "Time Sensitive Notifications" switch for the app.
 - **Registration.** `registerForRemoteNotifications()`, then
   `POST /api/register_push_device {token, environment, bundleId, name,
-  platform: "ios"}` to every saved server, on every launch and whenever the
-  token changes (the old token is unregistered first). Each server's
-  `server_id` and this phone's device id are kept in `PushServerIndex`
-  (UserDefaults).
+  platform: "ios", sounds}` to every saved server, on every launch and
+  whenever the token changes (the old token is unregistered first), and
+  again when the notification sounds change (see "Notification sounds"
+  below). Each server's `server_id`, this phone's device id and how it took
+  the sounds are kept in `PushServerIndex` (UserDefaults).
 - **Environment.** Read from the embedded provisioning profile: a development
   profile (a build run from Xcode) means `sandbox`; TestFlight and App Store
   builds carry none or a distribution one, which means `production`. Without a
@@ -98,11 +99,12 @@ branch `fork/solution-plan`). `App/PushRegistration.swift` does the work:
   pushed about the session the phone shows. Every other event socket also
   declares `codeg-client.ios` and reports nothing, so it never counts as
   looking.
-- **Settings › Notifications** shows the iOS permission, the app-level switch
-  and, per saved server, this phone's device preferences on that server (turn
-  finished and needs you: always / only when away / off; critical alerts;
-  errors) through `list_push_devices` / `update_push_device_prefs`, plus "Send
-  test push" (`send_test_push`).
+- **Settings › Notifications** shows the iOS permission, the app-level switch,
+  the notification sounds (see "Notification sounds" below) and, per saved
+  server, this phone's device preferences on that server (turn finished and
+  needs you: always / only when away / off; critical alerts; errors) through
+  `list_push_devices` / `update_push_device_prefs`, plus "Send test push"
+  (`send_test_push`).
 
 ### Waiting for you, reminders and answers from a notification (1.3.27)
 
@@ -182,6 +184,83 @@ min, 30 min, 2 h and then every 4 h until the item is answered (codeg
   1.5 s per server, each view with its age so the phone's clock does not
   matter; a server without the endpoint is not asked again until the app
   restarts.
+
+### Notification sounds (1.4.6)
+
+What codeg's notifications sound like on this iPhone (codeg
+`docs/ios-push.md`, "Sounds"). The phone picks; the server names the sound
+in each push's `aps.sound`; iOS plays it from the app bundle (the Codeg
+tones) or from the app's `Library/Sounds` (imported sounds). No App Group:
+the files never leave the app's own container.
+
+- **Levels.** A sound per kind (`kinds`: `needs_you` for questions and
+  permissions, `plan`, `reminder`, `turn_finished`, also the test push,
+  `critical` for the critical and idle alerts, `error`), one for every
+  notification of a session marked critical (`critical`), one per folder
+  (`projects`, by the server's folder id) and one per session (`sessions`,
+  by its conversation id). A notification plays the first that is set:
+  its session's, its folder's, its folder's root folder's (a worktree
+  counts as its project, as Folders shows it), the critical sessions', then
+  its kind's. Each value is `default`, `none` or a file name; for a kind
+  `default` is the iOS sound, elsewhere it defers to the next level ("Use
+  default", whose subtitle says what that plays: "Project: Chime",
+  "Critical sessions: Bell", "Each kind's own sound"). `none` is a banner
+  without a sound.
+- **Where to pick.** Settings › Notifications › Sounds: a row per kind and
+  Critical sessions, each pushing `NotificationSoundPicker`. Notification
+  Sound… in a session row's long-press menu, the session's ⋯ menu and a
+  folder's long-press menu in Folders opens the same picker in a sheet
+  (`SessionActions.soundPicker`, shown by `NotificationSoundSheetHost` on
+  `RootView`, so `SessionDetailView`'s modifier chain gains nothing). The
+  picker lists Default or Use default, None, the eight Codeg tones, the
+  imported sounds (each with Rename… and Delete…) and Import from Files…; a
+  tap picks and plays. Previews go through System Sound Services
+  (`SoundPreviewPlayer`): no audio session of the app's own, so Talk, read
+  aloud and recordings keep theirs, at the ringer volume and silent with the
+  Ring/Silent switch, as the notification will be.
+- **Codeg tones.** `CodegiOS/Resources/Sounds/codeg-{chime,ping,glass,bell,
+  pop,two-tone,marimba,knock}.caf`, synthesised by
+  `scripts/make-notification-sounds.py` (sine partials and filtered noise,
+  no samples, nothing to license; Python's `wave` and macOS `afconvert`):
+  16-bit linear PCM, 22.05 kHz mono, 0.3 to 1.5 s, 15 to 70 KB each, soft
+  attacks and fades, loudness matched halfway between plain and a phone
+  speaker's weighting. The script is deterministic; running it again
+  reproduces the files. They are copied to the bundle root with the rest of
+  `CodegiOS/`.
+- **Imports.** `.fileImporter` for any audio type; `NotificationSoundImporter`
+  decodes it with `AVAudioFile` and `AVAudioConverter` (downmixed) to 16-bit
+  linear PCM, 44.1 kHz mono, in a `.caf` under `Library/Sounds`, cut to
+  29.5 s with a 0.3 s fade when longer (iOS plays the default sound for one
+  of 30 s or more) and saying so under the list. Each import gets a name of
+  its own, `import-<8 hex>.caf`, never reused (iOS remembers a sound by its
+  name), and no file protection, so a push can play it while the iPhone is
+  locked. Renaming changes only the name shown; deleting removes the file
+  and puts every choice that named it back to default, on every server. An
+  import whose file is gone is forgotten at the next start.
+- **Sending.** `NotificationSoundStore` saves the choices (UserDefaults,
+  `codeg.notificationSounds.v1`) and, on a change, asks
+  `PushRegistration.soundsChanged(server:)` to register again after 0.8 s
+  (several picks make one round): with every server for a kind, the
+  critical sessions or an import, with its own server for a folder or a
+  session. Each registration carries that server's `sounds` (only what is
+  set and still playable). The server answers with the device's `sounds` as
+  it kept them, less the folders and sessions it no longer has, which the
+  phone then drops too (unless the choices moved on meanwhile).
+- **Older servers.** A server without the feature ignores `sounds` and
+  answers without them: `NotificationSoundSupport.unsupported`, and the
+  Sounds footer names it ("doesn't play custom sounds yet: its
+  notifications keep the default sound until its codeg is updated").
+  `partly` (it kept other kinds or another critical sound) is named too.
+- **To check on a device.** A question push goes through the notification
+  service extension (`mutable-content`), which keeps the payload's sound; if
+  a question ever plays the default sound with a Codeg tone chosen, the
+  tones may need copying into the extension's bundle as well.
+- Tests: `NotificationSoundsTests` (the server's name rule, what each server
+  gets, a round trip of the saved choices, deleting an import, what "Use
+  default" names, the picker's rows, the footer, the registration request
+  and the server's answer read back in its spelling, an older server, the
+  store saving, sending, importing and forgetting a lost import, and the
+  conversion and cut of an imported file).
 
 ### Apple-side setup (not done from this repo)
 

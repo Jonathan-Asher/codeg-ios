@@ -12,6 +12,25 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Notification sounds (1.4.6). Settings › Notifications › Sounds gives each
+  kind of notification its own sound: questions and permissions, plans,
+  reminders, finished replies, critical and idle alerts, and errors, plus
+  one for every notification of a session marked critical. A session's
+  long-press menu and its ⋯ menu, and a folder's long-press menu in
+  Folders, have Notification Sound… for that session or folder (a folder's
+  covers its worktrees). A notification plays the first that is set: its
+  session's, its folder's, the critical sessions', then its kind's, and
+  "Use default" says what that is ("Project: Chime"). Pick the iOS default
+  sound, one of eight Codeg tones (Chime, Ping, Glass, Bell, Pop, Two-Tone,
+  Marimba, Knock), a sound imported from Files, or None for a banner without
+  a sound; a tap plays it, following the Ring/Silent switch as notifications
+  do. Any audio file can be imported: it is converted for notifications,
+  cut to 30 seconds (it says so), and can be renamed or deleted (what played
+  it goes back to the default). The choices go to every saved server with
+  the push registration and again when they change; the server names the
+  sound in each push. A server that doesn't play them yet keeps the default
+  sound, and the Sounds footer names it. Needs a codeg server with
+  notification sounds.
 - A permission, question or plan card waiting on you folds down to one line,
   so you can read what's behind it (1.4.3). The chevron at the right of the
   card's header, or a swipe down on the header, folds it to a slim bar in the
