@@ -46,8 +46,11 @@ struct TalkReportStore: Sendable {
             try? root.setResourceValues(values)
         }
         let earlier = waiting(for: server)
-        // One millisecond apart, so the parts of a Talk stay in order.
-        let stamp = Int64(now.timeIntervalSince1970 * 1000)
+        // One millisecond apart, so the parts of a Talk stay in order, and
+        // never before what is already kept: two keeps can land in the same
+        // millisecond.
+        let latest = earlier.compactMap { Int64($0.lastPathComponent.prefix(13)) }.max() ?? -1
+        let stamp = max(Int64(now.timeIntervalSince1970 * 1000), latest + 1)
         for (index, report) in reports.enumerated() {
             let id = Self.id(of: report) ?? UUID().uuidString.lowercased()
             for file in earlier where Self.id(ofFile: file) == id { remove(file) }
