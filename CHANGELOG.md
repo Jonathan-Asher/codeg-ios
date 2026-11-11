@@ -530,6 +530,20 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Fixed
 
+- Changing the model, mode or effort right after opening a session no longer
+  starts a new, empty agent session for it (1.4.4). A session opened from its
+  saved copy shows at once, before the server has said which agent session
+  it holds, and a change made then connected without the session's id: the
+  server opened a brand-new session, and the next message went to an agent
+  with none of the conversation's history, which moved to a row of its own.
+  Every connect for a session the server has (a message, Continue, Talk, a
+  change of model, mode or effort, a fork) now waits for the server's word
+  on its session, also when the saved copy named one (a fork elsewhere may
+  have moved it since), and asks for it itself when the load didn't bring
+  it. A change made meanwhile shows as being applied and goes once the
+  session is connected. A session the server says has no agent session yet
+  starts one, and a new session still starts its agent at once, as before.
+
 - Talk reports its timings again (1.4.1). A Talk that ended with the iPhone
   locked (pocket mode, by voice or after 10 quiet minutes) sent no
   telemetry and left the session in Talk mode on the server: the app

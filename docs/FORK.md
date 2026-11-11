@@ -486,7 +486,9 @@ live updates), `AgentOptionsButton.swift`, the event mapping of
   it is `connected` or `prompting`, takes `fork_supported` and whether a turn
   runs from it, and then forks. `acp_fork` carries `conversationId` and
   `folderId`, so a resumed connection that hasn't prompted yet adopts its
-  row. A connection that went away in between is resumed once more.
+  row. A connection that went away in between is resumed once more (from
+  the session, through the screen again; see "Connecting a session with its
+  own agent session").
 - **After the fork.** From a list, the fork opens on top of the list, so
   Back returns there. From the session, the original goes under the fork (in
   place: the sibling row that now holds it; a new conversation: the session
@@ -2195,6 +2197,62 @@ for the open session's own Fork Session, the fork goes as before. Tests in
   `prompt-fold-open`, `prompt-fold-folded` and `prompt-fold-bars` (`-light`,
   `-dark`) and `prompt-fold-bars-zh-light` in the `compose-screenshots`
   artifact.
+
+### Connecting a session with its own agent session (1.4.4)
+
+`SessionDetailViewModel.sessionIDForConnect()`, used by `resolveConnection()`,
+`retrySendOnce` and `resolveConnectionForOptions()`, and
+`SessionForker.connection(for:resolve:fresh:)`.
+
+- **The bug.** `acp_connect` without a `sessionId` makes codeg open a
+  brand-new agent session, and the next prompt binds it to the row; the
+  server keeps the row's old session reachable by moving it to a row of its
+  own, so the conversation and its history part ways. A session opened from
+  its transcript cache is on screen, options button included, before
+  `syncExisting` brings the server's detail, and the cached summary can name
+  no session (saved before the first prompt bound one) or an older one (a
+  fork elsewhere moved the row since). A model, mode or effort picked then
+  went through `resolveConnectionForOptions()`, found no live connection and
+  connected with the cached `externalId`; a message, Continue, Talk or a
+  queued resend did the same through `resolveConnection()`. codeg web had
+  the same race, fixed in fork.222 (`historical-session-gate.ts`).
+- **The rule.** A conversation with a row connects only once the server has
+  said which session the row holds (`sessionIDConfirmed`). `syncExisting`
+  sets it when it adopts the detail (the open, a return to the app,
+  `resume()`); the session list's summary (`prime`) and the cached one
+  (`applyCached`) never do. Until then a connect waits for a detail read on
+  its way (`detailReads`), and with none on its way, or after one failed,
+  reads `get_folder_conversation` (`tailTurns: 1`) itself, one read shared by
+  the connects waiting at once, and adopts its summary (the server's detail
+  also follows a session id that changed on disk, after a `/clear`). Then,
+  as the open does, it looks for the live connection
+  (`acp_find_connection_for_conversation`) with that session id, and resumes
+  the session only when there is none. A read that fails holds the connect,
+  as a failed load does on the desktop: the message stays "Not sent" and the
+  pick is put back, both saying why. A row the server says holds no session
+  connects without one, as on the desktop. A prompt accepted while the
+  summary names no session bound the connection's session to the row, and a
+  screen hidden by `suspend()` holds a kept copy, so the next connect reads
+  again.
+- **While it waits.** A message shows as sent, "connecting"; a pick keeps its
+  value with its row spinning (`AgentOptionsModel.applying`), and is set on
+  the connection once it is up. Nothing is dropped.
+- **Forks.** The session screen's fork resolves its connection through
+  `resolveConnectionForOptions()` also when it retries after the connection
+  went away (it used to resume `ForkTarget.sessionID`, the summary as it was
+  when the fork started). A list row's fork on a server without
+  `acp_fork_conversation`, whose summary names no session, reads the row's
+  before it resumes one.
+- **Unchanged.** A draft, and the row its first send creates until that
+  prompt is accepted, connect without a session id at once, with the picks
+  made before the connect. Cline gets no exception: the phone has always
+  connected it with the row's session id like any other agent (codeg web
+  never resumes Cline and sends none), so it waits like the others.
+- Tests: `OwnSessionTests` (a pick and a message before the load wait for
+  the server's session and then go, also over a saved copy that named an
+  older one; a failed load read again for the connect; a row with no
+  session; a new draft) and, in `SessionForkTests`, a row listed without a
+  session and the session screen's retry.
 
 ## Session lists
 

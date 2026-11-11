@@ -239,18 +239,28 @@ struct SessionForker {
 
     private func connection(for target: ForkTarget, resolve: (() async throws -> String)?,
                             fresh: Bool) async throws -> String {
-        if !fresh, let resolve { return try await resolve() }
+        // The session screen's own, found or resumed there with the session
+        // its row holds as the server says it: again once the first went away
+        // (the target's copy may predate the screen's load).
+        if let resolve { return try await resolve() }
         if !fresh, let found = try await client.findConnection(
             conversationId: target.conversationID, sessionId: target.sessionID, agentType: target.agentType
         )?.connectionId {
             return found
+        }
+        // A connect without a session id starts a brand-new agent session: a
+        // row listed with none may hold one by now, so ask first.
+        var sessionID = target.sessionID
+        if sessionID == nil {
+            sessionID = try await client.conversationDetail(id: target.conversationID, window: .tail(1))
+                .summary.externalId
         }
         let prefs = SelectorPrefsStore.prefs(for: target.agentType)
         do {
             return try await client.connect(
                 agentType: target.agentType,
                 workingDir: target.workingDir,
-                sessionId: target.sessionID,
+                sessionId: sessionID,
                 preferredModeId: prefs.modeId,
                 preferredConfigValues: prefs.configValues
             )

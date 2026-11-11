@@ -377,6 +377,40 @@ final class SessionForkTests: XCTestCase {
         XCTAssertEqual(forkCalls("acp_fork").count, 1)
     }
 
+    func testARowListedWithoutAnAgentSessionResumesTheOneItHoldsNow() async throws {
+        serveFork()
+        server.on("acp_find_connection_for_conversation") { _ in .body("null") }
+        server.on("acp_connect") { _ in .body(#""conn-1""#) }
+        let detail = detailJSON(turns: [])
+        server.on("get_folder_conversation") { _ in .body(detail) }
+        let listed = ForkTarget(conversationID: 7, folderID: 1, agentType: .claudeCode, sessionID: nil,
+                                workingDir: "/w/repo")
+        _ = try await forker().fork(listed, at: .reply("turn-2"))
+        XCTAssertEqual(server.calls("get_folder_conversation").count, 1, "asked which session the row holds")
+        XCTAssertEqual(server.calls("acp_connect").first?.body["sessionId"] as? String, "ext-7",
+                       "its own session, never a brand-new one")
+        XCTAssertEqual(forkCalls("acp_fork").count, 1)
+    }
+
+    func testTheSessionScreenResolvesItsConnectionAgainWhenTheFirstWentAway() async throws {
+        serveFork()
+        let gone = connectionNotFound
+        let result = forkResult
+        let forks = CallCount()
+        server.on("acp_fork") { call in
+            if (call.body["connectionId"] as? String) == "" { return .status(500, gone) }
+            return forks.next() == 1 ? .status(500, gone) : .body(result)
+        }
+        var resolved = 0
+        _ = try await forker().fork(target, at: .reply("turn-2"), resolveConnection: {
+            resolved += 1
+            return "conn-1"
+        })
+        XCTAssertEqual(resolved, 2, "the screen's own resolve, with the session its row holds")
+        XCTAssertTrue(server.calls("acp_connect").isEmpty, "not resumed from the target's copy of the session")
+        XCTAssertEqual(forkCalls("acp_fork").count, 2)
+    }
+
     func testATurnThatStartedUnderTheForkForksIntoANewConversation() async throws {
         serveFork()
         let result = newConversationResult
@@ -798,5 +832,18 @@ final class SessionForkTests: XCTestCase {
         XCTAssertEqual(model.turns.map(\.id), ["turn-0", "turn-1"], "the fork's shorter history replaces the original's")
         XCTAssertEqual(model.summary?.title, "[Fork] Topic")
         XCTAssertEqual(model.phase, .loaded)
+    }
+}
+
+/// Counts a mock route's calls (the routes run off the main actor).
+private final class CallCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.withLock {
+            value += 1
+            return value
+        }
     }
 }
