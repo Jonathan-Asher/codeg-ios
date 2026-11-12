@@ -99,46 +99,49 @@ struct SessionDetailView: View {
         // Mode/config) and needs nothing from the server.
         if model.showsAgentButton {
             // Talk: a hands-free voice conversation with this session (once
-            // the server has it).
-            if case .loaded = model.phase, model.conversationID != nil {
+            // the server has it). Not for a session whose history is gone,
+            // which takes no message; nor its options or the walkie-talkie.
+            if case .loaded = model.phase, model.conversationID != nil, !model.isReadOnly {
                 ToolbarItem(placement: .topBarTrailing) {
                     TalkToolbarButton(isActive: talkCenter.isActive(model.conversationID), action: startTalk)
                 }
             }
             // Walkie-talkie: hold the Camera Control to talk to this agent.
-            if CameraTalkController.isSupported {
+            if CameraTalkController.isSupported, !model.isReadOnly {
                 ToolbarItem(placement: .topBarTrailing) {
                     CameraTalkToolbarButton(isOn: cameraTalk.isEnabled, action: toggleCameraTalk)
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                AgentOptionsButton(
-                    agentType: model.agentTypeForUI,
-                    workingDir: model.workingDir,
-                    isBusy: model.isInFlight,
-                    cardWaiting: model.pendingPermission != nil || model.pendingPlanApproval != nil,
-                    options: model.agentOptions,
-                    newSession: model.isDraftEditable ? NewSessionAgentConfig(
-                        availableAgents: model.availableAgents,
-                        selectedAgent: model.agentTypeForUI,
-                        onSelectAgent: { model.selectAgent($0) },
-                        availableFolders: model.availableFolders,
-                        selectedFolder: model.folder,
-                        onSelectFolder: { model.selectFolder($0) }
-                    ) : nil,
-                    branch: SessionBranchConfig(
-                        // Root repo name when this session lives in a worktree.
-                        folderName: model.displayFolderName,
-                        folderPath: model.folder?.path,
-                        current: model.currentBranch,
-                        load: { await model.loadBranches() },
-                        switchTo: { await model.switchBranch($0, isRemote: $1) },
-                        create: { await model.createBranch($0, from: $1) },
-                        onOpenSession: { folderID in
-                            onOpenSession?(NewSessionRequest(preselectedFolderID: folderID))
-                        }
+            if !model.isReadOnly {
+                ToolbarItem(placement: .topBarTrailing) {
+                    AgentOptionsButton(
+                        agentType: model.agentTypeForUI,
+                        workingDir: model.workingDir,
+                        isBusy: model.isInFlight,
+                        cardWaiting: model.pendingPermission != nil || model.pendingPlanApproval != nil,
+                        options: model.agentOptions,
+                        newSession: model.isDraftEditable ? NewSessionAgentConfig(
+                            availableAgents: model.availableAgents,
+                            selectedAgent: model.agentTypeForUI,
+                            onSelectAgent: { model.selectAgent($0) },
+                            availableFolders: model.availableFolders,
+                            selectedFolder: model.folder,
+                            onSelectFolder: { model.selectFolder($0) }
+                        ) : nil,
+                        branch: SessionBranchConfig(
+                            // Root repo name when this session lives in a worktree.
+                            folderName: model.displayFolderName,
+                            folderPath: model.folder?.path,
+                            current: model.currentBranch,
+                            load: { await model.loadBranches() },
+                            switchTo: { await model.switchBranch($0, isRemote: $1) },
+                            create: { await model.createBranch($0, from: $1) },
+                            onOpenSession: { folderID in
+                                onOpenSession?(NewSessionRequest(preselectedFolderID: folderID))
+                            }
+                        )
                     )
-                )
+                }
             }
             // A "…" actions menu sits just after the agent avatar, available
             // once the conversation is server-linked. Hosts rename / pin /
@@ -471,7 +474,18 @@ struct SessionDetailView: View {
         return OutputLimitNotice { model.sendContinue() }
     }
 
+    /// The transcript, or, for a session whose history is gone with more of
+    /// it saved on the server than this iPhone kept, the server's saved text.
+    @ViewBuilder
     private var loadedBody: some View {
+        if model.lostHistoryCopy == .saved {
+            savedCopyBody
+        } else {
+            transcriptBody
+        }
+    }
+
+    private var transcriptBody: some View {
         TranscriptView(
             turns: model.turns,
             pendingUserTurns: model.pendingUserTurns,
@@ -512,6 +526,10 @@ struct SessionDetailView: View {
                         isStarting: model.hasStartedFirstSend
                     )
                 }
+                // The history is gone: what shows is this iPhone's copy.
+                if model.lostHistoryCopy == .iPhone {
+                    KeptCopyLabel()
+                }
                 if model.isEmptyTranscript {
                     EmptyStateView(
                         icon: "bubble.left.and.text.bubble.right",
@@ -540,126 +558,186 @@ struct SessionDetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.snappy(duration: 0.28), value: model.pendingUserTurns)
         .animation(.snappy(duration: 0.28), value: model.liveTurn?.id)
-        .safeAreaInset(edge: .bottom) {
-            // The "jump to latest" affordance sits in the compose-bar inset — not
-            // as a `List` overlay — so it is reliably above the bar and tappable
-            // (an overlay anchored to the scroll view's bottom rendered *under* the
-            // compose bar, which silently ate the tap). It is horizontally centered
-            // and only present while the user has scrolled up.
-            VStack(spacing: 0) {
-                // Interactive prompt cards sit above everything in the inset: the
-                // agent has paused and the user's next action is to respond here.
-                // Fade only (no geometry transition) so the buttons' hit regions
-                // aren't offset mid-animation. `.id` resets per-card state when a
-                // fresh request replaces a showing one.
-                if let pending = model.pendingPermission {
-                    PermissionRequestCard(pending: pending, modeNote: model.permissionModeNote) { optionId in
-                        await model.respondPermission(optionId: optionId)
-                    }
-                    .id(pending.requestId)
-                    .transition(.opacity)
-                    .zIndex(2)
-                }
-                if let question = model.pendingQuestion {
-                    AskQuestionCard(pending: question) { answer in
-                        await model.answerQuestion(answer)
-                    }
-                    .id(question.questionId)
-                    .transition(.opacity)
-                    .zIndex(2)
-                }
-                if let approval = model.pendingPlanApproval {
-                    PlanApprovalCard(pending: approval) { decision, feedback in
-                        await model.answerPlanApproval(decision: decision, feedback: feedback)
-                    }
-                    .id(approval.approvalId)
-                    .transition(.opacity)
-                    .zIndex(2)
-                }
-                if !model.stripNotes.isEmpty {
-                    InsertedNotesView(notes: model.stripNotes)
-                        .padding(.horizontal, ComposeBar.sideMargin(focused: composeFocused))
-                        .transition(.opacity)
-                }
-                if !model.queuedMessages.isEmpty {
-                    QueuedMessagesView(
-                        items: model.queuedMessages,
-                        canSendNow: !model.isInFlight || model.canInsertIntoTurn,
-                        onSendNow: { model.sendQueuedNow($0) },
-                        onEdit: { model.editQueued($0) },
-                        onRemove: { model.removeQueued($0) }
-                    )
-                    .equatable()
-                    .padding(.horizontal, ComposeBar.sideMargin(focused: composeFocused))
-                    .transition(.opacity)
-                }
-                if case .limitPaused(let pause) = model.activity {
-                    LimitPausedBanner(
-                        pause: pause,
-                        busy: model.limitActionBusy,
-                        onCancel: { Task { await model.cancelLimitContinue() } },
-                        onContinueNow: { Task { await model.continueLimitNow() } }
-                    )
-                    .padding(.horizontal, ComposeBar.sideMargin(focused: composeFocused))
-                    .transition(.opacity)
-                }
-                if model.canOfferContinue {
-                    ContinueChip { model.sendContinue() }
-                        .padding(.bottom, 2)
-                        .transition(.opacity)
-                }
-                if !model.isPinnedToBottom {
-                    // Something arrived below while the reader was scrolled up
-                    // or away: said, never scrolled to.
-                    JumpToLatestButton(newMessages: model.hasNewMessagesBelow) { model.userTappedScrollToBottom() }
-                        .padding(.bottom, 10)
-                        // Fade only — a `.scale` transition is scaleEffect-backed
-                        // and can leave a residual transform that offsets the
-                        // button's hit region from its pixels (the tap then falls
-                        // through to the message text behind it). `zIndex` keeps it
-                        // above the compose bar's glass during the cross-fade.
-                        .transition(.opacity)
-                        .zIndex(1)
-                }
-                ComposeBar(
-                    text: $model.draft,
-                    isInFlight: model.isInFlight,
-                    notice: model.notice,
-                    attachments: model.attachments,
-                    canAttachMore: model.canAttachMore,
-                    onAddAttachments: { model.addAttachments($0) },
-                    onRemoveAttachment: { model.removeAttachment($0) },
-                    onAddMedia: { model.addMedia($0) },
-                    onRetryAttachment: { model.retryAttachment($0) },
-                    onSetVideoQuality: { model.setVideoQuality($0, for: $1) },
-                    attachmentsReady: model.attachmentsReady,
-                    onNotice: { model.notice = $0 },
-                    onSend: { model.sendFromComposer() },
-                    onStop: { model.cancel() },
-                    steering: ComposeSteering(
-                        canInsert: model.canInsertIntoTurn,
-                        deliverNow: model.canDeliverIntoHeldTurn
-                    ),
-                    onInsert: { model.insertIntoTurn() },
-                    onQueue: { model.queueDraft() },
-                    onDismissNotice: { model.notice = nil },
-                    insertModel: model.insertModel,
-                    dictationContext: DictationContext(folder: model.folder?.name, session: model.summary?.title),
-                    dictationRefiner: client,
-                    onFocusChange: { composeFocused = $0 },
-                    talkConversationID: model.conversationID
-                )
-            }
-            .animation(.snappy(duration: 0.26), value: composeFocused)
-            .animation(.snappy(duration: 0.24), value: model.isPinnedToBottom)
-            .animation(.snappy(duration: 0.24), value: model.hasNewMessagesBelow)
-            .animation(.snappy(duration: 0.24), value: model.queuedMessages)
-            .animation(.snappy(duration: 0.24), value: model.insertedNotes)
-            .animation(.snappy(duration: 0.24), value: model.canOfferContinue)
-            .animation(.snappy(duration: 0.26), value: model.pendingPermission?.id)
-            .animation(.snappy(duration: 0.26), value: model.pendingQuestion?.id)
-            .animation(.snappy(duration: 0.26), value: model.pendingPlanApproval?.id)
+        .safeAreaInset(edge: .bottom) { bottomBar }
+    }
+
+    /// The compose bar and what sits above it, or, for a session whose
+    /// history is gone, which takes no message, the read-only banner.
+    @ViewBuilder
+    private var bottomBar: some View {
+        if model.isReadOnly {
+            lostHistoryBar
+        } else {
+            composeArea
         }
+    }
+
+    /// The server's saved text of a session whose history is gone.
+    private var savedCopyBody: some View {
+        SavedHistoryView(
+            state: model.savedCopy,
+            savedTurns: model.historyUnavailable?.savedTurns ?? 0,
+            agentName: model.agentTypeForUI.displayName,
+            onRetry: { model.retrySavedCopy() }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaInset(edge: .bottom) { lostHistoryBar }
+    }
+
+    /// In the message bar's place on a session whose history is gone: why,
+    /// and "Start a new session from this" (with jump to latest over this
+    /// iPhone's copy, as over any transcript).
+    private var lostHistoryBar: some View {
+        VStack(spacing: 0) {
+            if model.lostHistoryCopy == .iPhone, !model.isPinnedToBottom {
+                JumpToLatestButton(newMessages: false) { model.userTappedScrollToBottom() }
+                    .padding(.bottom, 10)
+                    .transition(.opacity)
+                    .zIndex(1)
+            }
+            HistoryUnavailableBanner(
+                info: model.historyUnavailable ?? HistoryUnavailable(),
+                agentName: model.agentTypeForUI.displayName,
+                copy: model.lostHistoryCopy ?? .saved,
+                unsentCount: model.queuedMessages.count,
+                ready: model.savedCopyReady,
+                onStartNew: startFromSavedCopy
+            )
+        }
+        .animation(.snappy(duration: 0.24), value: model.isPinnedToBottom)
+    }
+
+    /// "Start a new session from this": a new draft on this server, agent
+    /// and folder, its message box holding the saved text. Nothing is sent.
+    /// Nil where this screen can't open one (previews).
+    private var startFromSavedCopy: (() -> Void)? {
+        guard let onOpenSession else { return nil }
+        let model = self.model
+        return {
+            guard let request = model.newSessionFromSavedCopy() else { return }
+            onOpenSession(request)
+        }
+    }
+
+    private var composeArea: some View {
+        // The "jump to latest" affordance sits in the compose-bar inset — not
+        // as a `List` overlay — so it is reliably above the bar and tappable
+        // (an overlay anchored to the scroll view's bottom rendered *under* the
+        // compose bar, which silently ate the tap). It is horizontally centered
+        // and only present while the user has scrolled up.
+        VStack(spacing: 0) {
+            // Interactive prompt cards sit above everything in the inset: the
+            // agent has paused and the user's next action is to respond here.
+            // Fade only (no geometry transition) so the buttons' hit regions
+            // aren't offset mid-animation. `.id` resets per-card state when a
+            // fresh request replaces a showing one.
+            if let pending = model.pendingPermission {
+                PermissionRequestCard(pending: pending, modeNote: model.permissionModeNote) { optionId in
+                    await model.respondPermission(optionId: optionId)
+                }
+                .id(pending.requestId)
+                .transition(.opacity)
+                .zIndex(2)
+            }
+            if let question = model.pendingQuestion {
+                AskQuestionCard(pending: question) { answer in
+                    await model.answerQuestion(answer)
+                }
+                .id(question.questionId)
+                .transition(.opacity)
+                .zIndex(2)
+            }
+            if let approval = model.pendingPlanApproval {
+                PlanApprovalCard(pending: approval) { decision, feedback in
+                    await model.answerPlanApproval(decision: decision, feedback: feedback)
+                }
+                .id(approval.approvalId)
+                .transition(.opacity)
+                .zIndex(2)
+            }
+            if !model.stripNotes.isEmpty {
+                InsertedNotesView(notes: model.stripNotes)
+                    .padding(.horizontal, ComposeBar.sideMargin(focused: composeFocused))
+                    .transition(.opacity)
+            }
+            if !model.queuedMessages.isEmpty {
+                QueuedMessagesView(
+                    items: model.queuedMessages,
+                    canSendNow: !model.isInFlight || model.canInsertIntoTurn,
+                    onSendNow: { model.sendQueuedNow($0) },
+                    onEdit: { model.editQueued($0) },
+                    onRemove: { model.removeQueued($0) }
+                )
+                .equatable()
+                .padding(.horizontal, ComposeBar.sideMargin(focused: composeFocused))
+                .transition(.opacity)
+            }
+            if case .limitPaused(let pause) = model.activity {
+                LimitPausedBanner(
+                    pause: pause,
+                    busy: model.limitActionBusy,
+                    onCancel: { Task { await model.cancelLimitContinue() } },
+                    onContinueNow: { Task { await model.continueLimitNow() } }
+                )
+                .padding(.horizontal, ComposeBar.sideMargin(focused: composeFocused))
+                .transition(.opacity)
+            }
+            if model.canOfferContinue {
+                ContinueChip { model.sendContinue() }
+                    .padding(.bottom, 2)
+                    .transition(.opacity)
+            }
+            if !model.isPinnedToBottom {
+                // Something arrived below while the reader was scrolled up
+                // or away: said, never scrolled to.
+                JumpToLatestButton(newMessages: model.hasNewMessagesBelow) { model.userTappedScrollToBottom() }
+                    .padding(.bottom, 10)
+                    // Fade only — a `.scale` transition is scaleEffect-backed
+                    // and can leave a residual transform that offsets the
+                    // button's hit region from its pixels (the tap then falls
+                    // through to the message text behind it). `zIndex` keeps it
+                    // above the compose bar's glass during the cross-fade.
+                    .transition(.opacity)
+                    .zIndex(1)
+            }
+            ComposeBar(
+                text: $model.draft,
+                isInFlight: model.isInFlight,
+                notice: model.notice,
+                attachments: model.attachments,
+                canAttachMore: model.canAttachMore,
+                onAddAttachments: { model.addAttachments($0) },
+                onRemoveAttachment: { model.removeAttachment($0) },
+                onAddMedia: { model.addMedia($0) },
+                onRetryAttachment: { model.retryAttachment($0) },
+                onSetVideoQuality: { model.setVideoQuality($0, for: $1) },
+                attachmentsReady: model.attachmentsReady,
+                onNotice: { model.notice = $0 },
+                onSend: { model.sendFromComposer() },
+                onStop: { model.cancel() },
+                steering: ComposeSteering(
+                    canInsert: model.canInsertIntoTurn,
+                    deliverNow: model.canDeliverIntoHeldTurn
+                ),
+                onInsert: { model.insertIntoTurn() },
+                onQueue: { model.queueDraft() },
+                onDismissNotice: { model.notice = nil },
+                insertModel: model.insertModel,
+                dictationContext: DictationContext(folder: model.folder?.name, session: model.summary?.title),
+                dictationRefiner: client,
+                onFocusChange: { composeFocused = $0 },
+                talkConversationID: model.conversationID
+            )
+        }
+        .animation(.snappy(duration: 0.26), value: composeFocused)
+        .animation(.snappy(duration: 0.24), value: model.isPinnedToBottom)
+        .animation(.snappy(duration: 0.24), value: model.hasNewMessagesBelow)
+        .animation(.snappy(duration: 0.24), value: model.queuedMessages)
+        .animation(.snappy(duration: 0.24), value: model.insertedNotes)
+        .animation(.snappy(duration: 0.24), value: model.canOfferContinue)
+        .animation(.snappy(duration: 0.26), value: model.pendingPermission?.id)
+        .animation(.snappy(duration: 0.26), value: model.pendingQuestion?.id)
+        .animation(.snappy(duration: 0.26), value: model.pendingPlanApproval?.id)
     }
 }
 

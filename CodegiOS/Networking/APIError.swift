@@ -51,6 +51,15 @@ enum APIError: LocalizedError, Sendable {
         return Date(timeIntervalSince1970: seconds)
     }
 
+    /// The agent no longer has the session's history, so codeg refuses to
+    /// resume or fork it (fork.230, `AcpError::HistoryUnavailable`): its code,
+    /// or the `[history_unavailable]` marker that ends the message (the web
+    /// server sends a connect's as a 404 `not_found`, a fork's as a 500).
+    var isHistoryUnavailable: Bool {
+        guard case .server(_, let code, let message) = self else { return false }
+        return code == "history_unavailable" || message.contains("[history_unavailable]")
+    }
+
     /// The folder isn't a git repository — the server's git endpoints guard with
     /// `ensure_git_repo`, returning HTTP 422 `not_a_git_repository`. Lets the
     /// Changes/Commits views show a calm "not a repo" state instead of an error.
@@ -97,6 +106,9 @@ enum APIError: LocalizedError, Sendable {
         case .streamGone:
             return true
         case .server(let status, let code, let message):
+            // A session whose history is gone comes back as a 404 too: a
+            // fresh connect would only be refused again.
+            if isHistoryUnavailable { return false }
             // codeg answers a prompt for a connection it no longer has (after
             // a restart) with a 500 that says so.
             return status == 404 || code == "connection_not_found" || code == "unknown_connection"

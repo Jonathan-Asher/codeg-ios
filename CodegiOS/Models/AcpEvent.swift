@@ -117,6 +117,12 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     /// started, and whether its adapter forks while a turn runs
     /// (`while_running`; nil from a server that doesn't say).
     case forkSupported(Bool, whileRunning: Bool? = nil)
+    /// The agent couldn't load the session (`session/load` failed in a way
+    /// codeg doesn't paper over): `code` is `resource_not_found` (the agent
+    /// has no record of it), `session_unavailable` (the session or its
+    /// process is gone), `session_archived` or `session_busy`. The
+    /// connection's status goes to `error` next.
+    case sessionLoadFailed(sessionId: String, message: String, code: String)
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -288,6 +294,12 @@ enum AcpEvent: Hashable, Sendable, Decodable {
             } else {
                 self = .unknown(type: type)
             }
+        case "session_load_failed":
+            self = .sessionLoadFailed(
+                sessionId: ((try? c.decodeIfPresent(String.self, forKey: .sessionId)) ?? nil) ?? "",
+                message: ((try? c.decodeIfPresent(String.self, forKey: .message)) ?? nil) ?? "",
+                code: ((try? c.decodeIfPresent(String.self, forKey: .code)) ?? nil) ?? ""
+            )
         default:
             self = .unknown(type: type)
         }

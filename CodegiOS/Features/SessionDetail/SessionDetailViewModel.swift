@@ -19,6 +19,15 @@ final class SessionDetailViewModel {
         case failed(String)
     }
 
+    /// The server's saved text of a session whose history is gone
+    /// (`get_conversation_saved_turns`).
+    enum SavedCopyState: Equatable {
+        case notLoaded
+        case loading
+        case loaded([SavedTurn])
+        case failed(String)
+    }
+
     // MARK: - Inputs
 
     private let client: CodegClient
@@ -74,8 +83,9 @@ final class SessionDetailViewModel {
     private var windowTotal: Int?
     /// An older page is on its way.
     private(set) var isLoadingOlder = false
-    /// Turns older than the ones held are still on the server.
-    var hasOlderTurns: Bool { turnsOffset > 0 && windowPrefixHash != nil }
+    /// Turns older than the ones held are still on the server. Not for a
+    /// session whose history is gone: the server has none to send.
+    var hasOlderTurns: Bool { turnsOffset > 0 && windowPrefixHash != nil && historyUnavailable == nil }
     /// What this screen holds of the transcript, for `TranscriptSync`.
     private var heldWindow: TranscriptWindow {
         TranscriptWindow(offset: turnsOffset, prefixHash: windowPrefixHash, total: windowTotal, turns: turns)
@@ -99,6 +109,19 @@ final class SessionDetailViewModel {
     @ObservationIgnored private var freshnessReads = 0
     /// "Try Again" on an update that failed, on its way.
     @ObservationIgnored private var retryUpdateTask: Task<Void, Never>?
+    /// The agent no longer has this session's history (its transcript was
+    /// deleted, as Claude Code's cleanup does): the server's verdict
+    /// (`history_unavailable`), kept in the transcript cache, or this
+    /// screen's own once a connect was refused for it or the agent said it
+    /// has no record of the session. Nil for every readable session. While
+    /// set the session is read-only: nothing connects it (no message,
+    /// Continue, fork, option change or Talk), and it shows the copy this
+    /// iPhone kept or the text the server saved (``lostHistoryCopy``).
+    private(set) var historyUnavailable: HistoryUnavailable?
+    /// The text the server saved of a session whose history is gone, when
+    /// that is the copy shown.
+    private(set) var savedCopy: SavedCopyState = .notLoaded
+    @ObservationIgnored private var savedCopyTask: Task<Void, Never>?
     /// The first load, owned by the model rather than the view, so a view
     /// that goes away mid-load (a layout change) doesn't cancel it.
     private var loadTask: Task<Void, Never>?
@@ -255,6 +278,8 @@ final class SessionDetailViewModel {
     @ObservationIgnored private var draftListsTask: Task<Void, Never>?
     /// The last fetch of the draft's lists got all of them.
     @ObservationIgnored private var draftListsFresh = false
+    /// The request's message-box text (``NewSessionRequest/prefill``) is in.
+    @ObservationIgnored private var prefillApplied = false
 
     /// Compose-bar text.
     var draft: String = ""
@@ -831,6 +856,9 @@ final class SessionDetailViewModel {
             // folder + agent lists so the in-page pickers (the nav-bar agent
             // button) are ready. Nothing is sent until the user writes + taps send.
             phase = .loaded
+            // Started from a session whose history is gone: the saved text
+            // waits in the message box.
+            if let prefill = request.prefill { applyPrefill(prefill) }
             guard !didLoadDraftOptions else { return }
             didLoadDraftOptions = true
             seedDraftLists()
@@ -867,6 +895,9 @@ final class SessionDetailViewModel {
             let detail = outcome.detail
 
             summary = detail.summary
+            // A session whose history the agent deleted opens read-only,
+            // before its (empty) transcript can replace the copy kept here.
+            adoptHistoryVerdict(detail.historyUnavailable, serverHasTurns: outcome.window.end > 0)
             // Another path (a turn reconciling, an older page) changed the
             // turns while this fetch ran: its copy is newer.
             if turnsVersion == version { adoptWindow(outcome, allowShrink: true) }
@@ -911,6 +942,8 @@ final class SessionDetailViewModel {
             let serverSaysLive = detail.inFlightUserTurnId != nil
                 || detail.summary.status == .inProgress
             reattachDrops = 0
+            // Nothing runs in a session whose history is gone.
+            guard historyUnavailable == nil else { return }
             await reattachIfLive(serverSaysLive: serverSaysLive)
         } catch {
             // A refresh failing leaves the existing transcript on screen
@@ -1014,6 +1047,9 @@ final class SessionDetailViewModel {
         windowPrefixHash = entry.prefixHash
         windowTotal = entry.turnsTotal
         turns = entry.turns
+        // Saved as a session whose history is gone: read-only at once, with
+        // no doomed connect or message box first.
+        if let lost = entry.historyUnavailable { enterHistoryUnavailable(lost) }
     }
 
     /// Adopt a fetched window. A response that continues the held window but
@@ -1025,6 +1061,10 @@ final class SessionDetailViewModel {
     private func adoptWindow(_ outcome: TranscriptSync.Outcome, allowShrink: Bool) -> Bool {
         let window = outcome.window
         if window.end < heldEnd, outcome.continuesHeld || !allowShrink { return false }
+        // The agent deleted this session's history: the server has nothing
+        // to send again, so the copy this iPhone kept is never replaced by
+        // its empty (or shorter) transcript.
+        if historyUnavailable != nil, !turns.isEmpty, window.turns.count < turns.count { return false }
         if window.prefixHash != nil { TranscriptSync.noteWindowed(serverKey: cacheServerKey) }
         turnsOffset = window.offset
         windowPrefixHash = window.prefixHash
@@ -1054,7 +1094,8 @@ final class SessionDetailViewModel {
         let entry = CachedTranscript(
             conversationID: id, savedAt: Date(), summary: summary, selectorState: summary.selectorState,
             sessionStats: sessionStats, folder: folder, turnsOffset: turnsOffset,
-            prefixHash: windowPrefixHash, turnsTotal: windowTotal, turns: turns
+            prefixHash: windowPrefixHash, turnsTotal: windowTotal, turns: turns,
+            historyUnavailable: historyUnavailable
         )
         let key = cacheServerKey
         cacheSaveTask?.cancel()
@@ -1593,6 +1634,8 @@ final class SessionDetailViewModel {
                            spoken: Bool = false) -> Bool {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (!text.isEmpty || !sending.isEmpty), !isInFlight else { return false }
+        // The agent no longer has this session's history: it takes no message.
+        guard historyUnavailable == nil else { return false }
         guard sending.allSatisfy(\.isReady) else {
             notice = attachmentsNotReadyNotice ?? "Wait for the video to finish uploading."
             return false
@@ -1698,6 +1741,12 @@ final class SessionDetailViewModel {
                                                       clientMessageID: clientMessageID, spoken: spoken)
             settleInFlight(clientMessageID)
             if duplicate { showAlreadyDelivered(userTurnID: userTurnID, live: live) }
+        } catch let error where historyIsGone(after: error) {
+            // Also a send the failed load's teardown cancelled: nothing will
+            // send it here any more, so it waits to go with a new session.
+            keepUnsentForLostHistory(userTurnID: userTurnID, live: live, text: text, attachments: sending,
+                                     clientMessageID: clientMessageID, error: error, previous: previous,
+                                     spoken: spoken)
         } catch let error as APIError where error.isStaleConnection {
             // Stale connection → drop it and retry once with a fresh spawn.
             connectionID = nil
@@ -1725,6 +1774,7 @@ final class SessionDetailViewModel {
                                userTurnID: String, previous: SendFailure?, spoken: Bool = false) async {
         do {
             closeStream()
+            try ensureHistoryAvailable()
             let sessionID = try await sessionIDForConnect()
             let prefs = preferredSelectors
             let conn = try await client.connect(
@@ -1739,6 +1789,10 @@ final class SessionDetailViewModel {
                                                       clientMessageID: clientMessageID, spoken: spoken)
             settleInFlight(clientMessageID)
             if duplicate { showAlreadyDelivered(userTurnID: userTurnID, live: live) }
+        } catch let error where historyIsGone(after: error) {
+            keepUnsentForLostHistory(userTurnID: userTurnID, live: live, text: text, attachments: sending,
+                                     clientMessageID: clientMessageID, error: error, previous: previous,
+                                     spoken: spoken)
         } catch is CancellationError {
             // Stays stored as on its way (see `runSend`).
         } catch APIError.turnInProgress {
@@ -1894,6 +1948,7 @@ final class SessionDetailViewModel {
     }
 
     private func resolveConnection() async throws -> String {
+        try ensureHistoryAvailable()
         if let existing = connectionID { return existing }
         // The row's agent session as the server says it: what a live
         // connection is found by, and what a fresh one resumes.
@@ -1949,6 +2004,11 @@ final class SessionDetailViewModel {
                 self.insertModel.agentType = detail.summary.agentType
                 self.sessionIDConfirmed = true
             }
+            // Its history is gone: no connect for it.
+            if let lost = detail.historyUnavailable, self.conversationID == id {
+                self.enterHistoryUnavailable(lost)
+                throw HistoryUnavailableError()
+            }
             return self.summary?.externalId
         }
         sessionIDRead = read
@@ -1978,6 +2038,9 @@ final class SessionDetailViewModel {
     /// connection the server has since garbage-collected. The result is cached so
     /// the next send reuses the same connection.
     func resolveConnectionForOptions() async throws -> String {
+        // A session whose history is gone is never resumed: there is no
+        // connection to set an option on or fork from.
+        try ensureHistoryAvailable()
         // A new session's first prompt isn't linked to its conversation yet,
         // so the server can't find its connection by it: it is the one the
         // send just made.
@@ -2328,6 +2391,8 @@ final class SessionDetailViewModel {
     /// Additive: it does not touch the send flow. The moment the user sends,
     /// `openStream` supersedes this stream (a generation bump ends this consumer).
     func reattachIfLive(serverSaysLive: Bool = false) async {
+        // Nothing runs in a session whose history is gone.
+        guard historyUnavailable == nil else { return }
         // A load that finished after the screen went away opens nothing:
         // `resume()` reattaches when the session is shown again.
         guard let id = conversationID, summary != nil, !isSuspended else { return }
@@ -2660,7 +2725,8 @@ final class SessionDetailViewModel {
             case .connecting: if case .idle = sendState { sendState = .connecting }
             case .prompting: if case .running = sendState {} else { sendState = .thinking }
             case .error:
-                failLive(live, message: "The agent connection errored.")
+                // A session whose history is gone already says why.
+                failLive(live, message: historyUnavailable == nil ? "The agent connection errored." : nil)
             default:
                 break
             }
@@ -2763,6 +2829,9 @@ final class SessionDetailViewModel {
         case .forkSupported(let supported, let whileRunning):
             ForkCapabilities.shared.note(agent: agentTypeForUI, forks: supported, whileRunning: whileRunning,
                                          client: client)
+
+        case .sessionLoadFailed(_, _, let code):
+            sessionLoadFailed(code: code, live: live)
 
         case .sessionStarted, .conversationStatusChanged, .userPromptSent, .unknown:
             break
@@ -3497,6 +3566,7 @@ final class SessionDetailViewModel {
     /// The plain send action: an ordinary prompt when idle, a delivery into a
     /// held turn, or the queue while the agent is really replying.
     func sendFromComposer() {
+        guard historyUnavailable == nil else { return }
         switch composerSendRoute {
         case .send: send()
         case .deliver: insertIntoTurn()
@@ -3519,7 +3589,8 @@ final class SessionDetailViewModel {
     /// queued.
     func sendSpoken(_ text: String) async -> SpokenSendRoute {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return .queued }
+        // Talk doesn't run on a session whose history is gone; nothing goes.
+        guard !text.isEmpty, historyUnavailable == nil else { return .queued }
         if !isInFlight {
             if startSend(text: text, attachments: [], fromComposer: false, spoken: true) { return .prompt }
             queueSpoken(text)
@@ -3544,7 +3615,7 @@ final class SessionDetailViewModel {
     func insertIntoTurn() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let sending = attachments
-        guard !text.isEmpty || !sending.isEmpty else { return }
+        guard !text.isEmpty || !sending.isEmpty, historyUnavailable == nil else { return }
         if let waiting = attachmentsNotReadyNotice {
             notice = waiting
             return
@@ -3567,7 +3638,7 @@ final class SessionDetailViewModel {
     func queueDraft(holdUntilTurnEnd: Bool = false) {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let sending = attachments
-        guard !text.isEmpty || !sending.isEmpty else { return }
+        guard !text.isEmpty || !sending.isEmpty, historyUnavailable == nil else { return }
         if let waiting = attachmentsNotReadyNotice {
             notice = waiting
             return
@@ -3597,7 +3668,7 @@ final class SessionDetailViewModel {
     /// "Send now" on a queued row: into the turn when it can take it, else as
     /// the next prompt when idle.
     func sendQueuedNow(_ id: UUID) {
-        guard let item = queuedMessages.first(where: { $0.id == id }) else { return }
+        guard historyUnavailable == nil, let item = queuedMessages.first(where: { $0.id == id }) else { return }
         if !isInFlight {
             // Taken off the queue only once the send has started.
             let before = queuedMessages
@@ -3620,7 +3691,7 @@ final class SessionDetailViewModel {
     /// "Not sent" head the server refused waits for Send now, and holds the
     /// rest behind it.
     private func sendNextQueued() {
-        guard !isInFlight, let next = queuedMessages.first else { return }
+        guard !isInFlight, historyUnavailable == nil, let next = queuedMessages.first else { return }
         if let failure = next.failure, !failure.autoRetry { return }
         queuedMessages.removeFirst()
         if !startSend(text: next.text, attachments: next.attachments, fromComposer: false,
@@ -3633,7 +3704,7 @@ final class SessionDetailViewModel {
     /// into it — one message per idle stretch, FIFO, skipping nothing: a head
     /// that waits for the turn's end holds everything behind it.
     private func drainIntoHeldTurnIfPossible() {
-        guard canDeliverIntoHeldTurn, !deliveringQueued, let head = queuedMessages.first,
+        guard canDeliverIntoHeldTurn, historyUnavailable == nil, !deliveringQueued, let head = queuedMessages.first,
               !head.holdUntilTurnEnd, let conn = connectionID else { return }
         queuedMessages.removeFirst()
         deliveringQueued = true
@@ -3865,7 +3936,7 @@ final class SessionDetailViewModel {
     /// and the agent either idle after its reply, cut off mid-turn, or held
     /// open only for background work (then it goes into the held turn).
     var canOfferContinue: Bool {
-        guard summary != nil, !isDraftEditable else { return false }
+        guard summary != nil, !isDraftEditable, historyUnavailable == nil else { return false }
         // The notice at the end of a reply cut off at the output limit has its own.
         guard !showsOutputLimitNotice else { return false }
         guard draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty,
@@ -3883,11 +3954,12 @@ final class SessionDetailViewModel {
     /// `max_tokens`, any agent): the transcript says so at its end, with
     /// Continue. Gone while a turn runs, and for good once the next one starts.
     var showsOutputLimitNotice: Bool {
-        OutputLimitNotice.applies(to: lastStopReason) && !isInFlight
+        OutputLimitNotice.applies(to: lastStopReason) && !isInFlight && historyUnavailable == nil
     }
 
     /// One tap: send the fork's Continue prompt ("continue").
     func sendContinue() {
+        guard historyUnavailable == nil else { return }
         if canDeliverIntoHeldTurn, let conn = connectionID {
             Task { [weak self] in
                 await self?.deliverIntoTurn(text: ContinuePrompt.text, attachments: [], connectionID: conn)
@@ -4053,6 +4125,7 @@ final class SessionDetailViewModel {
     /// Nothing else needs the socket: no turn, no send, no attach under way.
     private var canStartIdleWatch: Bool {
         keepsStreamAttached && !isSuspended && phase == .loaded && summary != nil && stream == nil
+            && historyUnavailable == nil
             && !isInFlight && !isTurnActive && sendsInProgress == 0 && readyContinuation == nil
     }
 
@@ -4569,7 +4642,8 @@ final class SessionDetailViewModel {
     /// "Fork Session" in the ⋯ menu (see ``SessionForkRules/listAvailability``),
     /// with this screen's own knowledge of whether a turn runs.
     func sessionForkAvailability(forking: Bool) -> ForkAvailability {
-        guard canManageConversation else { return .hidden }
+        // Nothing to fork from a session whose history is gone.
+        guard canManageConversation, historyUnavailable == nil else { return .hidden }
         return SessionForkRules.listAvailability(
             endpoints: ForkCapabilities.shared.endpoints(for: client),
             agent: agentTypeForUI,
@@ -4583,7 +4657,7 @@ final class SessionDetailViewModel {
     /// "Fork from here" on the reply that ends at `turnID`
     /// (see ``SessionForkRules/replyAvailability``).
     func replyForkAvailability(turnID: String, forking: Bool) -> ForkAvailability {
-        guard canManageConversation else { return .hidden }
+        guard canManageConversation, historyUnavailable == nil else { return .hidden }
         return SessionForkRules.replyAvailability(
             turnID: turnID,
             turns: turns,
@@ -4611,7 +4685,7 @@ final class SessionDetailViewModel {
     /// whose fork lands exactly on a chosen reply, and a server whose
     /// `acp_fork` takes an edit mode.
     var canEditMessages: Bool {
-        canManageConversation && MessageEditRules.supports(agentTypeForUI)
+        canManageConversation && historyUnavailable == nil && MessageEditRules.supports(agentTypeForUI)
             && ForkCapabilities.shared.editModes(for: client) == true
     }
 
@@ -4879,6 +4953,224 @@ final class SessionDetailViewModel {
         NotificationCenter.default.post(name: .conversationsDidChange, object: nil)
     }
 
+    // MARK: - History unavailable (codeg fork.230)
+
+    /// Nothing can be sent into this session: its agent no longer has its
+    /// history (``historyUnavailable``).
+    var isReadOnly: Bool { historyUnavailable != nil }
+
+    /// Which copy a session whose history is gone shows: the one this iPhone
+    /// kept when it holds at least as many turns as the server saved (its
+    /// turns are whole), else the server's saved text.
+    var lostHistoryCopy: LostHistoryCopy? {
+        guard let lost = historyUnavailable else { return nil }
+        return LostHistoryCopy.choose(heldTurns: turns.count, savedTurns: lost.savedTurns)
+    }
+
+    /// "Start a new session from this" can open its draft: the copy shown is
+    /// in (this iPhone's, or the server's saved text once read).
+    var savedCopyReady: Bool {
+        switch lostHistoryCopy {
+        case .iPhone?: return true
+        case .saved?:
+            if case .loaded = savedCopy { return true }
+            return false
+        case nil: return false
+        }
+    }
+
+    /// The server's word on the session's history, from a detail read. A
+    /// verdict makes it read-only. None, with a transcript to show again
+    /// (restored, or found where the agent keeps it now), makes it an
+    /// ordinary session again; none and no transcript leaves a session known
+    /// to be gone as it is (an older server, or a check the server couldn't
+    /// make: "when in doubt it stays out of the way").
+    private func adoptHistoryVerdict(_ verdict: HistoryUnavailable?, serverHasTurns: Bool) {
+        if let verdict {
+            enterHistoryUnavailable(verdict)
+        } else if historyUnavailable != nil, serverHasTurns {
+            historyUnavailable = nil
+            savedCopyTask?.cancel()
+            savedCopyTask = nil
+            savedCopy = .notLoaded
+            scheduleCacheSave()
+            scheduleUnsentResend()
+        }
+    }
+
+    /// The session's history is gone: nothing connects it from now on (a
+    /// waiting resend, the idle watch, Talk on it end), and the copy it shows
+    /// is brought in.
+    private func enterHistoryUnavailable(_ verdict: HistoryUnavailable) {
+        let previous = historyUnavailable
+        historyUnavailable = verdict
+        if previous == nil {
+            unsentResendTask?.cancel()
+            unsentResendTask = nil
+            reattachRetryTask?.cancel()
+            reattachRetryTask = nil
+            idleWatchTask?.cancel()
+            idleWatchTask = nil
+            if isIdleWatching {
+                closeStream()
+                connectionID = nil
+            }
+            if TalkCenter.shared.isActive(conversationID) { TalkCenter.shared.end() }
+        }
+        loadSavedCopyIfNeeded()
+        if previous != verdict { scheduleCacheSave() }
+    }
+
+    /// The server's saved text, when it is the copy shown and isn't in (or
+    /// on its way) yet. With nothing saved there is nothing to read.
+    private func loadSavedCopyIfNeeded() {
+        guard let lost = historyUnavailable, lostHistoryCopy == .saved, let id = conversationID else { return }
+        switch savedCopy {
+        case .loading:
+            return
+        case .loaded(let saved) where saved.count >= lost.savedTurns:
+            return
+        default:
+            break
+        }
+        guard lost.savedTurns > 0 else {
+            savedCopy = .loaded([])
+            return
+        }
+        savedCopy = .loading
+        savedCopyTask?.cancel()
+        savedCopyTask = Task { [weak self, client] in
+            let result: SavedCopyState
+            do {
+                result = .loaded(try await client.savedTurns(conversationId: id))
+            } catch {
+                result = .failed(SessionDetailViewModel.describe(error))
+            }
+            guard let self, !Task.isCancelled, self.conversationID == id else { return }
+            self.savedCopy = result
+            self.savedCopyTask = nil
+        }
+    }
+
+    /// "Try Again" on a saved copy that didn't load.
+    func retrySavedCopy() {
+        guard case .failed = savedCopy else { return }
+        savedCopy = .notLoaded
+        loadSavedCopyIfNeeded()
+    }
+
+    /// Ask the server whether the session's history is gone, and take its
+    /// verdict (why, and how much text it saved). A server that predates
+    /// the verdict, or one that can't be reached, leaves things as they are.
+    private func confirmLostHistory() async {
+        guard let id = conversationID,
+              let detail = try? await client.conversationDetail(id: id, window: .tail(1)),
+              conversationID == id, let verdict = detail.historyUnavailable
+        else { return }
+        enterHistoryUnavailable(verdict)
+    }
+
+    /// Throws ``HistoryUnavailableError`` when the session takes no connect.
+    private func ensureHistoryAvailable() throws {
+        if historyUnavailable != nil { throw HistoryUnavailableError() }
+    }
+
+    /// A send that failed with `error` failed because the session's history
+    /// is gone: the server refused it (`[history_unavailable]`), or the agent
+    /// said meanwhile that it has no record of the session.
+    private func historyIsGone(after error: Error) -> Bool {
+        HistoryUnavailableError.matches(error) || historyUnavailable != nil
+    }
+
+    /// A message that couldn't go because the session's history is gone:
+    /// read-only now (the server's verdict follows when it refused), and the
+    /// message waits, as not sent, to go with "Start a new session from this".
+    private func keepUnsentForLostHistory(userTurnID: String, live: LiveTurn, text: String,
+                                          attachments sending: [Attachment], clientMessageID: String,
+                                          error: Error, previous: SendFailure?, spoken: Bool) {
+        if historyUnavailable == nil {
+            enterHistoryUnavailable(HistoryUnavailable())
+            Task { [weak self] in await self?.confirmLostHistory() }
+        }
+        keepUnsent(userTurnID: userTurnID, live: live, text: text, attachments: sending,
+                   clientMessageID: clientMessageID, error: error, previous: previous, spoken: spoken)
+        // The read-only view says why; the message box isn't there.
+        notice = nil
+    }
+
+    /// The agent couldn't load the session (`session_load_failed`). With no
+    /// record of it (`resource_not_found`) its history is gone: read-only at
+    /// once, and the server's verdict follows. A session or process that went
+    /// away (`session_unavailable`) is read-only only when the server says
+    /// the history is gone. An archived or busy session fails the turn as
+    /// any connection error does.
+    private func sessionLoadFailed(code: String, live: LiveTurn) {
+        switch code {
+        case "resource_not_found":
+            if historyUnavailable == nil { enterHistoryUnavailable(HistoryUnavailable()) }
+            failLive(live, message: HistoryUnavailableError().errorDescription)
+            Task { [weak self] in await self?.confirmLostHistory() }
+        case "session_unavailable":
+            Task { [weak self] in await self?.confirmLostHistory() }
+        default:
+            break
+        }
+    }
+
+    /// "Start a new session from this" on a session whose history is gone: a
+    /// new draft on the same server, agent and folder, whose message box
+    /// holds the copy shown (this iPhone's, or the server's saved text) with
+    /// a preamble, inline or attached as a file when long, and the messages
+    /// this session never sent, which move with it. Nothing is sent. Nil
+    /// while the server's saved text is still on its way or couldn't be read.
+    func newSessionFromSavedCopy() -> NewSessionRequest? {
+        guard let id = conversationID, let summary, let copy = lostHistoryCopy else { return nil }
+        let kept: [SavedTurn]
+        let source: SavedHistoryText.Source
+        switch copy {
+        case .iPhone:
+            kept = SavedHistoryText.turns(from: turns, offset: turnsOffset)
+            source = .iPhone
+        case .saved:
+            guard case .loaded(let saved) = savedCopy else { return nil }
+            kept = saved
+            source = .server
+        }
+        let unsent = queuedMessages
+        let prefill = SavedHistoryText.prefill(
+            conversationID: id, title: summary.trimmedTitle, agentName: summary.agentType.displayName,
+            turns: kept, source: source,
+            unsent: unsent.map { Self.outboxMessage($0).text },
+            pictures: unsent.flatMap { item in item.attachments.filter { $0.upload == nil } }
+        )
+        if !unsent.isEmpty { queuedMessages = [] }
+        return NewSessionRequest(preselectedFolderID: summary.folderId, agent: summary.agentType, prefill: prefill)
+    }
+
+    /// A new session started from a session whose history is gone: its
+    /// message box holds the saved text, a long one attached as a Markdown
+    /// file (uploaded as any document), for the person to send when they
+    /// choose.
+    private func applyPrefill(_ prefill: ComposerPrefill) {
+        guard !prefillApplied else { return }
+        prefillApplied = true
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft = prefill.text
+        } else if !prefill.text.isEmpty {
+            draft += "\n\n" + prefill.text
+        }
+        if !prefill.pictures.isEmpty { addAttachments(prefill.pictures) }
+        if let document = prefill.document {
+            let url = VideoAttachmentPrep.workDirectory().appendingPathComponent(document.fileName)
+            do {
+                try Data(document.contents.utf8).write(to: url, options: .atomic)
+                addMedia(.file(url))
+            } catch {
+                notice = String(localized: "Couldn’t attach the saved text: \(error.localizedDescription)")
+            }
+        }
+    }
+
     // MARK: - Errors
 
     // MARK: - Outbox (messages the server does not have yet)
@@ -4961,6 +5253,9 @@ final class SessionDetailViewModel {
     private func scheduleUnsentResend(minimumDelay: Double = 0) {
         unsentResendTask?.cancel()
         unsentResendTask = nil
+        // A session whose history is gone takes no message: what is left
+        // here goes with "Start a new session from this".
+        guard historyUnavailable == nil else { return }
         guard let head = queuedMessages.first, let failure = head.failure, failure.autoRetry else { return }
         let delay = max(minimumDelay, failure.retryDelay)
         unsentResendTask = Task { [weak self] in

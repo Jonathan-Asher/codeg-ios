@@ -12320,6 +12320,362 @@
           }
         }
       }
+    },
+    "Continued" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已继续"
+          }
+        }
+      }
+    },
+    "Resumed after restart" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重启后已恢复"
+          }
+        }
+      }
+    },
+    "Resumed after restart · background work was stopped" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重启后已恢复 · 后台任务已停止"
+          }
+        }
+      }
+    },
+    "Continued after limit reset" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "额度重置后已继续"
+          }
+        }
+      }
+    },
+    "You asked the agent to keep going" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你让智能体继续了"
+          }
+        }
+      }
+    },
+    "codeg restarted in the middle of this turn and picked the session back up on its own" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "codeg 在这一轮进行中重启，已自动恢复此会话"
+          }
+        }
+      }
+    },
+    "Its turn had finished, but codeg restarted while background work it started was still running, and picked the session back up on its own" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这一轮已结束，但 codeg 重启时它启动的后台任务仍在运行，已自动恢复此会话"
+          }
+        }
+      }
+    },
+    "The account's usage limit reset and codeg continued the session on its own" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "账户的用量额度已重置，codeg 自动继续了此会话"
+          }
+        }
+      }
+    },
+    "Shows what the restart stopped" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示重启停止的内容"
+          }
+        }
+      }
+    },
+    "Hides what the restart stopped" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "收起重启停止的内容"
+          }
+        }
+      }
+    },
+    "History unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "历史记录不可用"
+          }
+        }
+      }
+    },
+    "%@ deleted this session’s history because it was older than %lld days." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 已删除此会话的历史记录，因为它已超过 %2$lld 天。"
+          }
+        }
+      }
+    },
+    "The agent’s history file for this session no longer exists." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该会话在智能体中的历史文件已不存在。"
+          }
+        }
+      }
+    },
+    "It can’t be resumed or forked. This is the copy kept on this iPhone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "它无法恢复或分叉。这是保留在此 iPhone 上的副本。"
+          }
+        }
+      }
+    },
+    "It can’t be resumed or forked. This is the text codeg saved for search: a partial copy, with the messages only and no tool output." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "它无法恢复或分叉。这是 codeg 为搜索保存的文本：仅包含消息的部分副本，不含工具输出。"
+          }
+        }
+      }
+    },
+    "It can’t be resumed or forked, and codeg kept no text of it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "它无法恢复或分叉，codeg 也没有保存它的任何文本。"
+          }
+        }
+      }
+    },
+    "%lld unsent messages go with it." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Your unsent message goes with it."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Your %lld unsent messages go with it."
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你未发送的 %lld 条消息会一起带过去。"
+          }
+        }
+      }
+    },
+    "Start a new session from this" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "基于此开始新会话"
+          }
+        }
+      }
+    },
+    "Opens a new %@ session in this folder with the saved text in its message box. Nothing is sent until you send it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在此文件夹中打开一个新的 %@ 会话，并将保存的文本放入输入框。在你发送之前不会发送任何内容。"
+          }
+        }
+      }
+    },
+    "Opens a new %@ session in this folder. There is no saved text to carry over." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在此文件夹中打开一个新的 %@ 会话。没有可带入的已保存文本。"
+          }
+        }
+      }
+    },
+    "Copy kept on this iPhone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保留在此 iPhone 上的副本"
+          }
+        }
+      }
+    },
+    "Saved copy · %lld messages · text only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Saved copy · %lld message · text only"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Saved copy · %lld messages · text only"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已保存的副本 · %lld 条消息 · 仅文本"
+          }
+        }
+      }
+    },
+    "Loading the saved copy…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载已保存的副本…"
+          }
+        }
+      }
+    },
+    "Couldn’t load the saved copy: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载已保存的副本：%@"
+          }
+        }
+      }
+    },
+    "codeg kept no text of this session." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "codeg 没有保存此会话的任何文本。"
+          }
+        }
+      }
+    },
+    "The agent no longer has this session’s history, so it can’t be resumed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "智能体已不再保留此会话的历史记录，因此无法恢复。"
+          }
+        }
+      }
+    },
+    "This session’s history is gone, so it can’t be forked." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此会话的历史记录已不存在，因此无法分叉。"
+          }
+        }
+      }
+    },
+    "This session’s history is gone, so Talk can’t continue it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此会话的历史记录已不存在，因此 Talk 无法继续。"
+          }
+        }
+      }
+    },
+    "Couldn’t attach the saved text: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法附加保存的文本：%@"
+          }
+        }
+      }
+    },
+    "This continues an earlier %@ session, “%@”, whose history %@ no longer has. Below is the text saved from it: the messages only, without tool calls or their output. Take it as context for what I ask next." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这是之前一个 %1$@ 会话“%2$@”的延续，%3$@ 已不再保留其历史记录。下面是从中保存的文本：仅包含消息，不含工具调用及其输出。请把它作为我接下来请求的背景。"
+          }
+        }
+      }
+    },
+    "This continues an earlier %@ session, “%@”, whose history %@ no longer has. The attached file holds the text saved from it: the messages only, without tool calls or their output. Take it as context for what I ask next." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这是之前一个 %1$@ 会话“%2$@”的延续，%3$@ 已不再保留其历史记录。附件中是从中保存的文本：仅包含消息，不含工具调用及其输出。请把它作为我接下来请求的背景。"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

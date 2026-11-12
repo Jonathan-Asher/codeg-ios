@@ -570,9 +570,34 @@ struct ConversationDetail: Decodable, Sendable {
     /// Fingerprint of the turns before `turnsOffset`, 16 hex digits (window
     /// responses only). See `TranscriptFingerprint`.
     var prefixHash: String? = nil
+    /// The agent no longer has this session's history (codeg fork.230,
+    /// `history_unavailable`): it opens read-only. Nil on every readable
+    /// session, and from a server that predates it.
+    var historyUnavailable: HistoryUnavailable? = nil
 
     /// Whether the server answered with the turn-window protocol.
     var isWindowed: Bool { turnsOffset != nil && turnsTotal != nil && prefixHash != nil }
+}
+
+extension ConversationDetail {
+    private enum CodingKeys: String, CodingKey {
+        case summary, turns, sessionStats, inFlightUserTurnId, turnsOffset, turnsTotal, prefixHash
+        case historyUnavailable
+    }
+
+    /// As the synthesized decoding, and `history_unavailable` leniently: an
+    /// odd value never costs the session its transcript.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        summary = try c.decode(ConversationSummary.self, forKey: .summary)
+        turns = try c.decode([MessageTurn].self, forKey: .turns)
+        sessionStats = try c.decodeIfPresent(SessionStats.self, forKey: .sessionStats)
+        inFlightUserTurnId = try c.decodeIfPresent(String.self, forKey: .inFlightUserTurnId)
+        turnsOffset = try c.decodeIfPresent(Int.self, forKey: .turnsOffset)
+        turnsTotal = try c.decodeIfPresent(Int.self, forKey: .turnsTotal)
+        prefixHash = try c.decodeIfPresent(String.self, forKey: .prefixHash)
+        historyUnavailable = (try? c.decodeIfPresent(HistoryUnavailable.self, forKey: .historyUnavailable)) ?? nil
+    }
 }
 
 /// One page of older history (`get_folder_conversation_turns`):

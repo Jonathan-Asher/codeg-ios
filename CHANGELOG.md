@@ -12,6 +12,28 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- A session whose agent no longer has its history opens read-only (1.4.7).
+  Claude Code deletes a session's transcript after 30 days without use (its
+  `cleanupPeriodDays`), and a codeg server from fork.230 on says so for such
+  a session instead of failing to resume it. In place of the message bar the
+  session says why ("Claude Code deleted this session’s history because it
+  was older than 30 days", or that the agent's history file no longer
+  exists) and that it can't be resumed or forked. Above it is the copy this
+  iPhone kept of the session, labelled "Copy kept on this iPhone", when it
+  has at least as many messages as codeg saved (it has the tool calls too,
+  and the server's empty answer never replaces it); otherwise the text
+  codeg's message search saved, labelled "Saved copy · N messages · text
+  only", with Try Again if it doesn't load. Nothing connects the session: no
+  message, Continue, fork, Edit Message, model, mode or effort change, Talk
+  or Camera Control to talk, and a message waiting to go isn't sent again by
+  itself. Start a new session from this opens a new session on the same
+  server, agent and folder with the saved text in its message box, under a
+  line saying what it is (attached as a Markdown file when it is long), and
+  after it any message this session couldn't send; nothing is sent until you
+  send it. The iPhone keeps the verdict with its copy, so the session opens
+  read-only at once the next time, also offline. A message codeg refuses for
+  this, or an agent that says it has no record of the session, puts it in
+  the same state. With an older server nothing changes.
 - Notification sounds (1.4.6). Settings › Notifications › Sounds gives each
   kind of notification its own sound: questions and permissions, plans,
   reminders, finished replies, critical and idle alerts, and errors, plus
@@ -566,6 +588,18 @@ the text as the git tag message and the GitHub Release notes.
   `scripts/release.sh --archive` and CI.
 
 ### Fixed
+
+- The prompts codeg sends to pick sessions back up after a restart show as
+  dividers again (1.4.7). codeg fork.230 also resumes a session whose turn
+  had finished but whose background work (sub-agents, background shells,
+  monitors) the restart stopped, and both of its resume prompts can end with
+  the list of what was stopped. The app recognized the prompt only by its
+  exact text, so these showed as long messages of yours. They are now
+  recognized by how they start, as on the desktop, and a message that only
+  contains the prompt stays a message. The divider says "Resumed after
+  restart", or "Resumed after restart · background work was stopped", and a
+  tap opens the list of what the restart stopped. The dividers' words are in
+  Simplified Chinese too now.
 
 - Opening a session from a notification says when its transcript is being
   brought up to date (1.4.5). The session opens at once on the copy saved on

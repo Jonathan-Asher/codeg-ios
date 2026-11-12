@@ -57,8 +57,8 @@ struct NodeBody: View {
                 .railHead(.top(14))
         case .compaction(let before, let after, let running):
             ContextCompactionDivider(before: before, after: after, running: running)
-        case .continuation(let variant):
-            ContinuationDivider(variant: variant)
+        case .continuation(let divider):
+            ContinuationDivider(divider: divider)
         case .footer(let turn, let questionID, let forkTurnID):
             TurnFooter(turn: turn, questionID: questionID, forkTurnID: forkTurnID)
         case .plan(let entries, let streaming):
@@ -515,42 +515,116 @@ struct ContextCompactionDivider: View {
 }
 
 /// "▶ Continued": a user turn that only asked the agent to keep going, drawn
-/// as a hairline divider like the desktop's, not as a message card.
+/// as a hairline divider like the desktop's, not as a message card. A resume
+/// after a restart that lists what the restart stopped (sub-agents, background
+/// shells, monitors) opens on a tap to show that list, under the hint the
+/// desktop gives as its tooltip.
 struct ContinuationDivider: View {
-    let variant: ContinuePrompt.Variant
+    let divider: ContinuePrompt.Divider
+    @State private var expanded: Bool
+
+    /// `expanded`: open from the start (screenshots).
+    init(divider: ContinuePrompt.Divider, expanded: Bool = false) {
+        self.divider = divider
+        _expanded = State(initialValue: expanded)
+    }
+
+    private var variant: ContinuePrompt.Variant { divider.variant }
+    private var expandable: Bool { !divider.stopped.isEmpty }
 
     private var symbol: String {
         switch variant {
         case .continued: return "play.fill"
-        case .resumed: return "arrow.clockwise"
+        case .resumed, .resumedBackground: return "arrow.clockwise"
         case .limit: return "clock.arrow.circlepath"
         }
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            hairline
-            HStack(spacing: 5) {
-                Image(systemName: symbol)
-                    .font(.system(size: 9, weight: .bold))
-                Text(verbatim: variant.label)
-                    .font(Theme.Typography.metaLabel)
+        VStack(spacing: 6) {
+            HStack(spacing: 10) {
+                hairline
+                if expandable {
+                    Button {
+                        withAnimation(Theme.Motion.expand) { expanded.toggle() }
+                    } label: {
+                        label
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .layoutPriority(1)
+                    .accessibilityHint(expanded ? Text("Hides what the restart stopped")
+                                                : Text("Shows what the restart stopped"))
+                    .accessibilityIdentifier("resume-divider")
+                } else {
+                    label
+                        .layoutPriority(1)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityHint(Text(LocalizedStringKey(variant.hint)))
+                }
+                hairline
             }
-            .foregroundStyle(Theme.textTertiary)
-            .fixedSize()
-            hairline
+            if expanded, expandable {
+                stoppedList
+                    .transition(.opacity)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 2)
+    }
+
+    /// On one line where it fits; the background resume's long label wraps
+    /// on a narrow screen instead of pushing the hairlines out.
+    private var label: some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol)
+                .font(.system(size: 9, weight: .bold))
+                .accessibilityHidden(true)
+            Text(LocalizedStringKey(variant.label))
+                .font(Theme.Typography.metaLabel)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            if expandable {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .rotationEffect(.degrees(expanded ? 180 : 0))
+                    .accessibilityHidden(true)
+            }
+        }
+        .foregroundStyle(Theme.textTertiary)
+    }
+
+    /// The hint, then one bullet per stopped item, as the server wrote it.
+    private var stoppedList: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(LocalizedStringKey(variant.hint))
+                .font(.caption2)
+                .foregroundStyle(Theme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(Array(divider.stopped.enumerated()), id: \.offset) { _, item in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(verbatim: "•")
+                    Text(verbatim: item)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
+        .hairlineBorder(Theme.Radius.sm)
         .accessibilityElement(children: .combine)
-        .accessibilityHint(Text(verbatim: variant.hint))
+        .accessibilityIdentifier("resume-stopped-list")
     }
 
     private var hairline: some View {
         Rectangle()
             .fill(Theme.hairline)
             .frame(height: 1)
-            .frame(maxWidth: .infinity)
+            .frame(minWidth: 16, maxWidth: .infinity)
     }
 }
 

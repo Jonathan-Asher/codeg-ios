@@ -44,6 +44,11 @@ final class TalkCenter {
             return
         }
         if isActive(conversationID) { return }
+        // The agent no longer has this session's history: nothing can be said to it.
+        guard !model.isReadOnly else {
+            problem = String(localized: "This session’s history is gone, so Talk can’t continue it.")
+            return
+        }
         guard TalkModels.missingRequired.isEmpty else {
             waitingStart = { [weak self, weak model] in
                 guard let self, let model else { return }

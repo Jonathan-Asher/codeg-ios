@@ -77,6 +77,9 @@ enum ForkError: LocalizedError, Equatable {
     case noFinishedReply
     /// The agent connection couldn't be opened.
     case connectFailed(String)
+    /// The agent no longer has the session's history, so there is nothing
+    /// to fork (codeg's `[history_unavailable]`).
+    case historyUnavailable
     /// Anything else the server said (web `forkSessionFailed`).
     case failed(String)
 
@@ -94,6 +97,8 @@ enum ForkError: LocalizedError, Equatable {
             return String(localized: "Can’t fork yet: no reply has finished in this session")
         case .connectFailed(let detail):
             return String(localized: "Couldn’t connect to the agent to fork: \(detail)")
+        case .historyUnavailable:
+            return String(localized: "This session’s history is gone, so it can’t be forked.")
         case .failed(let detail):
             return String(localized: "Failed to fork session: \(detail)")
         }

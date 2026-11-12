@@ -102,13 +102,17 @@ struct NewSessionRequest: Hashable, Identifiable {
     /// edit of a conversation's first message starts a new conversation with
     /// the edited text (and the message's pictures).
     var initialPrompt: InitialPrompt?
+    /// What the new session's message box starts with, not sent: "Start a
+    /// new session from this" on a session whose history is gone.
+    var prefill: ComposerPrefill?
 
     init(id: UUID = UUID(), preselectedFolderID: Int? = nil, agent: AgentType? = nil,
-         initialPrompt: InitialPrompt? = nil) {
+         initialPrompt: InitialPrompt? = nil, prefill: ComposerPrefill? = nil) {
         self.id = id
         self.preselectedFolderID = preselectedFolderID
         self.agent = agent
         self.initialPrompt = initialPrompt
+        self.prefill = prefill
     }
 }
 
@@ -116,6 +120,24 @@ struct NewSessionRequest: Hashable, Identifiable {
 struct InitialPrompt: Hashable, Sendable {
     let text: String
     let images: [ImageData]
+}
+
+/// What a new session's message box starts with. It goes only when the
+/// person sends it (see ``SavedHistoryText``).
+struct ComposerPrefill: Hashable, Sendable {
+    /// The message box's text.
+    var text: String
+    /// A document to attach: the saved text when it is too long for the
+    /// message box. Written to a file of its own and attached (uploaded) as
+    /// the new session opens.
+    var document: Document?
+    /// Pictures of messages carried over.
+    var pictures: [Attachment] = []
+
+    struct Document: Hashable, Sendable {
+        let fileName: String
+        let contents: String
+    }
 }
 
 extension Route {

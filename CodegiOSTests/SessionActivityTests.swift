@@ -110,6 +110,84 @@ final class SessionActivityTests: XCTestCase {
         XCTAssertNil(ContinuePrompt.variant(of: assistant))
     }
 
+    // MARK: - Resume after restart (codeg `lib/auto-resume.ts`)
+
+    /// The background prompt as the server words it (`resume_prompt`).
+    private var backgroundResume: String {
+        [ContinuePrompt.resumeBackgroundHead,
+         "- sub-agent: Review the parser (started 13:02)",
+         "- background shell: sleep 900",
+         ContinuePrompt.resumeBackgroundTail].joined(separator: "\n")
+    }
+
+    /// A cut-off turn that also had background work running.
+    private var turnResumeWithList: String {
+        ContinuePrompt.resumeAfterRestart + "\n\n" + ContinuePrompt.resumeTurnBackgroundHeader
+            + "\n- monitor: main run: errors"
+    }
+
+    func testBothResumePromptsMatchByHowTheyStart() {
+        XCTAssertEqual(ContinuePrompt.divider(ofText: ContinuePrompt.resumeAfterRestart),
+                       ContinuePrompt.Divider(variant: .resumed))
+        XCTAssertEqual(ContinuePrompt.variant(ofText: "  " + ContinuePrompt.resumeAfterRestart + "\n"), .resumed)
+        XCTAssertEqual(ContinuePrompt.divider(ofText: turnResumeWithList),
+                       ContinuePrompt.Divider(variant: .resumed, stopped: ["monitor: main run: errors"]))
+        XCTAssertEqual(ContinuePrompt.divider(ofText: backgroundResume),
+                       ContinuePrompt.Divider(variant: .resumedBackground,
+                                              stopped: ["sub-agent: Review the parser (started 13:02)",
+                                                        "background shell: sleep 900"]))
+        // The hints the server adds after the list, and the line for work it
+        // couldn't name, are as it wrote them: hints aren't items.
+        let withHints = backgroundResume
+            + "\n\nA codeg delegation continues under its task_id with resume_delegation; get_delegation_status reports it as interrupted until then."
+        XCTAssertEqual(ContinuePrompt.divider(ofText: withHints)?.stopped.count, 2)
+        let unnamed = ContinuePrompt.resumeBackgroundHead + "\n- background work codeg could not name\n"
+            + ContinuePrompt.resumeBackgroundTail
+        XCTAssertEqual(ContinuePrompt.divider(ofText: unnamed)?.stopped, ["background work codeg could not name"])
+        let more = ContinuePrompt.resumeAfterRestart + "\n\n" + ContinuePrompt.resumeTurnBackgroundHeader
+            + "\n- background shell: npm test\n- and 3 more background tasks"
+        XCTAssertEqual(ContinuePrompt.divider(ofText: more)?.stopped, ["background shell: npm test", "and 3 more background tasks"])
+        // The other dividers carry no list.
+        XCTAssertEqual(ContinuePrompt.divider(ofText: "continue"), ContinuePrompt.Divider(variant: .continued))
+        XCTAssertEqual(ContinuePrompt.divider(ofText: ContinuePrompt.limitContinue)?.stopped, [])
+        XCTAssertEqual(ContinuePrompt.Variant.resumedBackground.label,
+                       "Resumed after restart · background work was stopped")
+    }
+
+    func testAMessageAroundAResumePromptStaysAMessage() {
+        XCTAssertNil(ContinuePrompt.divider(ofText: ContinuePrompt.resumeAfterRestart + " Also run the tests."))
+        XCTAssertNil(ContinuePrompt.divider(ofText: ContinuePrompt.resumeAfterRestart + "\n\nAnd the docs."))
+        XCTAssertNil(ContinuePrompt.divider(ofText: "Note this: " + ContinuePrompt.resumeAfterRestart))
+        XCTAssertNil(ContinuePrompt.divider(ofText: "Why did you say “" + backgroundResume + "”?"))
+        // The head alone, with no list, is not what the server sends.
+        XCTAssertNil(ContinuePrompt.divider(ofText: ContinuePrompt.resumeBackgroundHead))
+        XCTAssertNil(ContinuePrompt.divider(ofText: ContinuePrompt.resumeTurnBackgroundHeader + "\n- monitor: x"))
+        // A message that only lists like one is a message.
+        XCTAssertNil(ContinuePrompt.divider(ofText: "- sub-agent: Review the parser"))
+    }
+
+    func testAResumeTurnIsADividerOnlyAsText() {
+        let resume = MessageTurn(id: "u1", role: .user, blocks: [.text(backgroundResume)], timestamp: Date())
+        XCTAssertEqual(ContinuePrompt.divider(of: resume)?.variant, .resumedBackground)
+        // Across text blocks it reads as one text, as the desktop joins them.
+        let split = MessageTurn(id: "u2", role: .user,
+                                blocks: [.text(ContinuePrompt.resumeBackgroundHead + "\n"),
+                                         .text("- background shell: sleep 900\n" + ContinuePrompt.resumeBackgroundTail)],
+                                timestamp: Date())
+        XCTAssertEqual(ContinuePrompt.divider(of: split)?.stopped, ["background shell: sleep 900"])
+        let withImage = MessageTurn(id: "u3", role: .user,
+                                    blocks: [.text(turnResumeWithList),
+                                             .image(ImageData(data: "", mimeType: "image/png", uri: nil))],
+                                    timestamp: Date())
+        XCTAssertNil(ContinuePrompt.divider(of: withImage))
+        let assistant = MessageTurn(id: "a1", role: .assistant, blocks: [.text(backgroundResume)], timestamp: Date())
+        XCTAssertNil(ContinuePrompt.divider(of: assistant))
+        // A resume is never offered for editing, like any divider.
+        let served = MessageTurn(id: "u4", role: .user, blocks: [.text(backgroundResume)], timestamp: Date(),
+                                 serverMillis: 1_760_000_000_000)
+        XCTAssertNil(MessageEditRules.target(for: "u4", in: [served], hasOlderTurns: false))
+    }
+
     func testEndsWithAgentReply() {
         let user = MessageTurn(id: "u", role: .user, blocks: [.text("hi")], timestamp: Date())
         let reply = MessageTurn(id: "a", role: .assistant, blocks: [.text("hello")], timestamp: Date())
@@ -187,5 +265,36 @@ final class SessionActivityTests: XCTestCase {
                        .backgroundActivity(outstanding: 3))
         XCTAssertEqual(try event(#"{"seq":5,"connection_id":"c","type":"something_new"}"#),
                        .unknown(type: "something_new"))
+    }
+}
+
+/// The resume dividers on the transcript's timeline.
+@MainActor
+final class ResumeDividerTimelineTests: XCTestCase {
+    func testAResumeAfterARestartIsADividerWithWhatItStopped() {
+        let prompt = [ContinuePrompt.resumeBackgroundHead,
+                      "- sub-agent: Review the parser (started 13:02)",
+                      "- background shell: sleep 900",
+                      ContinuePrompt.resumeBackgroundTail].joined(separator: "\n")
+        let resume = MessageTurn(id: "u1", role: .user, blocks: [.text(prompt)], timestamp: Date())
+        let cutOff = MessageTurn(id: "u2", role: .user, blocks: [.text(ContinuePrompt.resumeAfterRestart)],
+                                 timestamp: Date())
+        let reply = MessageTurn(id: "a1", role: .assistant, blocks: [.text("Re-launched the parser review.")],
+                                timestamp: Date())
+        let later = MessageTurn(id: "a2", role: .assistant, blocks: [.text("Picked the migration back up.")],
+                                timestamp: Date())
+        let nodes = TranscriptTimeline.buildPersisted(turns: [resume, reply, cutOff, later], pending: [],
+                                                      agent: .claudeCode, suppressInFlight: false)
+        let dividers = nodes.compactMap { node -> ContinuePrompt.Divider? in
+            if case .continuation(let divider) = node.content { return divider }
+            return nil
+        }
+        XCTAssertEqual(dividers, [
+            ContinuePrompt.Divider(variant: .resumedBackground,
+                                   stopped: ["sub-agent: Review the parser (started 13:02)", "background shell: sleep 900"]),
+            ContinuePrompt.Divider(variant: .resumed),
+        ])
+        XCTAssertFalse(nodes.contains { if case .user = $0.content { return true } else { return false } },
+                       "neither shows as a message of the user's")
     }
 }

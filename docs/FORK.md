@@ -326,9 +326,11 @@ remains.
   sends `continue` (the fork's `CONTINUE_PROMPT`); a reply cut off at the
   output limit offers it in its own notice instead (see "A reply cut off at
   the output limit" below). User turns that are exactly
-  `continue`, the resume-after-restart prompt, or the continue-after-limit-reset
-  prompt render as slim "▶ Continued", "Resumed after restart" and "Continued
-  after limit reset" dividers.
+  `continue` or the continue-after-limit-reset prompt, or that start as one of
+  codeg's two resume-after-restart prompts (see "Resumes that list what a
+  restart stopped" below), render as slim "▶ Continued", "Resumed after
+  restart" ("· background work was stopped") and "Continued after limit reset"
+  dividers.
 - **Model, effort and mode.** Session Details lists the summary's
   `selector_state`. Its config ids (`reasoning_effort`, …) are read from the
   raw JSON, because the shared decoder's snake_case conversion also rewrites
@@ -2469,6 +2471,159 @@ banner), with `SessionActions`, `SessionModelStore.applyMove` and
   menu offers the move and the check that hides it on an older server; the
   picker's list, preview, refusals and latest pick; an open session
   following a move, connecting in the new folder, and the lists refreshing).
+
+### Resumes that list what a restart stopped (1.4.7)
+
+`ContinuePrompt` (`Models/SessionActivity.swift`): `divider(ofText:)`,
+`divider(of:)` and `ContinuePrompt.Divider`; `ContinuationDivider`
+(`Timeline/TimelineNodeBody.swift`). The server side is codeg fork.230's
+`acp/auto_resume.rs` (`resume_prompt`) and `src/lib/auto-resume.ts`.
+
+- **What changed on the server.** codeg also resumes a session whose turn had
+  ended but whose background work (async sub-agents, background shells,
+  monitors, codeg delegations) the restart stopped, with
+  `RESUME_BACKGROUND_PROMPT_HEAD`, one `- ` line per stopped item and
+  `RESUME_BACKGROUND_PROMPT_TAIL`. A cut-off turn that had background work
+  running gets `RESUME_AFTER_RESTART_PROMPT`, a blank line,
+  `RESUME_TURN_BACKGROUND_HEADER` and the same list. Either can end with a
+  hint (a codeg delegation, a Pi job) after a blank line.
+- **Matching.** The phone matched the resume prompt by its exact text, so
+  both new forms showed as long messages of the user's. They now match by how
+  they start, as codeg's `resumeAfterRestartKind` does: the trimmed text is
+  the prompt alone, or starts with the prompt, a blank line, the header and a
+  line feed (`.resumed`), or starts with the head and a line feed
+  (`.resumedBackground`). A message with anything else after the prompt, the
+  prompt quoted inside a message, or the head alone stays a message, and so
+  does a turn with a picture or any other block. The list is the trimmed
+  text's `- ` lines without the dash (`resumeAfterRestartItems`): the hints
+  aren't items, "background work codeg could not name" and "and N more
+  background tasks" are. Continue and the limit continuation still match
+  exactly. A resume is never offered for Edit Message, as before.
+- **The divider.** "Resumed after restart", or "Resumed after restart ·
+  background work was stopped" (wrapping on a narrow screen rather than
+  pushing the hairlines out). With a list it has a chevron, and a tap opens,
+  under it, the desktop's tooltip: the hint ("Its turn had finished, but codeg
+  restarted while background work it started was still running, and picked
+  the session back up on its own"), then a bullet per stopped item as the
+  server wrote it. VoiceOver reads it as a button that shows or hides what the
+  restart stopped.
+- **Strings.** The four dividers' labels and hints are looked up in the
+  catalog (`extractionState: manual`), in English and Simplified Chinese
+  (codeg's `Folder.chat.messageList`), with "Shows/Hides what the restart
+  stopped".
+- Tests: `SessionActivityTests` (both prompts, with and without the list, the
+  hints, the unnamed and "more" lines, look-alikes, the prompt split across
+  text blocks, a picture, an assistant turn, no Edit Message) and
+  `ResumeDividerTimelineTests` (the dividers on the timeline, with the list).
+  Screenshots: `resume-dividers` and `resume-dividers-open` (`-light`,
+  `-dark`, `-zh-light`) in the `compose-screenshots` artifact.
+
+### A session whose history is gone (1.4.7)
+
+`Models/LostHistory.swift` (`HistoryUnavailable`, `SavedTurn`,
+`LostHistoryCopy`, `HistoryUnavailableError`, `SavedHistoryText`),
+`Networking/CodegClient+LostHistory.swift`, the "History unavailable" section
+of `SessionDetailViewModel`, and `Features/SessionDetail/HistoryUnavailableViews.swift`.
+The server side is codeg fork.230's `commands/lost_history.rs`.
+
+- **What changed on the server.** An agent can delete its record of a session
+  behind codeg's back: Claude Code removes every transcript idle for its
+  `cleanupPeriodDays` (30 unless set). codeg now tells such a session from
+  one whose transcript isn't written yet, and the conversation detail carries
+  `history_unavailable` (`reason`: `agent_cleanup` with `retention_days`, or
+  `missing`; `saved_turns`, how many turns its message search kept as text).
+  `get_conversation_saved_turns {conversationId}` serves that text, oldest
+  first (`turn_idx`, `role`, `content`). `acp_connect` and the forks refuse
+  the session before an agent starts: the message ends with
+  `[history_unavailable]` (code `history_unavailable`), a 404 `not_found` from
+  the web server's connect and a 500 from its fork.
+- **Reading it.** `ConversationDetail.historyUnavailable`, decoded leniently:
+  absent (an older server, any readable session) or an odd value is nil and
+  never costs the transcript; an unknown reason reads as `missing`, a missing
+  count as 0. `CachedTranscript.historyUnavailable` keeps it in the
+  transcript cache (an entry from before 1.4.7 has none).
+- **Read-only.** `SessionDetailViewModel.historyUnavailable` is set from the
+  detail (`syncExisting`, and the connect's own read in
+  `sessionIDForConnect`), from the cache (`applyCached`, so a session opened
+  again, also offline, is read-only before the server answers), or by the
+  screen (below). While it is set nothing connects the session:
+  `startSend`, `sendFromComposer`, `insertIntoTurn`, `queueDraft`,
+  `sendQueuedNow`, the queue and its "Not sent" resend, `sendContinue` and
+  `canOfferContinue`, the output-limit notice, `sendSpoken` (Talk) and
+  `resolveConnection()`/`resolveConnectionForOptions()` (options, forks,
+  Edit Message), which throw `HistoryUnavailableError`; Fork Session, Fork
+  from here and Edit Message are hidden; the cold reattach and Talk's idle
+  watch don't run; a Talk on the session ends and `TalkCenter.start` refuses
+  with a reason. The toolbar has no Talk, Camera Control or agent options
+  button; the ⋯ menu stays (rename, pin, status, details, delete). A detail
+  without the verdict that has turns again (restored, or found where the
+  agent keeps it now) makes it an ordinary session again; one without the
+  verdict and without turns leaves a session already known to be gone as it
+  is (an older server, or a check the server couldn't make).
+- **Which copy shows.** `LostHistoryCopy.choose(heldTurns:savedTurns:)`:
+  the copy this iPhone kept (the cache's, or the screen's) when it holds at
+  least as many turns as the server saved, since its turns are whole (tool
+  calls and output too); the server's saved text otherwise. This iPhone's
+  copy is never replaced by the server's empty or shorter transcript:
+  `adoptWindow` refuses a window with fewer turns, `hasOlderTurns` is false
+  (the server has no older page to send), and `TranscriptCache.save` keeps a
+  lost session's turns over an entry with fewer (what the prefetcher, which
+  also carries the verdict, would write). The kept copy shows as the normal
+  transcript, read-only, under "Copy kept on this iPhone". The saved text
+  shows in `SavedHistoryView`, fetched once (`savedCopy`), under "Saved copy ·
+  N messages · text only": each message under "You", the agent's name or
+  "System", the agent's as Markdown, opening at the latest; "Loading the saved
+  copy…", "Couldn’t load the saved copy: …" with Try Again, or "codeg kept no
+  text of this session." (nothing is asked for when `saved_turns` is 0).
+- **The banner.** `HistoryUnavailableBanner` takes the message bar's place:
+  "History unavailable", why ("Claude Code deleted this session’s history
+  because it was older than 30 days." or "The agent’s history file for this
+  session no longer exists."), that it can't be resumed or forked and which
+  copy shows, how many unsent messages go with a new session, and Start a new
+  session from this (with jump to latest above it over the kept copy).
+- **Start a new session from this.** `newSessionFromSavedCopy()` builds a
+  `NewSessionRequest` on the same server, agent and folder whose `prefill`
+  (`ComposerPrefill`) the draft puts in its message box on `load()`
+  (`applyPrefill`); nothing is sent, and there is no `initialPrompt`.
+  `SavedHistoryText` mirrors codeg's export: the turns as Markdown (a heading
+  with the title, a line saying what it is and lacks, then each turn under
+  "User", the agent's name or "System"; in English, for the agent), the
+  phone's copy reduced to each turn's text blocks as the server's index
+  keeps a turn. Up to 4,000 characters (`INLINE_EXPORT_MAX_CHARS`) it follows
+  a localized preamble in the message box; longer, the preamble stays and the
+  Markdown is written to `conversation-<id>.md` and attached as a document
+  (uploaded as any other). Messages this session couldn't send (the queue)
+  move into the draft after the text, below a rule, with their pictures. With
+  nothing saved and nothing unsent the draft starts empty, as on the desktop.
+  The button waits for the saved text to be in.
+- **Refusals and failed loads.** `APIError.isHistoryUnavailable` (the code or
+  the marker). It is not `isStaleConnection` (a fresh connect would only be
+  refused again), and `SendFailure` reads it as `rejected` (no resend by
+  itself). A send it refuses makes the session read-only at once, keeps the
+  message as not sent (to go with a new session) and reads the server's
+  verdict. The new `session_load_failed` event (`AcpEvent.sessionLoadFailed`):
+  `resource_not_found` (the agent has no record of the session) makes it
+  read-only at once and reads the verdict; `session_unavailable` (the session
+  or its process went away) only when the server's verdict says the history
+  is gone; `session_archived` and `session_busy` fail the turn as before. A
+  send under way when it happened keeps its message the same way.
+  `ForkError.historyUnavailable` says "This session’s history is gone, so it
+  can’t be forked." for a list row's fork too.
+- **Strings.** The banner, the labels, the saved copy's states, the
+  preambles and the errors, in English and Simplified Chinese (codeg's
+  `Folder.chat.historyUnavailable`).
+- Tests: `LostHistoryTests` (the field with and without it, odd values, the
+  saved turns; the cache keeping the verdict and never fewer turns; opening on
+  the saved text; nothing connecting: message, queue, Continue, Talk,
+  options, forks, Edit Message; this iPhone's fuller copy kept and opened
+  read-only again before the server answers; the saved text winning when it
+  has more; a history that comes back; Try Again; the refusal's mapping, a
+  refused connect, `resource_not_found`, `session_unavailable` with the
+  verdict, an archived session; a refused fork; the new draft's text, nothing
+  sent, a long text attached, the kept copy's text, unsent messages carried,
+  nothing saved). Screenshots: `history-unavailable-saved` and
+  `history-unavailable-kept` (`-light`, `-dark`, `-zh-light`) in the
+  `compose-screenshots` artifact.
 
 ## Session lists
 

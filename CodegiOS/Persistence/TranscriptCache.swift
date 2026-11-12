@@ -23,6 +23,11 @@ struct CachedTranscript: Codable, Sendable {
     var turnsTotal: Int?
     /// Only turns that came from the server (`serverMillis` set).
     var turns: [MessageTurn]
+    /// The agent no longer has this session's history (the server's
+    /// `history_unavailable`): it opens read-only, and these turns are the
+    /// copy this iPhone kept of it. Nil for every other session, and in an
+    /// entry saved before 1.4.7.
+    var historyUnavailable: HistoryUnavailable? = nil
 
     var window: TranscriptWindow {
         TranscriptWindow(offset: turnsOffset, prefixHash: prefixHash, total: turnsTotal, turns: turns)
@@ -148,6 +153,17 @@ actor TranscriptCache {
         // covers the server's turns.
         let serverCount = entry.turns.firstIndex(where: { $0.serverMillis == nil }) ?? entry.turns.count
         if serverCount < entry.turns.count { entry.turns = Array(entry.turns[..<serverCount]) }
+        // The agent deleted this session's history, so the server has no
+        // transcript to send again: the turns kept here are never replaced
+        // by fewer (the server's empty answer, a shorter window).
+        if entry.historyUnavailable != nil,
+           let kept = load(serverKey: serverKey, conversationID: entry.conversationID),
+           kept.turns.count > entry.turns.count {
+            entry.turnsOffset = kept.turnsOffset
+            entry.prefixHash = kept.prefixHash
+            entry.turnsTotal = kept.turnsTotal
+            entry.turns = kept.turns
+        }
         guard let data = try? Self.encoder.encode(entry) else { return }
         protectExistingFiles()
         do {
