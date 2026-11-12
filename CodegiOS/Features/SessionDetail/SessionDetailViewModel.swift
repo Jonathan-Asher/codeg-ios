@@ -781,6 +781,14 @@ final class SessionDetailViewModel {
         summary?.agentType ?? selectedAgent ?? .claudeCode
     }
 
+    /// Where the session's agent runs, for every connect and the options
+    /// probe: the row's `working_dir` (for a session moved to another project
+    /// without its files, the folder it ran in), else its folder's path (an
+    /// older server, or a new session before its row exists).
+    var workingDir: String? {
+        summary?.workingDirectory(folderPath: folder?.path) ?? folder?.path
+    }
+
     // MARK: - Load
 
     /// Guards the one-time draft option load so a re-run of `.task` can't refetch.
@@ -1721,7 +1729,7 @@ final class SessionDetailViewModel {
             let prefs = preferredSelectors
             let conn = try await client.connect(
                 agentType: agentTypeForUI,
-                workingDir: folder?.path,
+                workingDir: workingDir,
                 sessionId: sessionID,
                 preferredModeId: prefs.modeId,
                 preferredConfigValues: prefs.configValues
@@ -1904,7 +1912,7 @@ final class SessionDetailViewModel {
         let prefs = preferredSelectors
         let conn = try await client.connect(
             agentType: agentTypeForUI,
-            workingDir: folder?.path,
+            workingDir: workingDir,
             sessionId: sessionID,
             preferredModeId: prefs.modeId,
             preferredConfigValues: prefs.configValues
@@ -1989,7 +1997,7 @@ final class SessionDetailViewModel {
         let prefs = preferredSelectors
         let conn = try await client.connect(
             agentType: agentTypeForUI,
-            workingDir: folder?.path,
+            workingDir: workingDir,
             sessionId: sessionID,
             preferredModeId: prefs.modeId,
             preferredConfigValues: prefs.configValues
@@ -4555,7 +4563,7 @@ final class SessionDetailViewModel {
     var forkTarget: ForkTarget? {
         guard let id = conversationID, let summary else { return nil }
         return ForkTarget(conversationID: id, folderID: summary.folderId, agentType: summary.agentType,
-                          sessionID: summary.externalId, workingDir: folder?.path)
+                          sessionID: summary.externalId, workingDir: workingDir)
     }
 
     /// "Fork Session" in the ⋯ menu (see ``SessionForkRules/listAvailability``),
@@ -4828,6 +4836,41 @@ final class SessionDetailViewModel {
             windowTotal = nil
             if !isSuspended { phase = .failed(Self.describe(error)) }
         }
+    }
+
+    /// This conversation moved to another project (Move to Project…). `moved`
+    /// is its row as the server has it now, with its new folder and the
+    /// folder it runs in (`working_dir`); nil for a sub-session that moved
+    /// with its parent, whose row is read again before its next connect.
+    /// `newFolder` is the project it moved to. The server closed the
+    /// session's idle connection for the move, so it is dropped here: the
+    /// next message connects again, where the session runs now.
+    func adoptMove(_ moved: ConversationSummary?, folder newFolder: FolderDetail?) {
+        guard case .existing(let id) = mode else { return }
+        if let moved, moved.id == id {
+            var updated = moved
+            // The move's answer has no `selector_state`; the move changes none.
+            if updated.selectorState == nil { updated.selectorState = summary?.selectorState }
+            summary = updated
+        } else {
+            sessionIDConfirmed = false
+        }
+        if let newFolder {
+            folder = newFolder
+        } else if let moved, let known = allFolders.first(where: { $0.id == moved.folderId }) {
+            folder = known
+        }
+        currentBranch = summary?.gitBranch ?? folder?.gitBranch
+        // The server refuses a move while a turn runs; a send under way
+        // settles on its own.
+        if !isInFlight, !isTurnActive, sendsInProgress == 0 {
+            connectionID = nil
+            if isIdleWatching {
+                closeStream()
+                scheduleIdleWatch(after: .seconds(1))
+            }
+        }
+        scheduleCacheSave()
     }
 
     /// Tell the (separate) session-list view model to refetch after a mutation,

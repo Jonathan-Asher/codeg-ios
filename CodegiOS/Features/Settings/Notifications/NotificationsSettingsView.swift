@@ -1,9 +1,11 @@
 import SwiftUI
 import UserNotifications
 
-/// Settings › Notifications: iOS permission, the app-level switch, and for
-/// every saved server this iPhone's preferences on that server — the same
-/// preferences the codeg desktop shows per device (`list_push_devices` /
+/// Settings › Notifications: iOS permission, the app-level switch, the
+/// sounds of each kind of notification and of the critical sessions
+/// (``NotificationSoundsSection``), and for every saved server this
+/// iPhone's preferences on that server — the same preferences the codeg
+/// desktop shows per device (`list_push_devices` /
 /// `update_push_device_prefs`) — plus "Send test push", and the server's
 /// reminders of what still waits (`get_pending_reminder_settings` /
 /// `update_pending_reminder_settings`).
@@ -21,6 +23,9 @@ struct NotificationsSettingsView: View {
             ScrollView {
                 VStack(spacing: 22) {
                     permissionSection
+                    if push.enabled {
+                        NotificationSoundsSection(servers: store.servers)
+                    }
                     if push.enabled && push.isAllowed {
                         ForEach(model.entries) { entry in
                             serverSection(entry)

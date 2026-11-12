@@ -73,10 +73,13 @@ struct PushDeviceView: Decodable, Identifiable, Hashable, Sendable {
     /// `…` and the token's last 8 characters.
     let tokenHint: String
     var prefs: PushDevicePrefs
+    /// The notification sounds the server kept for this device; nil from a
+    /// server that doesn't play them (its pushes keep the default sound).
+    let sounds: NotificationSoundPayload?
     let lastSeenAt: Date?
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, platform, environment, bundleId, tokenHint, prefs, lastSeenAt
+        case id, name, platform, environment, bundleId, tokenHint, prefs, sounds, lastSeenAt
     }
 
     init(from decoder: Decoder) throws {
@@ -88,6 +91,7 @@ struct PushDeviceView: Decodable, Identifiable, Hashable, Sendable {
         bundleId = (try? c.decodeIfPresent(String.self, forKey: .bundleId)) ?? ""
         tokenHint = (try? c.decodeIfPresent(String.self, forKey: .tokenHint)) ?? ""
         prefs = (try? c.decodeIfPresent(PushDevicePrefs.self, forKey: .prefs)) ?? PushDevicePrefs()
+        sounds = (try? c.decodeIfPresent(NotificationSoundPayload.self, forKey: .sounds)) ?? nil
         lastSeenAt = (try? c.decodeIfPresent(Date.self, forKey: .lastSeenAt)) ?? nil
     }
 
@@ -122,6 +126,9 @@ private struct RegisterPushDeviceBody: Encodable, Sendable {
     let bundleId: String
     let name: String
     let platform: String
+    /// This iPhone's notification sounds for that server; nil leaves the
+    /// server's as they are.
+    let sounds: NotificationSoundPayload?
 }
 
 private struct UnregisterPushDeviceBody: Encodable, Sendable {
@@ -144,9 +151,10 @@ private struct SnoozeCriticalBody: Encodable, Sendable {
 }
 
 extension CodegClient {
-    func registerPushDevice(token: String, environment: String, bundleId: String, name: String) async throws -> RegisteredPushDevice {
+    func registerPushDevice(token: String, environment: String, bundleId: String, name: String,
+                            sounds: NotificationSoundPayload? = nil) async throws -> RegisteredPushDevice {
         try await postJSON("register_push_device", RegisterPushDeviceBody(
-            token: token, environment: environment, bundleId: bundleId, name: name, platform: "ios"))
+            token: token, environment: environment, bundleId: bundleId, name: name, platform: "ios", sounds: sounds))
     }
 
     @discardableResult

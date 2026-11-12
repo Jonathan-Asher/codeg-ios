@@ -60,10 +60,11 @@ branch `fork/solution-plan`). `App/PushRegistration.swift` does the work:
   "Time Sensitive Notifications" switch for the app.
 - **Registration.** `registerForRemoteNotifications()`, then
   `POST /api/register_push_device {token, environment, bundleId, name,
-  platform: "ios"}` to every saved server, on every launch and whenever the
-  token changes (the old token is unregistered first). Each server's
-  `server_id` and this phone's device id are kept in `PushServerIndex`
-  (UserDefaults).
+  platform: "ios", sounds}` to every saved server, on every launch and
+  whenever the token changes (the old token is unregistered first), and
+  again when the notification sounds change (see "Notification sounds"
+  below). Each server's `server_id`, this phone's device id and how it took
+  the sounds are kept in `PushServerIndex` (UserDefaults).
 - **Environment.** Read from the embedded provisioning profile: a development
   profile (a build run from Xcode) means `sandbox`; TestFlight and App Store
   builds carry none or a distribution one, which means `production`. Without a
@@ -98,11 +99,12 @@ branch `fork/solution-plan`). `App/PushRegistration.swift` does the work:
   pushed about the session the phone shows. Every other event socket also
   declares `codeg-client.ios` and reports nothing, so it never counts as
   looking.
-- **Settings › Notifications** shows the iOS permission, the app-level switch
-  and, per saved server, this phone's device preferences on that server (turn
-  finished and needs you: always / only when away / off; critical alerts;
-  errors) through `list_push_devices` / `update_push_device_prefs`, plus "Send
-  test push" (`send_test_push`).
+- **Settings › Notifications** shows the iOS permission, the app-level switch,
+  the notification sounds (see "Notification sounds" below) and, per saved
+  server, this phone's device preferences on that server (turn finished and
+  needs you: always / only when away / off; critical alerts; errors) through
+  `list_push_devices` / `update_push_device_prefs`, plus "Send test push"
+  (`send_test_push`).
 
 ### Waiting for you, reminders and answers from a notification (1.3.27)
 
@@ -182,6 +184,83 @@ min, 30 min, 2 h and then every 4 h until the item is answered (codeg
   1.5 s per server, each view with its age so the phone's clock does not
   matter; a server without the endpoint is not asked again until the app
   restarts.
+
+### Notification sounds (1.4.6)
+
+What codeg's notifications sound like on this iPhone (codeg
+`docs/ios-push.md`, "Sounds"). The phone picks; the server names the sound
+in each push's `aps.sound`; iOS plays it from the app bundle (the Codeg
+tones) or from the app's `Library/Sounds` (imported sounds). No App Group:
+the files never leave the app's own container.
+
+- **Levels.** A sound per kind (`kinds`: `needs_you` for questions and
+  permissions, `plan`, `reminder`, `turn_finished`, also the test push,
+  `critical` for the critical and idle alerts, `error`), one for every
+  notification of a session marked critical (`critical`), one per folder
+  (`projects`, by the server's folder id) and one per session (`sessions`,
+  by its conversation id). A notification plays the first that is set:
+  its session's, its folder's, its folder's root folder's (a worktree
+  counts as its project, as Folders shows it), the critical sessions', then
+  its kind's. Each value is `default`, `none` or a file name; for a kind
+  `default` is the iOS sound, elsewhere it defers to the next level ("Use
+  default", whose subtitle says what that plays: "Project: Chime",
+  "Critical sessions: Bell", "Each kind's own sound"). `none` is a banner
+  without a sound.
+- **Where to pick.** Settings › Notifications › Sounds: a row per kind and
+  Critical sessions, each pushing `NotificationSoundPicker`. Notification
+  Sound… in a session row's long-press menu, the session's ⋯ menu and a
+  folder's long-press menu in Folders opens the same picker in a sheet
+  (`SessionActions.soundPicker`, shown by `NotificationSoundSheetHost` on
+  `RootView`, so `SessionDetailView`'s modifier chain gains nothing). The
+  picker lists Default or Use default, None, the eight Codeg tones, the
+  imported sounds (each with Rename… and Delete…) and Import from Files…; a
+  tap picks and plays. Previews go through System Sound Services
+  (`SoundPreviewPlayer`): no audio session of the app's own, so Talk, read
+  aloud and recordings keep theirs, at the ringer volume and silent with the
+  Ring/Silent switch, as the notification will be.
+- **Codeg tones.** `CodegiOS/Resources/Sounds/codeg-{chime,ping,glass,bell,
+  pop,two-tone,marimba,knock}.caf`, synthesised by
+  `scripts/make-notification-sounds.py` (sine partials and filtered noise,
+  no samples, nothing to license; Python's `wave` and macOS `afconvert`):
+  16-bit linear PCM, 22.05 kHz mono, 0.3 to 1.5 s, 15 to 70 KB each, soft
+  attacks and fades, loudness matched halfway between plain and a phone
+  speaker's weighting. The script is deterministic; running it again
+  reproduces the files. They are copied to the bundle root with the rest of
+  `CodegiOS/`.
+- **Imports.** `.fileImporter` for any audio type; `NotificationSoundImporter`
+  decodes it with `AVAudioFile` and `AVAudioConverter` (downmixed) to 16-bit
+  linear PCM, 44.1 kHz mono, in a `.caf` under `Library/Sounds`, cut to
+  29.5 s with a 0.3 s fade when longer (iOS plays the default sound for one
+  of 30 s or more) and saying so under the list. Each import gets a name of
+  its own, `import-<8 hex>.caf`, never reused (iOS remembers a sound by its
+  name), and no file protection, so a push can play it while the iPhone is
+  locked. Renaming changes only the name shown; deleting removes the file
+  and puts every choice that named it back to default, on every server. An
+  import whose file is gone is forgotten at the next start.
+- **Sending.** `NotificationSoundStore` saves the choices (UserDefaults,
+  `codeg.notificationSounds.v1`) and, on a change, asks
+  `PushRegistration.soundsChanged(server:)` to register again after 0.8 s
+  (several picks make one round): with every server for a kind, the
+  critical sessions or an import, with its own server for a folder or a
+  session. Each registration carries that server's `sounds` (only what is
+  set and still playable). The server answers with the device's `sounds` as
+  it kept them, less the folders and sessions it no longer has, which the
+  phone then drops too (unless the choices moved on meanwhile).
+- **Older servers.** A server without the feature ignores `sounds` and
+  answers without them: `NotificationSoundSupport.unsupported`, and the
+  Sounds footer names it ("doesn't play custom sounds yet: its
+  notifications keep the default sound until its codeg is updated").
+  `partly` (it kept other kinds or another critical sound) is named too.
+- **To check on a device.** A question push goes through the notification
+  service extension (`mutable-content`), which keeps the payload's sound; if
+  a question ever plays the default sound with a Codeg tone chosen, the
+  tones may need copying into the extension's bundle as well.
+- Tests: `NotificationSoundsTests` (the server's name rule, what each server
+  gets, a round trip of the saved choices, deleting an import, what "Use
+  default" names, the picker's rows, the footer, the registration request
+  and the server's answer read back in its spelling, an older server, the
+  store saving, sending, importing and forgetting a lost import, and the
+  conversion and cut of an imported file).
 
 ### Apple-side setup (not done from this repo)
 
@@ -2310,6 +2389,86 @@ for the open session's own Fork Session, the fork goes as before. Tests in
   server's copy; it goes again when the network is back; a kept screen
   shown again says it is updating; a first open with nothing saved shows
   the spinner instead; the transcript shows while the folder list is held).
+
+### Moving a session to another project (1.4.6)
+
+`Models/SessionMove.swift` (the answer, the refusals, the rules),
+`Networking/CodegClient+SessionMove.swift`,
+`Features/SessionMove/SessionMoveModel.swift` (the per-server check and the
+picker's state) and `SessionMoveSheet.swift` (the picker, its host and the
+banner), with `SessionActions`, `SessionModelStore.applyMove` and
+`SessionDetailViewModel.adoptMove`. The server side is codeg fork.227's
+`move_conversation_to_folder` (`src-tauri/src/session_move/`).
+
+- **Where it runs.** Every summary carries `working_dir`: its folder's path,
+  or, for a session moved without its files, the folder it ran in
+  (`origin_cwd`). `ConversationSummary.workingDirectory(folderPath:)` picks it
+  over the folder's path, which an older server (no field) still gets. Every
+  connect uses it: `resolveConnection()`, `retrySendOnce`,
+  `resolveConnectionForOptions()`, the fork target (the session screen's
+  and a list row's) and the options probe (`describeAgentOptions`), through
+  `SessionDetailViewModel.workingDir`. Session Details shows it as "Runs
+  in" when it isn't the folder's path. `kind` is read too (lenient,
+  `ConversationKind`), and both survive the transcript cache.
+- **The menus.** "Move to Project…" sits after Fork Session in a row's
+  long-press menu (and its VoiceOver actions) and in the session's ⋯ menu,
+  for a top-level `regular` session, as codeg web's `canMoveToProject`
+  offers it (a chat has no project to leave, a sub-session moves with its
+  parent). Both set `SessionActions.moveRequest`, which
+  `SessionMoveSheetHost` on `RootView` presents (inside the tint and the
+  environment), so neither the session screen's modifier chain nor a row
+  hosts the sheet.
+- **Older servers.** `SessionMoveCapabilities` asks each server once, beside
+  the fork check (`SessionActions.probeServerCapabilities`, from RootView's
+  task): a dry run of conversation 0 into folder 0, which a server with the
+  move refuses with `conversation_not_found` and an older one answers with
+  501 `not_implemented` (`APIError.isEndpointMissing`). Unreachable stays
+  unknown, to be asked again. The item is hidden once the server is known
+  to lack the move, and offered while that isn't known yet; a dry run that
+  finds the endpoint missing says so in the picker and hides it from then
+  on. Keyed by the server's address, so a row's menu needs no client (the
+  token is in the Keychain).
+- **The picker.** The server's open projects as the Folders tab shows them
+  (`ActivityModel.displayFolders`: no chat folders, no worktree hidden under
+  its repo), without the session's own folder, active ones first and the
+  archived ones in their own section, each in the Folders tab's order, with
+  a search over name and path. A pick runs the dry run (`dryRun: true`,
+  nothing changes on the server), and only the latest pick's answer lands.
+  Full: "Moves the session and its files to <project>. Its next message
+  rereads the session once." Listed only: the session will be listed there
+  and keep running in its folder (`working_dir` of the dry run's
+  unchanged row), with the reason (`agent_unsupported`,
+  `claude_adapter_outdated`, `session_files_not_found`). Sub-sessions that
+  move with it are counted. Move sends the move itself (no `dryRun`); a
+  refusal then takes the preview's place and the picker stays open.
+- **Refusals.** codeg puts the code in the error body's `i18n_params.code`
+  (`i18n_key` is `errors.<code>`), beside the app error's own `code`: the
+  409s (`conversation_running`, `resume_pending`, `session_closing` are
+  `turn_in_progress`; `running_elsewhere` is `session_running_elsewhere`)
+  would read as a running turn through `send`, so the move reads its answer
+  with `CodegClient.exchange` (the status and body as they came; `send` now
+  uses it, with the old mapping in `refusalError`) and throws
+  `SessionMoveRefusal`. Each known code has its own plain message (the
+  desktop's words); an unknown one shows the server's sentence. A 401, and
+  a body without a move code, read as any other call.
+- **After a move.** `SessionActions.didMove` closes the picker, shows a
+  banner for 3 s ("Moved to <project>", or "Listed under <project>" with
+  where it keeps running; VoiceOver announces it), posts
+  `.conversationsDidChange` and refreshes the lists, as pinning does. A kept
+  session model (`SessionModelStore.applyMove`, on screen or not) takes the
+  moved row (keeping its `selector_state`, which the answer lacks), the new
+  folder and branch, and drops its connection, which the server closed for
+  the move, and an idle watch on it: the next message connects again where
+  the session runs now. A kept sub-session that moved with it reads its row
+  again before its next connect (`sessionIDConfirmed`).
+- Tests: `SessionMoveTests` (decoding `working_dir` and `kind`, with and
+  without, and through the cache; a message and a fork connecting in
+  `working_dir`, else in the folder; the dry run's and the move's bodies
+  and answers; every refusal code, a 409 kept apart from a running turn, a
+  code from the key alone, an unknown one, an older server, a 401; when the
+  menu offers the move and the check that hides it on an older server; the
+  picker's list, preview, refusals and latest pick; an open session
+  following a move, connecting in the new folder, and the lists refreshing).
 
 ## Session lists
 

@@ -12,6 +12,43 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Notification sounds (1.4.6). Settings › Notifications › Sounds gives each
+  kind of notification its own sound: questions and permissions, plans,
+  reminders, finished replies, critical and idle alerts, and errors, plus
+  one for every notification of a session marked critical. A session's
+  long-press menu and its ⋯ menu, and a folder's long-press menu in
+  Folders, have Notification Sound… for that session or folder (a folder's
+  covers its worktrees). A notification plays the first that is set: its
+  session's, its folder's, the critical sessions', then its kind's, and
+  "Use default" says what that is ("Project: Chime"). Pick the iOS default
+  sound, one of eight Codeg tones (Chime, Ping, Glass, Bell, Pop, Two-Tone,
+  Marimba, Knock), a sound imported from Files, or None for a banner without
+  a sound; a tap plays it, following the Ring/Silent switch as notifications
+  do. Any audio file can be imported: it is converted for notifications,
+  cut to 30 seconds (it says so), and can be renamed or deleted (what played
+  it goes back to the default). The choices go to every saved server with
+  the push registration and again when they change; the server names the
+  sound in each push. A server that doesn't play them yet keeps the default
+  sound, and the Sounds footer names it. Needs a codeg server with
+  notification sounds.
+- Move a session to another project, with its files (1.4.6). Move to
+  Project… in a session's long-press menu and in its ⋯ menu lists the
+  server's open projects (not the one it's in, no chats), with search.
+  Pick one and the app asks the server what the move would do: the session
+  and its files move to that project, and its next message rereads the
+  session once; or, for an agent whose session files codeg can't move (or a
+  Claude Code session whose files aren't where Claude Code keeps them, or
+  whose adapter on the server is too old), it can only be listed there and
+  keeps running in its folder, which the picker says, with why. Move moves
+  it, a banner says where it went, the lists catch up, and a session that
+  is open follows at once. When it can't move now, the picker says why in
+  plain words: a reply is running, it's about to continue by itself, Claude
+  Code runs it outside codeg, it's a chat or a sub-session, and so on.
+  Sub-sessions it started in the same folder move with it. Every session
+  now connects in the folder it really runs in, so one listed under another
+  project keeps working where it ran; Session Details shows that folder
+  ("Runs in") when it isn't the project's. Needs a codeg server that moves
+  sessions (fork.227 or later); with an older one the item isn't there.
 - A permission, question or plan card waiting on you folds down to one line,
   so you can read what's behind it (1.4.3). The chevron at the right of the
   card's header, or a swipe down on the header, folds it to a slim bar in the

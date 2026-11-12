@@ -11,6 +11,8 @@ struct ProjectListView: View {
     let onOpenProject: (Int) -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Notification Sound in a folder's menu; absent in previews.
+    @Environment(SessionActions.self) private var actions: SessionActions?
 
     @State private var browseOpen = false
     @State private var cloneOpen = false
@@ -176,6 +178,9 @@ struct ProjectListView: View {
                             onSetArchived: { archived in setArchived(folder, archived) },
                             onSetGroupArchived: { group, archived in setGroupArchived(group, archived) }
                         )
+                        if let actions {
+                            NotificationSoundMenuItem { actions.chooseSound(for: folder) }
+                        }
                     }
                 }
             }
