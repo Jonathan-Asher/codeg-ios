@@ -1,9 +1,10 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Settings › Notifications › Sounds: a row per kind of notification and one
-/// for every critical session, each opening ``NotificationSoundPicker``. The
-/// footer names the saved servers that keep the default sound.
+/// Settings › Notifications › Sounds: a row for all notifications, one per
+/// kind of notification and one for every critical session, each opening
+/// ``NotificationSoundPicker``; then the volume slider. The footer names the
+/// saved servers that keep the default sound.
 struct NotificationSoundsSection: View {
     let servers: [ServerProfile]
 
@@ -12,12 +13,17 @@ struct NotificationSoundsSection: View {
 
     var body: some View {
         EditorSection(title: "Sounds", footer: LocalizedStringKey(footer)) {
-            ForEach(Array(NotificationSoundKind.allCases.enumerated()), id: \.element) { index, kind in
-                if index > 0 { SoundRowDivider() }
+            link(.all, hint: String(localized: "What every kind below plays while it's on Default."))
+            ForEach(NotificationSoundKind.allCases) { kind in
+                SoundRowDivider()
                 link(.kind(kind), hint: kind.hint)
             }
             SoundRowDivider()
             link(.critical, hint: String(localized: "Every notification of a session you marked critical, its alerts included. A folder's or a session's own sound comes first."))
+        }
+        EditorSection(title: "Volume",
+                      footer: "How loud the Codeg tones and imported sounds play, as a share of the iPhone's ringtone and alert volume (Settings › Sounds & Haptics). The iOS default sound always plays at that volume.") {
+            NotificationSoundVolumeRow()
         }
     }
 
@@ -36,7 +42,7 @@ struct NotificationSoundsSection: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 12)
-                Text(verbatim: sounds.settings.name(of: sounds.sound(for: target)))
+                Text(verbatim: sounds.settings.label(for: target))
                     .font(.subheadline)
                     .foregroundStyle(Theme.textSecondary)
                     .lineLimit(1)
@@ -61,10 +67,12 @@ struct NotificationSoundsSection: View {
     }
 }
 
-/// The sounds to pick from for a kind, the critical sessions, a folder or a
-/// session: default (or "Use default", saying what that plays) and None,
-/// the Codeg tones, the imported sounds and Import from Files. A tap picks
-/// the sound and plays it.
+/// The sounds to pick from for all notifications, a kind, the critical
+/// sessions, a folder or a session: default (or "Use default", saying what
+/// that plays) and None (and for a kind, iOS Default while all
+/// notifications play another sound), the Codeg tones in their sections,
+/// the imported sounds and Import from Files. A tap picks the sound and
+/// plays it at the volume.
 struct NotificationSoundPicker: View {
     let target: NotificationSoundTarget
 
@@ -88,8 +96,10 @@ struct NotificationSoundPicker: View {
                     EditorSection(title: "Sound") {
                         rows(choices.top)
                     }
-                    EditorSection(title: "Codeg") {
-                        rows(choices.tones)
+                    ForEach(choices.sections) { section in
+                        EditorSection(title: LocalizedStringKey(section.group.title)) {
+                            rows(section.rows)
+                        }
                     }
                     EditorSection(title: "Imported",
                                   footer: LocalizedStringKey(importNote ?? String(localized: "Pick any audio file: it is converted for notifications, cut to 30 seconds, and kept on this iPhone."))) {
@@ -269,6 +279,62 @@ struct NotificationSoundSheetHost: ViewModifier {
         content.sheet(item: $actions.soundPicker) { target in
             NotificationSoundPickerSheet(target: target)
         }
+    }
+}
+
+/// The volume slider of Settings › Notifications › Sounds: 10% to 100% in
+/// steps of 10. The level is set when the slider is let go (or at each
+/// VoiceOver step), which plays the sound it changes at that level and
+/// sends it to every server.
+private struct NotificationSoundVolumeRow: View {
+    /// The level while the slider is held.
+    @State private var dragging: Double?
+    @State private var editing = false
+
+    private var store: NotificationSoundStore { NotificationSoundStore.shared }
+
+    var body: some View {
+        let level = Int((dragging ?? Double(store.settings.volume)).rounded())
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Volume")
+                    .font(.body)
+                    .foregroundStyle(Theme.textPrimary)
+                Spacer(minLength: 12)
+                Text(verbatim: NotificationSoundText.percent(level))
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            HStack(spacing: 10) {
+                Image(systemName: "speaker.fill")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textTertiary)
+                    .accessibilityHidden(true)
+                Slider(value: Binding(get: { Double(level) }, set: { value in
+                    dragging = value
+                    if !editing { commit() }
+                }), in: 10...100, step: 10, onEditingChanged: { isEditing in
+                    editing = isEditing
+                    if !isEditing { commit() }
+                })
+                .tint(Theme.accent)
+                .accessibilityLabel(Text("Volume"))
+                .accessibilityValue(Text(verbatim: NotificationSoundText.percent(level)))
+                Image(systemName: "speaker.wave.3.fill")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textTertiary)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func commit() {
+        guard let value = dragging else { return }
+        dragging = nil
+        store.setVolume(Int(value.rounded()))
     }
 }
 

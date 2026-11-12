@@ -190,8 +190,10 @@ min, 30 min, 2 h and then every 4 h until the item is answered (codeg
 What codeg's notifications sound like on this iPhone (codeg
 `docs/ios-push.md`, "Sounds"). The phone picks; the server names the sound
 in each push's `aps.sound`; iOS plays it from the app bundle (the Codeg
-tones) or from the app's `Library/Sounds` (imported sounds). No App Group:
-the files never leave the app's own container.
+tones) or from the app's `Library/Sounds` (imported sounds, and from 1.4.8
+the volume copies). No App Group: the files never leave the app's own
+container. 1.4.8 adds tones, a sound for all notifications and a volume
+(see "More sounds, all notifications and a volume" below).
 
 - **Levels.** A sound per kind (`kinds`: `needs_you` for questions and
   permissions, `plan`, `reminder`, `turn_finished`, also the test push,
@@ -212,9 +214,9 @@ the files never leave the app's own container.
   folder's long-press menu in Folders opens the same picker in a sheet
   (`SessionActions.soundPicker`, shown by `NotificationSoundSheetHost` on
   `RootView`, so `SessionDetailView`'s modifier chain gains nothing). The
-  picker lists Default or Use default, None, the eight Codeg tones, the
-  imported sounds (each with Rename… and Delete…) and Import from Files…; a
-  tap picks and plays. Previews go through System Sound Services
+  picker lists Default or Use default, None, the Codeg tones (in sections
+  from 1.4.8), the imported sounds (each with Rename… and Delete…) and
+  Import from Files…; a tap picks and plays. Previews go through System Sound Services
   (`SoundPreviewPlayer`): no audio session of the app's own, so Talk, read
   aloud and recordings keep theirs, at the ringer volume and silent with the
   Ring/Silent switch, as the notification will be.
@@ -251,16 +253,123 @@ the files never leave the app's own container.
   Sounds footer names it ("doesn't play custom sounds yet: its
   notifications keep the default sound until its codeg is updated").
   `partly` (it kept other kinds or another critical sound) is named too.
-- **To check on a device.** A question push goes through the notification
-  service extension (`mutable-content`), which keeps the payload's sound; if
-  a question ever plays the default sound with a Codeg tone chosen, the
-  tones may need copying into the extension's bundle as well.
+- **Question pushes.** A question push goes through the notification
+  service extension (`mutable-content`), which keeps the payload's sound.
+  iOS looks the name up for the app, not the extension, so nothing needs
+  copying into the extension (see "Question pushes and the service
+  extension" below).
 - Tests: `NotificationSoundsTests` (the server's name rule, what each server
   gets, a round trip of the saved choices, deleting an import, what "Use
   default" names, the picker's rows, the footer, the registration request
   and the server's answer read back in its spelling, an older server, the
   store saving, sending, importing and forgetting a lost import, and the
   conversion and cut of an imported file).
+
+### More sounds, all notifications and a volume (1.4.8)
+
+Code: `NotificationSounds.swift` (`CodegTone`, `NotificationSoundVolume`,
+`NotificationSound.system`, `NotificationSoundTarget.all`, the settings'
+`all` and `volume`), `NotificationSoundStore.swift` (the copies, what each
+server names, `NotificationSoundCopier`), `NotificationSoundViews.swift`
+(the All notifications row, the picker's sections, the Volume row) and
+`PushRegistration.register(with:)`. No server change.
+
+- **Twenty tones.** `scripts/make-notification-sounds.py` adds kalimba,
+  halo (a soft bell), woodblock, bubbles, sonar, doorbell, harp, cascade (a
+  falling arpeggio), triangle, steel drum, glow (a warm major seventh) and
+  retro (an 8-bit blip), from sine partials and filtered noise like the
+  first eight, each note ending in a short fade (`tail_fade`) so a note cut
+  under the next one doesn't click. All twenty are 0.27 to 1.52 s, 15 to
+  70 KB (1 MB together) and within 0.7 dB of the script's loudness (Knock is
+  held under the peak); the first eight are byte for byte what 1.4.6
+  shipped. A tone's place in `TONES` seeds its dither, so new ones go at the
+  end; `--check` remakes them in a scratch folder and compares. The 1.4.6
+  Chime, Two-Tone and Marimba cut a note short under the next one, which
+  leaves a faint tick; `tail_fade` would remove it, at the price of
+  changing files people already chose, so they are as they were.
+  `CodegTone.Group` puts them in the picker's sections: Chimes (Chime, Ping,
+  Glass, Bell, Halo, Triangle, Sonar), Percussive (Pop, Knock, Woodblock,
+  Bubbles, Retro) and Melodic (Two-Tone, Doorbell, Marimba, Kalimba, Harp,
+  Cascade, Steel Drum, Glow).
+- **All notifications.** A row above the kinds (`NotificationSoundTarget.all`,
+  saved as `all`, a wire value) with Default (the iOS sound), None, the
+  tones and the imports. A kind left on default plays it, and its row reads
+  "Default (All: Chime)"; its picker's Default says "All notifications:
+  Chime", and while all notifications play anything but the iOS sound the
+  picker also offers iOS Default (`NotificationSound.system`, saved as
+  `"default"` in `kinds`, where no entry means "as all notifications"). The
+  levels above a kind say "All notifications: Chime" too when no kind has a
+  sound of its own. The servers have no such level: `payload(for:)` sends
+  each kind left on default as the sound for all notifications, and leaves
+  out a kind that plays the iOS sound, which is the server's default for a
+  kind. codeg picks a push's sound as the first that is set of its
+  session's, its folder's, its root folder's, the critical sessions' (for a
+  critical session) and its kind's, else the iOS sound
+  (`DeviceSounds::resolve` in `push/prefs.rs`), so that order now ends in
+  the sound for all notifications, and sessions, folders and the critical
+  sessions still come first. The server's echo is still compared on the
+  kinds and the critical sound only, which are what was sent.
+- **Volume.** iOS plays a push's sound at the ringtone and alert volume and
+  has no API for its level, so `NotificationSoundSettings.volume` (10% to
+  100% in steps of 10, saved, read back on the nearest step) plays a copy of
+  each chosen file scaled by the level's gain: `<stem>-v<level>.caf` in
+  `Library/Sounds` (`codeg-chime-v60.caf`, `import-1a2b3c4d-v60.caf`; the
+  longest, `codeg-steel-drum-v90.caf`, is 24 characters of the server's
+  64), a name of its own per level because iOS remembers a sound by its
+  name. At 100% the file itself plays. The slider is in loudness: the gain
+  is the level to the power 1/0.6 (50% is −10 dB, about half as loud; 10%
+  is −33 dB). `NotificationSoundCopier` reads the tone from the bundle or
+  the import and writes 16-bit linear PCM at its own rate into the
+  temporary folder, then moves it in whole, with no file protection, so a
+  push plays it while the iPhone is locked. The iOS default sound has no
+  file and keeps the alert volume; the footer says both.
+- **Making, sending and deleting copies.** `PushRegistration.register(with:)`
+  takes `NotificationSoundStore.preparedPayload(for:)`, which makes the
+  copies the payload names (off the main actor, only those missing) before
+  the request goes. After a registration, `registered(_:server:)` records
+  the files the server's answer names
+  (`codeg.notificationSounds.serverFiles.v1`; none for a server that plays
+  no custom sounds) and `deleteUnusedCopies()` deletes every copy that
+  neither a server's record nor a current choice at the current volume
+  names: an old level, a sound no longer chosen, a preview's. A server that
+  couldn't be reached keeps naming its old copies, and they stay until it
+  takes the new ones or is removed (`forgetServer`). The slider sets the
+  level when it is let go (or at each VoiceOver step): `setVolume` saves
+  it, plays `volumeSample` (the sound for all notifications, else the first
+  kind's file, else Chime) at the new level, and asks
+  `soundsChanged(server: nil)` to register again with every server after
+  0.8 s, as a choice does. Previews play the copy at the volume
+  (`previewFile(for:)`), through System Sound Services as before.
+- **Question pushes and the service extension.** Apple's payload reference
+  says `aps.sound` names "a sound file in your app’s main bundle or in the
+  Library/Sounds folder of your app’s container directory", and
+  `UNNotificationSound` looks in the app container's `Library/Sounds`, an
+  App Group container's `Library/Sounds` and the main bundle. An Apple DTS
+  answer on the developer forums (thread 118404, on sounds a service
+  extension sets) gives the order: the app's own container's
+  `Library/Sounds`, then the App Groups', then the app's bundle, adding that
+  the extension can't see the first one, which is still searched first. So
+  the name is looked up for the app, not for the extension, and only a
+  sound the extension writes itself would need an App Group. Ours writes
+  none and keeps `content.sound` (its mutable copy, and the content handed
+  over when time runs out, carry it), so question pushes play the tones,
+  the imports and the volume copies like any other push, with no App Group
+  and no copy in the extension; its doc comment now says to keep it so. On
+  a device: a question push with a tone below 100% should play quieter.
+- Tests (`NotificationSoundsTests`): the tones as made (twenty, each listed
+  and bundled, 22.05 kHz mono, 0.25 to 1.55 s, under 80 KB, quiet at both
+  ends, under the peak, within 1 dB of the script's loudness, measured the
+  script's way); the sound for all notifications in the payload, the rows'
+  labels and the picker (iOS Default, unique row ids, sections); the
+  server's choice of sound, mirrored from `DeviceSounds::resolve`, against
+  what the iPhone means for every mix of all-notifications, kind, critical,
+  folder (and worktree) and session sounds, at 100% and 60% (12,960 cases);
+  the copies' names, their read-back, the server's name rule and the gain;
+  the store making copies before a payload names them (gain, rate, length,
+  16-bit, made once), sending a new level once to every server, a choice at
+  a level going as its copy; deleting copies no server and no choice name,
+  keeping an unreachable server's, across launches; and the previews at the
+  volume.
 
 ### Apple-side setup (not done from this repo)
 

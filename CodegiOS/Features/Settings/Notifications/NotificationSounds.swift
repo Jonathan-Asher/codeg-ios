@@ -3,10 +3,13 @@ import Foundation
 // The sounds codeg's notifications play on this iPhone (codeg
 // `docs/ios-push.md`, "Sounds"). The phone sends its choices to every saved
 // server with the push registration; the server names the file in each
-// push's `aps.sound`, and iOS plays it from the app bundle (the Codeg
-// tones) or from `Library/Sounds` (imported sounds). A notification plays
+// push's `aps.sound`, and iOS plays it from the app's `Library/Sounds`
+// (imported sounds, and every sound's quieter copies for the volume
+// slider) or from the app bundle (the Codeg tones). A notification plays
 // the first that is set: its session's sound, its project's, the one for
-// every critical session, then its kind's.
+// every critical session, its kind's, then the one for all notifications.
+// The servers have no "all notifications" level: each kind left on default
+// goes to them as that sound.
 
 /// The kinds of notification that get a sound each: one row each in
 /// Settings › Notifications › Sounds.
@@ -60,10 +63,16 @@ enum NotificationSoundKind: String, CaseIterable, Identifiable, Codable, Sendabl
 
 /// What a notification plays. On the wire: `"default"`, `"none"` or a
 /// sound file name.
-enum NotificationSound: Hashable, Sendable {
-    /// For a kind, the iOS default sound; for the critical sessions, a
-    /// project or a session, whatever the next level plays.
+enum NotificationSound: Hashable, Identifiable, Sendable {
+    /// For all notifications, the iOS default sound; for a kind, what all
+    /// notifications play; for the critical sessions, a project or a
+    /// session, whatever the next level plays.
     case standard
+    /// The iOS default sound, picked for a kind over the sound for all
+    /// notifications (a kind's alone). `"default"` on the wire, which is a
+    /// kind's iOS sound to the server; saved as that in
+    /// ``NotificationSoundSettings/kinds``.
+    case system
     /// No sound: the banner still shows.
     case silent
     /// A Codeg tone or an imported sound, by file name.
@@ -81,11 +90,15 @@ enum NotificationSound: Hashable, Sendable {
 
     var wire: String {
         switch self {
-        case .standard: "default"
+        case .standard, .system: "default"
         case .silent: "none"
         case .file(let name): name
         }
     }
+
+    /// The wire value, but `system` for the iOS sound picked over all
+    /// notifications (no file name can be that).
+    var id: String { self == .system ? "system" : wire }
 
     var fileName: String? {
         if case .file(let name) = self { return name }
@@ -113,7 +126,28 @@ enum NotificationSound: Hashable, Sendable {
 /// A tone that ships with the app (`Resources/Sounds`, made by
 /// `scripts/make-notification-sounds.py`).
 struct CodegTone: Identifiable, Hashable, Sendable {
+    /// The picker's sections of tones.
+    enum Group: String, CaseIterable, Identifiable, Sendable {
+        /// Ringing tones of one strike: bells, glass, a ping.
+        case chimes
+        /// Short knocks, taps and blips.
+        case percussive
+        /// A few notes: a figure, an arpeggio, a chord.
+        case melodic
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .chimes: String(localized: "Chimes")
+            case .percussive: String(localized: "Percussive")
+            case .melodic: String(localized: "Melodic")
+            }
+        }
+    }
+
     let fileName: String
+    let group: Group
 
     var id: String { fileName }
 
@@ -127,17 +161,79 @@ struct CodegTone: Identifiable, Hashable, Sendable {
         case "codeg-two-tone.caf": String(localized: "Two-Tone")
         case "codeg-marimba.caf": String(localized: "Marimba")
         case "codeg-knock.caf": String(localized: "Knock")
+        case "codeg-kalimba.caf": String(localized: "Kalimba")
+        case "codeg-halo.caf": String(localized: "Halo")
+        case "codeg-woodblock.caf": String(localized: "Woodblock")
+        case "codeg-bubbles.caf": String(localized: "Bubbles")
+        case "codeg-sonar.caf": String(localized: "Sonar")
+        case "codeg-doorbell.caf": String(localized: "Doorbell")
+        case "codeg-harp.caf": String(localized: "Harp")
+        case "codeg-cascade.caf": String(localized: "Cascade")
+        case "codeg-triangle.caf": String(localized: "Triangle")
+        case "codeg-steel-drum.caf": String(localized: "Steel Drum")
+        case "codeg-glow.caf": String(localized: "Glow")
+        case "codeg-retro.caf": String(localized: "Retro")
         default: fileName
         }
     }
 
-    static let all: [CodegTone] = [
-        "codeg-chime.caf", "codeg-ping.caf", "codeg-glass.caf", "codeg-bell.caf",
-        "codeg-pop.caf", "codeg-two-tone.caf", "codeg-marimba.caf", "codeg-knock.caf",
-    ].map(CodegTone.init(fileName:))
+    /// In the picker's order, section by section.
+    static let all: [CodegTone] =
+        tones(.chimes, "chime", "ping", "glass", "bell", "halo", "triangle", "sonar")
+        + tones(.percussive, "pop", "knock", "woodblock", "bubbles", "retro")
+        + tones(.melodic, "two-tone", "doorbell", "marimba", "kalimba", "harp", "cascade", "steel-drum", "glow")
+
+    private static func tones(_ group: Group, _ names: String...) -> [CodegTone] {
+        names.map { CodegTone(fileName: "codeg-\($0).caf", group: group) }
+    }
 
     static func named(_ fileName: String) -> CodegTone? {
         all.first { $0.fileName == fileName }
+    }
+}
+
+/// The volume slider. iOS plays a push's sound at the ringtone and alert
+/// volume and has no volume of its own for it, so below 100% a sound plays
+/// from a quieter copy of its file in `Library/Sounds`, with a name of its own
+/// per level (iOS remembers a sound by its name): `codeg-chime-v60.caf`,
+/// `import-1a2b3c4d-v60.caf`. At 100% the file itself plays. The iOS default
+/// sound has no file, so the slider leaves it alone.
+enum NotificationSoundVolume {
+    /// The slider's steps, in percent.
+    static let levels = Array(stride(from: 10, through: 100, by: 10))
+    static let full = 100
+
+    /// `level` put on the nearest step.
+    static func clamped(_ level: Int) -> Int {
+        min(full, max(10, Int((Double(level) / 10).rounded()) * 10))
+    }
+
+    /// The amplitude a level scales a sound by. The slider is in loudness,
+    /// which halves about every 10 dB (loudness goes with amplitude to the
+    /// 0.6): 50% is −10 dB, 10% is −33 dB.
+    static func gain(_ level: Int) -> Float {
+        Float(pow(Double(clamped(level)) / Double(full), 1 / 0.6))
+    }
+
+    /// The file `original` plays from at `level`: itself at 100%, else its
+    /// copy for that level. One whose copy's name the servers would refuse
+    /// (longer than 64 characters) keeps playing at full volume.
+    static func fileName(of original: String, level: Int) -> String {
+        let level = clamped(level)
+        guard level < full else { return original }
+        let copy = "\((original as NSString).deletingPathExtension)-v\(level).caf"
+        return NotificationSound.isSoundFileName(copy) ? copy : original
+    }
+
+    /// The original and the level a copy's name stands for; nil for a name
+    /// that is not a copy's.
+    static func copy(_ fileName: String) -> (original: String, level: Int)? {
+        guard fileName.hasSuffix(".caf") else { return nil }
+        let stem = fileName.dropLast(4)
+        guard let mark = stem.range(of: "-v", options: .backwards), mark.lowerBound > stem.startIndex,
+              let level = Int(stem[mark.upperBound...]), "\(level)" == stem[mark.upperBound...],
+              level < full, levels.contains(level) else { return nil }
+        return ("\(stem[..<mark.lowerBound]).caf", level)
     }
 }
 
@@ -167,6 +263,8 @@ struct ServerSoundOverrides: Codable, Hashable, Sendable {
 
 /// What a sound picker sets.
 enum NotificationSoundTarget: Hashable, Identifiable, Sendable {
+    /// Every kind left on default.
+    case all
     case kind(NotificationSoundKind)
     /// Every notification of a session marked critical.
     case critical
@@ -178,6 +276,7 @@ enum NotificationSoundTarget: Hashable, Identifiable, Sendable {
 
     var id: String {
         switch self {
+        case .all: "all"
         case .kind(let kind): "kind:\(kind.rawValue)"
         case .critical: "critical"
         case .project(let server, let folderID, _): "project:\(server.uuidString):\(folderID)"
@@ -187,6 +286,7 @@ enum NotificationSoundTarget: Hashable, Identifiable, Sendable {
 
     var title: String {
         switch self {
+        case .all: String(localized: "All notifications")
         case .kind(let kind): kind.title
         case .critical: String(localized: "Critical sessions")
         case .project(_, _, let name): name
@@ -194,10 +294,9 @@ enum NotificationSoundTarget: Hashable, Identifiable, Sendable {
         }
     }
 
-    /// A kind's default is the iOS sound; everywhere else it defers.
-    var defersByDefault: Bool {
-        if case .kind = self { return false }
-        return true
+    var isKind: Bool {
+        if case .kind = self { return true }
+        return false
     }
 }
 
@@ -258,25 +357,34 @@ enum NotificationSoundSupport: String, Codable, Sendable {
 /// Every choice, as saved on this iPhone (UserDefaults, see
 /// ``NotificationSoundStore``).
 struct NotificationSoundSettings: Codable, Equatable, Sendable {
-    /// ``NotificationSoundKind`` raw value → wire value.
+    /// What every kind left on default plays: a wire value, `"default"`
+    /// being the iOS sound.
+    var all = "default"
+    /// ``NotificationSoundKind`` raw value → wire value; absent plays `all`,
+    /// `"default"` the iOS sound (``NotificationSound/system``).
     var kinds: [String: String] = [:]
     var critical = "default"
     /// By server profile id.
     var servers: [String: ServerSoundOverrides] = [:]
     var imports: [ImportedSound] = []
+    /// The volume slider, in percent (``NotificationSoundVolume``).
+    var volume = NotificationSoundVolume.full
 
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case kinds, critical, servers, imports
+        case all, kinds, critical, servers, imports, volume
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        all = (try? c.decodeIfPresent(String.self, forKey: .all)) ?? "default"
         kinds = (try? c.decodeIfPresent([String: String].self, forKey: .kinds)) ?? [:]
         critical = (try? c.decodeIfPresent(String.self, forKey: .critical)) ?? "default"
         servers = (try? c.decodeIfPresent([String: ServerSoundOverrides].self, forKey: .servers)) ?? [:]
         imports = (try? c.decodeIfPresent([ImportedSound].self, forKey: .imports)) ?? []
+        volume = NotificationSoundVolume.clamped(
+            (try? c.decodeIfPresent(Int.self, forKey: .volume)) ?? NotificationSoundVolume.full)
     }
 
     // MARK: - Reading
@@ -294,19 +402,22 @@ struct NotificationSoundSettings: Codable, Equatable, Sendable {
 
     func sound(for target: NotificationSoundTarget) -> NotificationSound {
         let wire: String? = switch target {
+        case .all: all
         case .kind(let kind): kinds[kind.rawValue]
         case .critical: critical
         case .project(let server, let folderID, _): servers[server.uuidString]?.projects[folderID]
         case .session(let server, let conversationID, _, _, _): servers[server.uuidString]?.sessions[conversationID]
         }
+        if target.isKind, wire == NotificationSound.system.wire { return .system }
         return playable(wire.map(NotificationSound.init(wire:)) ?? .standard)
     }
 
-    /// What the lists call a sound: a tone's or an import's name, "None", or
-    /// "Default" (also for a file that is gone).
+    /// What the lists call a sound: a tone's or an import's name, "None",
+    /// "iOS Default", or "Default" (also for a file that is gone).
     func name(of sound: NotificationSound) -> String {
         switch playable(sound) {
         case .standard: String(localized: "Default")
+        case .system: String(localized: "iOS Default")
         case .silent: String(localized: "None")
         case .file(let fileName):
             CodegTone.named(fileName)?.title
@@ -315,14 +426,33 @@ struct NotificationSoundSettings: Codable, Equatable, Sendable {
         }
     }
 
+    /// What a row of Settings › Notifications › Sounds shows: the sound's
+    /// name, and for a kind left on default while all notifications play
+    /// something else, "Default (All: Chime)".
+    func label(for target: NotificationSoundTarget) -> String {
+        let sound = self.sound(for: target)
+        let all = self.sound(for: .all)
+        if target.isKind, sound == .standard, all != .standard {
+            return String(localized: "Default (All: \(name(of: all)))")
+        }
+        return name(of: sound)
+    }
+
     /// What a target plays while left at default: the next level that is
-    /// set. Nil for a kind (its default is the iOS sound).
+    /// set. Nil for all notifications, and for a kind while all
+    /// notifications play the iOS sound.
     func inherited(by target: NotificationSoundTarget) -> String? {
-        let byKind = String(localized: "Each kind's own sound")
+        let all = sound(for: .all)
+        let ownKinds = NotificationSoundKind.allCases.contains { sound(for: .kind($0)) != .standard }
+        let byKind = !ownKinds && all != .standard
+            ? String(localized: "All notifications: \(name(of: all))")
+            : String(localized: "Each kind's own sound")
         let criticalSound = sound(for: .critical)
         switch target {
-        case .kind:
+        case .all:
             return nil
+        case .kind:
+            return all == .standard ? nil : String(localized: "All notifications: \(name(of: all))")
         case .critical:
             return byKind
         case .project:
@@ -343,31 +473,70 @@ struct NotificationSoundSettings: Codable, Equatable, Sendable {
     }
 
     /// What goes to `server` with the registration: the choices that are
-    /// set and can be played there.
+    /// set and can be played there, each file at the volume
+    /// (``sent(_:)``). The server has no level for all notifications: a kind
+    /// left on default goes as that sound, so the server's order (session,
+    /// project, critical sessions, kind) ends in it; a kind that plays the
+    /// iOS sound is left out, which is the server's default for a kind.
     func payload(for server: UUID) -> NotificationSoundPayload {
         var payload = NotificationSoundPayload()
+        let all = sound(for: .all)
         for kind in NotificationSoundKind.allCases {
-            let sound = self.sound(for: .kind(kind))
-            if sound != .standard { payload.kinds[kind.rawValue] = sound.wire }
+            let own = sound(for: .kind(kind))
+            switch own == .standard ? all : own {
+            case .standard, .system: break
+            case let sound: payload.kinds[kind.rawValue] = sent(sound)
+            }
         }
         let critical = sound(for: .critical)
-        if critical != .standard { payload.critical = critical.wire }
+        if critical != .standard { payload.critical = sent(critical) }
         if let overrides = servers[server.uuidString] {
-            for (id, wire) in overrides.projects where playable(NotificationSound(wire: wire)) != .standard {
-                payload.projects[String(id)] = wire
+            for (id, wire) in overrides.projects {
+                let sound = playable(NotificationSound(wire: wire))
+                if sound != .standard { payload.projects[String(id)] = sent(sound) }
             }
-            for (id, wire) in overrides.sessions where playable(NotificationSound(wire: wire)) != .standard {
-                payload.sessions[String(id)] = wire
+            for (id, wire) in overrides.sessions {
+                let sound = playable(NotificationSound(wire: wire))
+                if sound != .standard { payload.sessions[String(id)] = sent(sound) }
             }
         }
         return payload
     }
 
+    /// A sound as it goes to the servers: a file as the copy it plays from
+    /// at the volume (``NotificationSoundVolume/fileName(of:level:)``).
+    func sent(_ sound: NotificationSound) -> String {
+        guard let fileName = sound.fileName else { return sound.wire }
+        return NotificationSoundVolume.fileName(of: fileName, level: volume)
+    }
+
+    /// Every file a choice names, as chosen (at full volume).
+    var chosenFiles: Set<String> {
+        var wires = [all, critical] + Array(kinds.values)
+        for overrides in servers.values {
+            wires += Array(overrides.projects.values) + Array(overrides.sessions.values)
+        }
+        return Set(wires.compactMap { playable(NotificationSound(wire: $0)).fileName })
+    }
+
+    /// What the volume slider plays to try a level: the sound for all
+    /// notifications when it is a file, else the first kind's that is,
+    /// else the first tone.
+    var volumeSample: NotificationSound {
+        let sounds = [sound(for: .all)] + NotificationSoundKind.allCases.map { sound(for: .kind($0)) }
+        return sounds.first { $0.fileName != nil } ?? .file(CodegTone.all[0].fileName)
+    }
+
     // MARK: - Changing
 
     mutating func set(_ sound: NotificationSound, for target: NotificationSoundTarget) {
+        // The iOS sound over all notifications is a kind's alone; for all
+        // notifications it is their default.
+        let sound = sound == .system && !target.isKind ? .standard : sound
         let wire = sound == .standard ? nil : sound.wire
         switch target {
+        case .all:
+            all = wire ?? "default"
         case .kind(let kind):
             kinds[kind.rawValue] = wire
         case .critical:
@@ -387,6 +556,7 @@ struct NotificationSoundSettings: Codable, Equatable, Sendable {
     /// An import is deleted: every choice naming it goes back to default.
     mutating func removeImport(_ fileName: String) {
         imports.removeAll { $0.fileName == fileName }
+        if all == fileName { all = "default" }
         kinds = kinds.filter { $0.value != fileName }
         if critical == fileName { critical = "default" }
         servers = servers.compactMapValues { overrides in
@@ -417,8 +587,9 @@ struct NotificationSoundSettings: Codable, Equatable, Sendable {
 }
 
 /// The rows of a sound picker: default (or "Use default" with what it
-/// inherits) and None, the Codeg tones, the imported sounds. Exactly one is
-/// checked.
+/// inherits) and None, for a kind the iOS sound while all notifications
+/// play another, the Codeg tones by section, the imported sounds. Exactly
+/// one is checked.
 struct NotificationSoundChoices: Equatable {
     struct Row: Identifiable, Equatable {
         let sound: NotificationSound
@@ -428,27 +599,50 @@ struct NotificationSoundChoices: Equatable {
         /// Set for an imported sound (rename, delete).
         var imported: ImportedSound?
 
-        var id: String { sound.wire }
+        var id: String { sound.id }
+    }
+
+    /// A section of Codeg tones.
+    struct Section: Identifiable, Equatable {
+        let group: CodegTone.Group
+        let rows: [Row]
+
+        var id: CodegTone.Group { group }
     }
 
     var top: [Row]
-    var tones: [Row]
+    var sections: [Section]
     var imported: [Row]
 
     init(target: NotificationSoundTarget, settings: NotificationSoundSettings) {
         let current = settings.sound(for: target)
-        let standard: Row = target.defersByDefault
-            ? Row(sound: .standard, title: String(localized: "Use default"),
-                  subtitle: settings.inherited(by: target), checked: current == .standard)
-            : Row(sound: .standard, title: String(localized: "Default"),
-                  subtitle: String(localized: "iOS notification sound"), checked: current == .standard)
+        let iosSound = String(localized: "iOS notification sound")
+        let standard: Row = switch target {
+        case .all:
+            Row(sound: .standard, title: String(localized: "Default"), subtitle: iosSound,
+                checked: current == .standard)
+        case .kind:
+            Row(sound: .standard, title: String(localized: "Default"),
+                subtitle: settings.inherited(by: target) ?? iosSound, checked: current == .standard)
+        default:
+            Row(sound: .standard, title: String(localized: "Use default"),
+                subtitle: settings.inherited(by: target), checked: current == .standard)
+        }
         top = [
             standard,
             Row(sound: .silent, title: String(localized: "None"),
                 subtitle: String(localized: "A banner without a sound"), checked: current == .silent),
         ]
-        tones = CodegTone.all.map { tone in
-            Row(sound: .file(tone.fileName), title: tone.title, checked: current == .file(tone.fileName))
+        // A kind's Default plays the sound for all notifications: while that
+        // isn't the iOS sound, the iOS sound is a choice of its own.
+        if target.isKind, settings.sound(for: .all) != .standard || current == .system {
+            top.append(Row(sound: .system, title: String(localized: "iOS Default"), subtitle: iosSound,
+                           checked: current == .system))
+        }
+        sections = CodegTone.Group.allCases.map { group in
+            Section(group: group, rows: CodegTone.all.filter { $0.group == group }.map { tone in
+                Row(sound: .file(tone.fileName), title: tone.title, checked: current == .file(tone.fileName))
+            })
         }
         imported = settings.imports.map { sound in
             Row(sound: .file(sound.fileName), title: sound.name,
@@ -456,6 +650,8 @@ struct NotificationSoundChoices: Equatable {
                 imported: sound)
         }
     }
+
+    var tones: [Row] { sections.flatMap(\.rows) }
 
     var all: [Row] { top + tones + imported }
 }
@@ -469,6 +665,11 @@ enum NotificationSoundText {
         formatter.allowedUnits = sound.seconds < 60 ? [.second] : [.minute, .second]
         let text = formatter.string(from: max(1, sound.seconds.rounded())) ?? "\(Int(sound.seconds)) s"
         return sound.trimmed ? String(localized: "\(text), cut to fit") : text
+    }
+
+    /// The volume slider's level: "60%".
+    static func percent(_ level: Int) -> String {
+        (Double(level) / 100).formatted(.percent.precision(.fractionLength(0)))
     }
 
     /// The Sounds section's footer: what the rows apply to, and which saved

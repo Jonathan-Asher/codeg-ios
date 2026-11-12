@@ -12,6 +12,27 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- More notification sounds, one sound for all notifications, and a volume
+  (1.4.8). Twelve new Codeg tones: Halo, Triangle and Sonar; Woodblock,
+  Bubbles and Retro; Doorbell, Kalimba, Harp, Cascade, Steel Drum and Glow.
+  The picker lists the twenty tones in three sections, Chimes, Percussive
+  and Melodic. Settings › Notifications › Sounds now starts with All
+  notifications: the iOS default sound, None, a tone or an imported sound
+  for every kind left on Default, whose row then reads "Default (All:
+  Chime)". A kind can still have a sound of its own, the iOS default sound
+  included (iOS Default, offered while all notifications play another), and
+  a session's, a folder's or the critical sessions' sound still comes first.
+  The servers get it as each kind's sound, so it needs no server update.
+  Under the sounds, a Volume slider from 10% to 100% sets how loud the Codeg
+  tones and imported sounds play, as a share of the iPhone's ringtone and
+  alert volume; the iOS default sound always plays at that volume. iOS has
+  no volume for a notification's sound, so the app plays a quieter copy of
+  each chosen sound, made for that level, and the servers name the copy.
+  Letting go of the slider plays the sound at the new level and sends it to
+  every server; a copy no server uses any more is deleted. A tap in the
+  picker plays the sound at the chosen volume too. Question notifications,
+  which go through the notification service extension, play the chosen
+  sound like the others.
 - A session whose agent no longer has its history opens read-only (1.4.7).
   Claude Code deletes a session's transcript after 30 days without use (its
   `cleanupPeriodDays`), and a codeg server from fork.230 on says so for such
