@@ -53,6 +53,9 @@ struct SessionRow: View {
                     if let actions, actions.forkAvailability(for: conversation).isEnabled {
                         Button("Fork Session") { actions.fork(conversation) }
                     }
+                    if let actions, actions.offersMove(conversation) {
+                        Button("Move to Project…") { actions.requestMove(conversation) }
+                    }
                     if let pin = pinAction {
                         Button(action: pin) { pinLabel }
                     }
@@ -70,9 +73,9 @@ struct SessionRow: View {
     }
 
     /// The long-press menu: Open, Fork Session (greyed out with the reason
-    /// when it can't be taken now), Pin or Unpin, Mark as Critical,
-    /// Notification Sound, Copy Title, and the session's folder's Archive
-    /// item.
+    /// when it can't be taken now), Move to Project, Pin or Unpin, Mark as
+    /// Critical, Notification Sound, Copy Title, and the session's folder's
+    /// Archive item.
     @ViewBuilder
     private func menuItems(open: @escaping () -> Void) -> some View {
         Button(action: open) {
@@ -82,6 +85,11 @@ struct SessionRow: View {
             let fork = actions.forkAvailability(for: conversation)
             if fork != .hidden {
                 ForkSessionMenuItem(availability: fork) { actions.fork(conversation) }
+            }
+            // Another project, with the agent's files; hidden on a server
+            // without the move, and for a chat or a sub-session.
+            if actions.offersMove(conversation) {
+                MoveToProjectMenuItem { actions.requestMove(conversation) }
             }
         }
         if let pin = pinAction {

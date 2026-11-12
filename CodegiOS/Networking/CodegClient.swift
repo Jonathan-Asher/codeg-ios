@@ -507,6 +507,17 @@ struct CodegClient: Sendable {
     /// body — used for settings objects that must preserve snake_case keys the
     /// shared encoder/decoder would otherwise mangle (e.g. delegation settings).
     func send(_ path: String, rawBody: Data, session: URLSession? = nil) async throws -> Data {
+        let (status, data) = try await exchange(path, rawBody: rawBody, session: session)
+        guard (200..<300).contains(status) else { throw Self.refusalError(status: status, body: data) }
+        return data
+    }
+
+    /// One `POST /api/<path>` and the server's answer as it came: the status
+    /// and the body, whatever the status. Throws only when no answer came.
+    /// ``send(_:rawBody:session:)`` turns a refusal into an ``APIError``; a
+    /// call that needs more of a refusal than that (a move's i18n code, which
+    /// a 409 would lose to ``APIError/turnInProgress``) reads the body itself.
+    func exchange(_ path: String, rawBody: Data, session: URLSession? = nil) async throws -> (status: Int, body: Data) {
         // The per-call sessions above are tuned for a real server. A client made
         // with its own session (the unit tests' mock server) sends every call
         // through that one.
@@ -529,21 +540,24 @@ struct CodegClient: Sendable {
         guard let http = response as? HTTPURLResponse else {
             throw APIError.transport("Malformed response")
         }
-        guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode == 401 { throw APIError.unauthorized }
-            let parsed = try? CodegJSON.decoder.decode(ServerError.self, from: data)
-            // codeg's `pool_exhausted` is a 409 too, but no turn runs: every
-            // account of the account pool is at its limit (see `isPoolExhausted`).
-            if (http.statusCode == 409 && parsed?.code != "pool_exhausted") || parsed?.code == "turn_in_progress" {
-                throw APIError.turnInProgress
-            }
-            throw APIError.server(
-                status: http.statusCode,
-                code: parsed?.code,
-                message: parsed?.message ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
-            )
+        return (http.statusCode, data)
+    }
+
+    /// The ``APIError`` a refusal stands for: `status` (outside 2xx) and the
+    /// server's error body.
+    static func refusalError(status: Int, body data: Data) -> APIError {
+        if status == 401 { return .unauthorized }
+        let parsed = try? CodegJSON.decoder.decode(ServerError.self, from: data)
+        // codeg's `pool_exhausted` is a 409 too, but no turn runs: every
+        // account of the account pool is at its limit (see `isPoolExhausted`).
+        if (status == 409 && parsed?.code != "pool_exhausted") || parsed?.code == "turn_in_progress" {
+            return .turnInProgress
         }
-        return data
+        return .server(
+            status: status,
+            code: parsed?.code,
+            message: parsed?.message ?? HTTPURLResponse.localizedString(forStatusCode: status)
+        )
     }
 
     // MARK: - Bare-value helpers

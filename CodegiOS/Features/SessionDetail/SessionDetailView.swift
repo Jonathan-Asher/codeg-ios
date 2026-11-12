@@ -114,7 +114,7 @@ struct SessionDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 AgentOptionsButton(
                     agentType: model.agentTypeForUI,
-                    workingDir: model.folder?.path,
+                    workingDir: model.workingDir,
                     isBusy: model.isInFlight,
                     cardWaiting: model.pendingPermission != nil || model.pendingPlanApproval != nil,
                     options: model.agentOptions,
@@ -150,6 +150,7 @@ struct SessionDetailView: View {
                     SessionActionsMenu(
                         model: model,
                         fork: sessionForkAvailability,
+                        onMove: moveAction,
                         onRename: {
                             renameText = model.summary?.title ?? ""
                             showRename = true
@@ -323,6 +324,23 @@ struct SessionDetailView: View {
             }
         } catch {
             return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    // MARK: - Move to another project
+
+    /// "Move to Project…" in the ⋯ menu, nil where it isn't offered (a server
+    /// without the move, a sub-session, a chat). The picker shows over the
+    /// app (``SessionMoveSheetHost``); once the session moved, this screen
+    /// shows its new project and connects where it runs now.
+    private var moveAction: (() -> Void)? {
+        guard let actions, let summary = model.summary, actions.offersMove(summary, client: client) else { return nil }
+        let model = self.model
+        let client = self.client
+        let serverID = server.id
+        return {
+            guard let summary = model.summary else { return }
+            actions.requestMove(summary, client: client, serverID: serverID)
         }
     }
 
@@ -732,13 +750,16 @@ private struct NewSessionHeaderCard: View {
 // MARK: - Actions menu
 
 /// The nav-bar "…" menu of per-conversation actions, mirroring codeg web's
-/// per-conversation context menu: rename, pin, fork, critical, notification
-/// sound, details, status, delete. Presented just after the agent avatar
-/// once the conversation is server-linked.
+/// per-conversation context menu: rename, pin, fork, move to another
+/// project, critical, notification sound, details, status, delete.
+/// Presented just after the agent avatar once the conversation is
+/// server-linked.
 private struct SessionActionsMenu: View {
     let model: SessionDetailViewModel
     /// "Fork Session": greyed out with the reason when it can't be taken now.
     let fork: ForkAvailability
+    /// "Move to Project…", nil where it isn't offered.
+    let onMove: (() -> Void)?
     let onRename: () -> Void
     let onFork: () -> Void
     let onChooseSound: () -> Void
@@ -759,6 +780,9 @@ private struct SessionActionsMenu: View {
             }
             if fork != .hidden {
                 ForkSessionMenuItem(availability: fork, action: onFork)
+            }
+            if let onMove {
+                MoveToProjectMenuItem(action: onMove)
             }
             if let critical = model.criticalAction {
                 Button { Task { await model.setCritical(critical.marks) } } label: {
@@ -853,6 +877,14 @@ private struct SessionDetailsSheet: View {
         .hairlineBorder(Theme.Radius.lg)
     }
 
+    /// The folder the session runs in when it isn't its project's (a session
+    /// moved to another project without its files).
+    private var runsElsewhere: String? {
+        guard let folder, let dir = summary.workingDirectory(folderPath: folder.path), dir != folder.path
+        else { return nil }
+        return dir
+    }
+
     private var metadata: some View {
         VStack(spacing: 0) {
             DetailRow(label: "Activity", value: Text(verbatim: activity.label(agentName: agentName)))
@@ -861,6 +893,11 @@ private struct SessionDetailsSheet: View {
             Divider().overlay(Theme.hairline)
             if let folder {
                 DetailRow(label: "Folder", value: Text(verbatim: folder.name))
+                Divider().overlay(Theme.hairline)
+            }
+            // Moved here without its files: it keeps running where it ran.
+            if let runsIn = runsElsewhere {
+                DetailRow(label: "Runs in", value: Text(verbatim: runsIn))
                 Divider().overlay(Theme.hairline)
             }
             DetailRow(label: "Messages", value: Text(verbatim: "\(summary.messageCount)"))
