@@ -49,6 +49,10 @@ struct RootView: View {
             }
         }
         .tint(Theme.accent)
+        // "Notification Sound…" from a session row, a folder row or a
+        // session's ⋯ menu (inside the environment below, which the sheet
+        // takes).
+        .modifier(NotificationSoundSheetHost(actions: model.actions))
         // Theme: the accent palette flows through a bridged UIKit trait so every
         // `Theme.accent` recolors live; mode drives light/dark/system. The store
         // is also placed in the environment so the Settings screen can edit it.

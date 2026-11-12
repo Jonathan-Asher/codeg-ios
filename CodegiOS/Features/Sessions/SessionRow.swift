@@ -70,8 +70,9 @@ struct SessionRow: View {
     }
 
     /// The long-press menu: Open, Fork Session (greyed out with the reason
-    /// when it can't be taken now), Pin or Unpin, Copy Title, and the
-    /// session's folder's Archive item.
+    /// when it can't be taken now), Pin or Unpin, Mark as Critical,
+    /// Notification Sound, Copy Title, and the session's folder's Archive
+    /// item.
     @ViewBuilder
     private func menuItems(open: @escaping () -> Void) -> some View {
         Button(action: open) {
@@ -90,6 +91,9 @@ struct SessionRow: View {
             Button { actions.toggleCritical(conversation) } label: {
                 Label(critical.title, systemImage: critical.symbol)
             }
+        }
+        if let actions {
+            NotificationSoundMenuItem { actions.chooseSound(for: conversation) }
         }
         if let title = conversation.trimmedTitle {
             Button {

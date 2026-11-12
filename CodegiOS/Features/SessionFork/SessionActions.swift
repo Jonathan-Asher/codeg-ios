@@ -28,6 +28,9 @@ final class SessionActions {
     private(set) var inFlight: ForkInFlight?
     /// A list row's action that failed, for the alert.
     var alert: SessionActionAlert?
+    /// The notification sound picker a session row, a folder row or a
+    /// session's ⋯ menu asked for (``NotificationSoundSheetHost`` shows it).
+    var soundPicker: NotificationSoundTarget?
 
     init(capabilities: ForkCapabilities = .shared) {
         self.capabilities = capabilities
@@ -187,6 +190,28 @@ final class SessionActions {
                                            message: CriticalSessionRules.failure(Self.describe(error)))
             }
         }
+    }
+
+    /// "Notification Sound…" for a session: its own sound on `server` (the
+    /// selected server unless given), with its folder and the folder the
+    /// Folders tab shows it under, whose sound it otherwise plays.
+    func chooseSound(for summary: ConversationSummary, server: UUID? = nil) {
+        guard let server = server ?? app?.selectedServerID else { return }
+        var folderIDs = [summary.folderId]
+        if let activity = app?.activity {
+            let root = FolderVisibility.mergedFolderId(summary.folderId, childToParent: activity.childToParent)
+            if root != summary.folderId { folderIDs.append(root) }
+        }
+        soundPicker = .session(server: server, conversationID: summary.id, folderIDs: folderIDs,
+                               critical: summary.critical,
+                               title: summary.trimmedTitle ?? String(localized: "Untitled session"))
+    }
+
+    /// "Notification Sound…" for a folder of the selected server: every
+    /// session in it and in its worktrees, unless one has its own.
+    func chooseSound(for folder: FolderDetail) {
+        guard let server = app?.selectedServerID else { return }
+        soundPicker = .project(server: server, folderID: folder.id, name: folder.name)
     }
 
     /// The folder a session row's Archive items act on: the folder the Folders

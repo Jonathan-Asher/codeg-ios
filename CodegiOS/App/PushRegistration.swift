@@ -11,7 +11,9 @@ import os
 ///   launch with no server.
 /// - Registers for remote notifications and sends the token to EVERY saved
 ///   server (`register_push_device`), on every launch and whenever the token
-///   changes. Records each server's `server_id` and device id.
+///   changes, with this iPhone's notification sounds for that server
+///   (``NotificationSoundStore``), and again when the sounds change. Records
+///   each server's `server_id`, device id and whether it plays the sounds.
 /// - Unregisters from a server when it is removed, and from all of them when
 ///   notifications are turned off (in the app or in iOS Settings): a server
 ///   that thinks the phone took an alert skips the chat-channel fallback.
@@ -36,6 +38,10 @@ final class PushRegistration {
     private(set) var serverErrors: [UUID: String] = [:]
     /// Bumped whenever a registration round finishes (Settings reloads).
     private(set) var registrationTick = 0
+    /// How each saved server took the notification sounds at its last
+    /// registration (Settings › Notifications › Sounds says which keep the
+    /// default sound).
+    private(set) var soundSupport: [UUID: NotificationSoundSupport] = [:]
 
     /// The app-level switch in Settings › Notifications (default on).
     var enabled: Bool {
@@ -56,12 +62,17 @@ final class PushRegistration {
     private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "codeg", category: "push")
     private let center = UNUserNotificationCenter.current()
     private let notificationDelegate = NotificationDelegate()
+    /// Sound changes wait a moment, so several picks make one round.
+    @ObservationIgnored private var soundRound = 0
+    /// The servers the next sound round goes to; nil is every server.
+    @ObservationIgnored private var soundServers: Set<UUID>? = []
 
     private static let enabledKey = "codeg.push.enabled"
     private static let askedKey = "codeg.push.askedPermission"
 
     private init() {
         enabled = UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
+        soundSupport = PushServerIndex.all().compactMapValues(\.sounds)
     }
 
     // MARK: - Launch
@@ -165,6 +176,8 @@ final class PushRegistration {
         let entry = PushServerIndex.entry(for: profile.id)
         PushServerIndex.forget(profile.id)
         serverErrors[profile.id] = nil
+        soundSupport[profile.id] = nil
+        NotificationSoundStore.shared.forgetServer(profile.id)
         AppBadge.shared.forget(profile.id)
         guard let client, let token = entry?.token ?? deviceToken else { return }
         Task { try? await client.unregisterPushDevice(token: token) }
@@ -191,14 +204,25 @@ final class PushRegistration {
             if let old = previous?.token, old != token {
                 _ = try? await client.unregisterPushDevice(token: old)
             }
+            let sounds = NotificationSoundStore.shared.payload(for: profile.id)
             let result = try await client.registerPushDevice(
                 token: token,
                 environment: APNsEnvironment.current,
                 bundleId: Bundle.main.bundleIdentifier ?? "io.ashurov.codeg",
-                name: UIDevice.current.name
+                name: UIDevice.current.name,
+                sounds: sounds
             )
+            // A server that plays the sounds answers with what it kept (less
+            // the folders and sessions it no longer has); an older one with
+            // nothing.
+            let support = NotificationSoundSupport.of(result.device.sounds, sent: sounds)
+            if let kept = result.device.sounds {
+                NotificationSoundStore.shared.adopt(kept, sent: sounds, server: profile.id)
+            }
             PushServerIndex.save(PushServerIndex.Entry(
-                serverID: result.serverId, deviceID: result.device.id, token: token), for: profile.id)
+                serverID: result.serverId, deviceID: result.device.id, token: token, sounds: support),
+                for: profile.id)
+            soundSupport[profile.id] = support
             serverErrors[profile.id] = nil
             log.info("Registered for push with \(profile.displayHost, privacy: .public)")
         } catch {
@@ -224,7 +248,34 @@ final class PushRegistration {
             }
         }
         for profile in profiles { PushServerIndex.forget(profile.id) }
+        soundSupport = [:]
         registrationTick &+= 1
+    }
+
+    /// The notification sounds changed: register again, shortly, with the
+    /// one server whose folder or session it was, or with every server.
+    func soundsChanged(server: UUID?) {
+        if let server, soundServers != nil {
+            soundServers?.insert(server)
+        } else {
+            soundServers = nil
+        }
+        soundRound &+= 1
+        let round = soundRound
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(800))
+            // A newer change starts its own round.
+            guard let self, round == self.soundRound else { return }
+            let servers = self.soundServers
+            self.soundServers = []
+            if let servers {
+                for profile in ServerStore.persistedServers() where servers.contains(profile.id) {
+                    await self.register(with: profile)
+                }
+            } else {
+                await self.registerAll()
+            }
+        }
     }
 
     // MARK: - Notification responses
@@ -418,6 +469,9 @@ enum PushServerIndex {
         var serverID: String
         var deviceID: Int
         var token: String
+        /// How the server took the notification sounds; nil before a
+        /// registration that sent them.
+        var sounds: NotificationSoundSupport? = nil
     }
 
     private static let key = "codeg.push.servers.v1"
