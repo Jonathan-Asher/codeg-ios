@@ -11,6 +11,15 @@ import UserNotifications
 /// notification at it. Tapping a label answers through `acp_answer_question`
 /// in the app's notification response handler, without opening the app. Any
 /// other question keeps `CODEG_QUESTION`, whose only button is Open.
+///
+/// It leaves `content.sound` as the push named it (the mutable copy keeps
+/// it, and so does the content handed over when time runs out). iOS looks
+/// up that name for the app, not for this extension: the app's
+/// `Library/Sounds` first (imported sounds, volume copies), then an App
+/// Group's `Library/Sounds` (none here), then the app bundle (the Codeg
+/// tones). So the sounds play for these pushes as for any other, with no
+/// copy here; setting a new `UNNotificationSound` would only lose the
+/// choice.
 final class NotificationService: UNNotificationServiceExtension {
     private let lock = NSLock()
     private var contentHandler: ((UNNotificationContent) -> Void)?

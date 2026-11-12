@@ -12,8 +12,10 @@ import os
 /// - Registers for remote notifications and sends the token to EVERY saved
 ///   server (`register_push_device`), on every launch and whenever the token
 ///   changes, with this iPhone's notification sounds for that server
-///   (``NotificationSoundStore``), and again when the sounds change. Records
-///   each server's `server_id`, device id and whether it plays the sounds.
+///   (``NotificationSoundStore``, its volume copies made first), and again
+///   when the sounds or their volume change. Records each server's
+///   `server_id`, device id and whether it plays the sounds, and tells the
+///   sound store which files its pushes now name.
 /// - Unregisters from a server when it is removed, and from all of them when
 ///   notifications are turned off (in the app or in iOS Settings): a server
 ///   that thinks the phone took an alert skips the chat-channel fallback.
@@ -204,7 +206,7 @@ final class PushRegistration {
             if let old = previous?.token, old != token {
                 _ = try? await client.unregisterPushDevice(token: old)
             }
-            let sounds = NotificationSoundStore.shared.payload(for: profile.id)
+            let sounds = await NotificationSoundStore.shared.preparedPayload(for: profile.id)
             let result = try await client.registerPushDevice(
                 token: token,
                 environment: APNsEnvironment.current,
@@ -219,6 +221,7 @@ final class PushRegistration {
             if let kept = result.device.sounds {
                 NotificationSoundStore.shared.adopt(kept, sent: sounds, server: profile.id)
             }
+            NotificationSoundStore.shared.registered(result.device.sounds, server: profile.id)
             PushServerIndex.save(PushServerIndex.Entry(
                 serverID: result.serverId, deviceID: result.device.id, token: token, sounds: support),
                 for: profile.id)
