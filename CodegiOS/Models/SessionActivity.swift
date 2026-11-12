@@ -308,9 +308,25 @@ enum ContinuePrompt {
     /// What the Continue action sends. Not localized: it goes to the agent.
     static let text = "continue"
 
-    /// The backend's `RESUME_AFTER_RESTART_PROMPT`, verbatim.
+    /// The backend's `RESUME_AFTER_RESTART_PROMPT`, verbatim: a turn the
+    /// restart cut off, picked back up.
     static let resumeAfterRestart =
         "codeg restarted while you were working, so your last turn was cut off. Anything that was running in the background (sub-agents, background shells, monitors) was stopped. Continue where you left off, re-launching anything that still needs to run."
+
+    /// The backend's `RESUME_TURN_BACKGROUND_HEADER`: when background work ran
+    /// too, ``resumeAfterRestart`` is followed by a blank line, this line and
+    /// one `- ` line per item that was stopped.
+    static let resumeTurnBackgroundHeader = "What was running in the background when codeg stopped:"
+
+    /// The backend's `RESUME_BACKGROUND_PROMPT_HEAD`: the first line of the
+    /// prompt that resumes a session whose turn had ended but whose
+    /// background work the restart stopped. One `- ` line per item follows,
+    /// then ``resumeBackgroundTail``.
+    static let resumeBackgroundHead =
+        "codeg restarted. Your last turn had finished, but background work you started was still running and was stopped:"
+
+    /// The backend's `RESUME_BACKGROUND_PROMPT_TAIL`, after the list.
+    static let resumeBackgroundTail = "Re-launch whatever still needs to run, then carry on."
 
     /// The backend's `LIMIT_CONTINUE_PROMPT`, verbatim. Since codeg's
     /// limit-continue also picks up the sub-agents the limit stopped.
@@ -328,13 +344,19 @@ enum ContinuePrompt {
         case continued
         /// codeg picked a turn back up after a restart.
         case resumed
+        /// codeg resumed a session whose turn had ended but whose background
+        /// work the restart stopped.
+        case resumedBackground
         /// codeg continued once the usage limit reset.
         case limit
 
+        /// The divider's words (English; the screen looks them up in the
+        /// string catalog, as codeg's `Folder.chat.messageList` has them).
         var label: String {
             switch self {
             case .continued: return "Continued"
             case .resumed: return "Resumed after restart"
+            case .resumedBackground: return "Resumed after restart · background work was stopped"
             case .limit: return "Continued after limit reset"
             }
         }
@@ -343,31 +365,74 @@ enum ContinuePrompt {
             switch self {
             case .continued: return "You asked the agent to keep going"
             case .resumed: return "codeg restarted in the middle of this turn and picked the session back up on its own"
+            case .resumedBackground:
+                return "Its turn had finished, but codeg restarted while background work it started was still running, and picked the session back up on its own"
             case .limit: return "The account's usage limit reset and codeg continued the session on its own"
             }
         }
     }
 
-    /// Which divider a user message's text reads as, if any. Exact match on
-    /// the trimmed text, as on the desktop.
-    static func variant(ofText text: String) -> Variant? {
+    /// A "keep going" turn as its divider shows it: which kind, and for a
+    /// resume after a restart, what it says the restart stopped.
+    struct Divider: Equatable, Sendable {
+        let variant: Variant
+        /// The `- ` lines of a resume prompt's list, without the dash, in
+        /// order (codeg's `resumeAfterRestartItems`). Empty for any other
+        /// divider, and for a resume that listed nothing.
+        var stopped: [String] = []
+    }
+
+    /// Which divider a user message's text reads as, if any. Continue and the
+    /// limit continuation match the trimmed text exactly; the two resume
+    /// prompts carry a list that varies, so they match by how they start, as
+    /// codeg's `resumeAfterRestartKind` does. A prompt with anything else
+    /// after it is a message the user wrote.
+    static func divider(ofText text: String) -> Divider? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed == Self.text { return .continued }
-        if trimmed == resumeAfterRestart { return .resumed }
-        if trimmed == limitContinue || earlierLimitContinues.contains(trimmed) { return .limit }
+        if trimmed == Self.text { return Divider(variant: .continued) }
+        if let variant = resumeVariant(ofTrimmed: trimmed) {
+            return Divider(variant: variant, stopped: stoppedItems(ofTrimmed: trimmed))
+        }
+        if trimmed == limitContinue || earlierLimitContinues.contains(trimmed) { return Divider(variant: .limit) }
         return nil
+    }
+
+    static func variant(ofText text: String) -> Variant? {
+        divider(ofText: text)?.variant
     }
 
     /// A user turn is a divider only when it is text alone: an image or any
     /// other block makes it a message the user wrote.
-    static func variant(of turn: MessageTurn) -> Variant? {
+    static func divider(of turn: MessageTurn) -> Divider? {
         guard turn.role == .user, !turn.blocks.isEmpty else { return nil }
         var text = ""
         for block in turn.blocks {
             guard case .text(let t) = block else { return nil }
             text += t
         }
-        return variant(ofText: text)
+        return divider(ofText: text)
+    }
+
+    static func variant(of turn: MessageTurn) -> Variant? {
+        divider(of: turn)?.variant
+    }
+
+    /// The resume a trimmed text is: the cut-off turn's prompt alone or with
+    /// its list of background work, or the background prompt (its first line,
+    /// then the list).
+    private static func resumeVariant(ofTrimmed trimmed: String) -> Variant? {
+        if trimmed == resumeAfterRestart { return .resumed }
+        if trimmed.hasPrefix(resumeAfterRestart + "\n\n" + resumeTurnBackgroundHeader + "\n") { return .resumed }
+        if trimmed.hasPrefix(resumeBackgroundHead + "\n") { return .resumedBackground }
+        return nil
+    }
+
+    /// The resume prompt's `- ` lines, without the dash. Split on line feeds
+    /// as codeg does (a carriage return goes with the trimming).
+    private static func stoppedItems(ofTrimmed trimmed: String) -> [String] {
+        trimmed.components(separatedBy: "\n")
+            .filter { $0.hasPrefix("- ") }
+            .map { String($0.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 
     /// The thread's newest message is the agent's (system notices skipped).

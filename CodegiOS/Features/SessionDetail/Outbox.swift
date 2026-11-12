@@ -48,6 +48,8 @@ struct SendFailure: Hashable, Codable, Sendable {
     }
 
     static func classify(_ error: Error) -> Reason {
+        // The session's history is gone: no attempt can get it through.
+        if HistoryUnavailableError.matches(error) { return .rejected }
         if let api = error as? APIError {
             switch api {
             case .transport(let detail):

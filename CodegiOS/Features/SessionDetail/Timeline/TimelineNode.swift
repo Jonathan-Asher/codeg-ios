@@ -59,8 +59,9 @@ struct TimelineNode: Identifiable {
         case compaction(before: Int?, after: Int?, running: Bool)
         /// A user turn that only says "keep going" (Continue, the resume after
         /// a restart, the continuation after a usage-limit reset), drawn as a
-        /// slim divider instead of a message card.
-        case continuation(ContinuePrompt.Variant)
+        /// slim divider instead of a message card. A resume carries the list of
+        /// what the restart stopped.
+        case continuation(ContinuePrompt.Divider)
         /// The footer under a reply. `forkTurnID` is the reply's LAST turn,
         /// where "Fork from here" forks ("up to and including this reply").
         case footer(MessageTurn, questionID: String?, forkTurnID: String?)
@@ -299,8 +300,8 @@ enum TranscriptTimeline {
     /// A user turn's node: a message card, a divider for a bare Continue, or
     /// the card of a sub-agent result codeg delivered.
     private static func userNode(_ turn: MessageTurn, agent: AgentType) -> TimelineNode {
-        if let variant = ContinuePrompt.variant(of: turn) {
-            return TimelineNode(id: turn.id, content: .continuation(variant), agent: agent, startsGroup: true)
+        if let divider = ContinuePrompt.divider(of: turn) {
+            return TimelineNode(id: turn.id, content: .continuation(divider), agent: agent, startsGroup: true)
         }
         if let result = DelegatedResult.parse(turn) {
             return TimelineNode(id: turn.id, content: .delegatedResult(result), agent: agent, startsGroup: true)
@@ -400,8 +401,8 @@ enum TranscriptTimeline {
     /// turn, or the Continue divider for a bare Continue.
     private static func steeredNode(_ message: SteeredMessage, agent: AgentType) -> TimelineNode {
         let turn = message.turn
-        if let variant = ContinuePrompt.variant(of: turn) {
-            return TimelineNode(id: turn.id, content: .continuation(variant), agent: agent, startsGroup: true)
+        if let divider = ContinuePrompt.divider(of: turn) {
+            return TimelineNode(id: turn.id, content: .continuation(divider), agent: agent, startsGroup: true)
         }
         return TimelineNode(id: turn.id, content: .insertedUser(turn), agent: agent, startsGroup: true)
     }

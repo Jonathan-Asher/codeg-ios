@@ -197,6 +197,9 @@ struct SessionForker {
                                               turnRunning: snapshot.status == .prompting,
                                               endpoints: endpoints,
                                               adapterForksWhileRunning: snapshot.forkWhileRunning)
+            } catch let error where HistoryUnavailableError.matches(error) {
+                // The agent deleted the session's history: nothing to fork.
+                throw ForkError.historyUnavailable
             } catch let error as APIError where error.isConnectionNotFound || error.isStreamGone {
                 // The connection went away between finding it and forking:
                 // resume the session once more.
@@ -227,6 +230,7 @@ struct SessionForker {
                 capabilities.noteWholeConversationMissing(client: client)
                 return nil
             }
+            if error.isHistoryUnavailable { throw ForkError.historyUnavailable }
             if error.isForkNeedsIdle { throw ForkError.betweenTurnsOnly }
             if error.isForkNoFinishedReply { throw ForkError.noFinishedReply }
             if error.isForkUnsupported {
@@ -265,6 +269,7 @@ struct SessionForker {
                 preferredConfigValues: prefs.configValues
             )
         } catch let error as APIError {
+            if error.isHistoryUnavailable { throw ForkError.historyUnavailable }
             throw ForkError.connectFailed(error.serverMessage)
         }
     }

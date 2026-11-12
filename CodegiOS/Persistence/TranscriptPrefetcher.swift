@@ -95,12 +95,15 @@ final class TranscriptPrefetcher {
         }
     }
 
+    /// A session whose history is gone keeps its flag, and the cache keeps
+    /// the turns this iPhone had of it (``TranscriptCache/save(_:serverKey:)``).
     private static func entry(id: Int, outcome: TranscriptSync.Outcome, folder: FolderDetail?) -> CachedTranscript {
         CachedTranscript(
             conversationID: id, savedAt: Date(), summary: outcome.detail.summary,
             selectorState: outcome.detail.summary.selectorState, sessionStats: outcome.detail.sessionStats,
             folder: folder, turnsOffset: outcome.window.offset, prefixHash: outcome.window.prefixHash,
-            turnsTotal: outcome.window.total, turns: outcome.window.turns
+            turnsTotal: outcome.window.total, turns: outcome.window.turns,
+            historyUnavailable: outcome.detail.historyUnavailable
         )
     }
 }
