@@ -112,6 +112,15 @@ struct ToolCallCard: View {
     var nested: Bool = false
 
     @State private var userExpanded: Bool?
+    @Environment(\.liveToolCards) private var liveToolCards
+
+    /// The Pi background job this command started (`bgj_run`): how it is
+    /// going, from the live connection's card while that is newer than the
+    /// call's own (see ``LiveToolCards``).
+    private var backgroundJob: BackgroundJob? {
+        guard vm.isJobLaunch else { return nil }
+        return BackgroundJob.parse(liveToolCards?.meta(for: vm.id, own: vm.meta, key: .backgroundJob) ?? vm.meta)
+    }
 
     /// Auto-open while running / on error (so live output and failures are
     /// visible without a tap), and for a small diff (the change is the point on
@@ -147,9 +156,16 @@ struct ToolCallCard: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .minimumScaleFactor(0.85)
-            // A sub-agent stopped at the provider failed, whatever the wire
-            // status says.
-            ToolStateIndicator(state: vm.providerError != nil ? .error : vm.state)
+            // A background job's launch returns at once: the chip says how the
+            // job itself is going, where a check mark would say it finished.
+            if let job = backgroundJob, !vm.isError {
+                BackgroundJobChip(job: job)
+                    .fixedSize()
+            } else {
+                // A sub-agent stopped at the provider failed, whatever the wire
+                // status says.
+                ToolStateIndicator(state: vm.providerError != nil ? .error : vm.state)
+            }
             Spacer(minLength: 4)
             diffStat
             if hasBody {
@@ -185,6 +201,21 @@ struct ToolCallCard: View {
         } else {
             inputBody
             outputBody
+            jobTail
+        }
+    }
+
+    /// A job that ended after its turn: its last output, which the call's own
+    /// result (the launch receipt) doesn't have. History has it in the result.
+    @ViewBuilder
+    private var jobTail: some View {
+        if let job = backgroundJob, job.isLive, let tail = job.tail, !vm.trimmedOutput.contains(tail) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Last output")
+                    .font(Theme.Typography.microLabel)
+                    .foregroundStyle(Theme.textTertiary)
+                CodeBlockView(code: tail, language: "console")
+            }
         }
     }
 

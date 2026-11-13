@@ -583,7 +583,7 @@ final class SessionDetailViewModel {
             guard keepsStreamAttached != oldValue else { return }
             if keepsStreamAttached {
                 scheduleIdleWatch(after: .zero)
-            } else {
+            } else if !wantsIdleWatch {
                 idleWatchTask?.cancel()
                 idleWatchTask = nil
                 if isIdleWatching {
@@ -593,6 +593,25 @@ final class SessionDetailViewModel {
             }
         }
     }
+    /// The newest card of each Pi sub-agent run and background job the live
+    /// connection reported (`tool_card` events, the attach snapshot's
+    /// `tool_cards`), which the transcript's cards draw from while it is newer
+    /// than their own (see ``LiveToolCards``).
+    let liveToolCards = LiveToolCards()
+    /// The idle socket also stays while a Pi run or job the connection
+    /// reported is still going, and a little after the last one ends: its card
+    /// follows it to the end, and the run Pi usually starts when one ends
+    /// (a notice wakes it) streams here as a turn of its own.
+    private var wantsIdleWatch: Bool {
+        keepsStreamAttached || liveToolCards.hasActiveWork || (workWatchUntil.map { $0 > Date() } ?? false)
+    }
+    /// How long the idle socket stays after the last Pi run or job ended, in
+    /// seconds.
+    @ObservationIgnored var workWatchGrace: TimeInterval = 20
+    /// Until when it stays, after the last run or job ended.
+    @ObservationIgnored private var workWatchUntil: Date?
+    /// Lets the idle socket go once that time is up.
+    @ObservationIgnored private var workWatchEndTask: Task<Void, Never>?
     /// The person talks with this session in Talk: presence says so (to a
     /// server that has Talk), even with the screen locked, so it doesn't push
     /// about this session meanwhile.
@@ -2549,9 +2568,10 @@ final class SessionDetailViewModel {
                     live = current
                     settleIfTurnEnded(live: current, connectionID: conn, reading: snap.turnPhase,
                                       endedWith: snap.lastStopReason)
-                } else if keepsStreamAttached {
-                    // Idle connection, and Talk keeps it attached: this socket
-                    // goes on as the idle watch (see `idleWatch`).
+                } else if wantsIdleWatch {
+                    // Idle connection, and Talk keeps it attached (or a Pi run
+                    // or job is still going): this socket goes on as the idle
+                    // watch (see `idleWatch`).
                     noteLastStop(from: snap)
                     enterIdleWatch(generation: generation, stream: stream)
                     if serverSaysLive { Task { [weak self] in await self?.reconcileAfterMissedLive() } }
@@ -2833,9 +2853,41 @@ final class SessionDetailViewModel {
         case .sessionLoadFailed(_, _, let code):
             sessionLoadFailed(code: code, live: live)
 
+        case .toolCard(let id, let meta):
+            // A run's or job's newest card: it may be on a call in this turn,
+            // an earlier one or history, so it is kept by call id.
+            applyToolCard(id: id, meta: meta)
+
         case .sessionStarted, .conversationStatusChanged, .userPromptSent, .unknown:
             break
         }
+    }
+
+    /// A Pi run's or job's newest card. When the last one still going ends
+    /// while the socket is only watching, it watches a little longer for the
+    /// run Pi starts when one ends, then lets go.
+    private func applyToolCard(id: String, meta: AnyJSON) {
+        let hadWork = liveToolCards.hasActiveWork
+        liveToolCards.apply(toolCallID: id, meta: meta)
+        guard hadWork, !liveToolCards.hasActiveWork else { return }
+        let grace = workWatchGrace
+        workWatchUntil = Date().addingTimeInterval(grace)
+        workWatchEndTask?.cancel()
+        workWatchEndTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(grace))
+            guard let self, !Task.isCancelled else { return }
+            self.workWatchUntil = nil
+            self.workWatchEndTask = nil
+            self.endIdleWatchIfUnwanted()
+        }
+    }
+
+    /// Close an idle socket nothing wants any more: not Talk, no Pi run or job
+    /// going.
+    private func endIdleWatchIfUnwanted() {
+        guard isIdleWatching, !wantsIdleWatch else { return }
+        closeStream()
+        connectionID = nil
     }
 
     /// Error codes that report one action going wrong while the turn goes on
@@ -2860,6 +2912,8 @@ final class SessionDetailViewModel {
     private func applyLiveSignals(from snap: LiveSessionSnapshot) {
         agentOptions.applyLiveSnapshot(modes: snap.modes, currentMode: snap.currentMode,
                                        configOptions: snap.configOptions)
+        // The Pi runs and jobs as the server has them now.
+        liveToolCards.merge(snap.toolCards, connectionID: snap.connectionId)
         if snap.nativeSteeringAvailable { nativeSteeringAvailable = true }
         ForkCapabilities.shared.note(agent: agentTypeForUI, forks: snap.forkSupported,
                                      whileRunning: snap.forkWhileRunning, client: client)
@@ -3193,6 +3247,9 @@ final class SessionDetailViewModel {
     private func reconcileOrFail(live: LiveTurn, reason: String?) async {
         guard liveTurn === live, isTurnActive else { return }
         streamReconnects = 0
+        // A gone connection's runs and jobs will never report again: the
+        // transcript's cards take over.
+        if reason == "connection_gone" { liveToolCards.removeAll() }
         if await adoptReplyIfLanded(live: live) == true { return }
         failLive(live, message: Self.lostConnectionMessage)
     }
@@ -3286,8 +3343,8 @@ final class SessionDetailViewModel {
             if let pending = pendingReconnect {
                 reconnectStream(into: pending.live, connectionID: pending.conn, reason: nil,
                                 reattach: pending.reattach, immediately: true)
-            } else if stream == nil, keepsStreamAttached {
-                // Talk's idle watch waits for the network: open it now.
+            } else if stream == nil, wantsIdleWatch {
+                // The idle watch waits for the network: open it now.
                 scheduleIdleWatch(after: .zero)
             } else {
                 stream?.checkLink()
@@ -4021,7 +4078,7 @@ final class SessionDetailViewModel {
     /// one and the socket is healthy (not waiting to reconnect). Returns
     /// whether it was kept.
     private func keepAsIdleWatch() -> Bool {
-        guard keepsStreamAttached, let current = stream, connectionID != nil, pendingReconnect == nil,
+        guard wantsIdleWatch, let current = stream, connectionID != nil, pendingReconnect == nil,
               reconnectTask == nil, readyContinuation == nil else { return false }
         enterIdleWatch(generation: streamGeneration, stream: current)
         return true
@@ -4046,6 +4103,7 @@ final class SessionDetailViewModel {
             guard let rebuilt = buildLiveTurn(from: snap) else {
                 noteLastStop(from: snap)
                 stream.setStreaming(false)
+                endIdleWatchIfUnwanted()
                 return .keep
             }
             idleWatchGeneration = nil
@@ -4067,6 +4125,8 @@ final class SessionDetailViewModel {
 
     private func idleWatchEvent(_ event: AcpEvent, stream: any SessionEventStream, connectionID conn: String) {
         switch event {
+        case .toolCard(let id, let meta):
+            applyToolCard(id: id, meta: meta)
         case .backgroundActivity(let outstanding, let turns):
             backgroundOutstanding = max(0, outstanding)
             if !turns.isEmpty { talkObserver?.talkBackgroundTurns(turns) }
@@ -4103,7 +4163,12 @@ final class SessionDetailViewModel {
     /// The watch's socket went: try again, sooner after a single drop.
     private func idleWatchLost(connectionGone: Bool) {
         closeStream()
-        if connectionGone { connectionID = nil }
+        if connectionGone {
+            connectionID = nil
+            // Its runs' and jobs' cards will never change again: the
+            // transcript's take over.
+            liveToolCards.removeAll()
+        }
         idleWatchDrops += 1
         let seconds = min(30.0, pow(2.0, Double(min(idleWatchDrops, 6) - 1)))
         scheduleIdleWatch(after: .seconds(seconds))
@@ -4112,7 +4177,7 @@ final class SessionDetailViewModel {
     /// Open the idle watch after `delay`, if Talk still wants it and nothing
     /// else holds the socket by then.
     private func scheduleIdleWatch(after delay: Duration = .milliseconds(300)) {
-        guard keepsStreamAttached else { return }
+        guard wantsIdleWatch else { return }
         idleWatchTask?.cancel()
         idleWatchTask = Task { [weak self] in
             if delay > .zero { try? await Task.sleep(for: delay) }
@@ -4124,7 +4189,7 @@ final class SessionDetailViewModel {
 
     /// Nothing else needs the socket: no turn, no send, no attach under way.
     private var canStartIdleWatch: Bool {
-        keepsStreamAttached && !isSuspended && phase == .loaded && summary != nil && stream == nil
+        wantsIdleWatch && !isSuspended && phase == .loaded && summary != nil && stream == nil
             && historyUnavailable == nil
             && !isInFlight && !isTurnActive && sendsInProgress == 0 && readyContinuation == nil
     }
@@ -4142,7 +4207,14 @@ final class SessionDetailViewModel {
         }
         guard canStartIdleWatch else { return }
         guard let conn = found else {
-            scheduleIdleWatch(after: .seconds(30))
+            // No connection: Talk looks again later. A watch only for Pi's
+            // runs and jobs ends; their cards will never change again.
+            if keepsStreamAttached {
+                scheduleIdleWatch(after: .seconds(30))
+            } else {
+                liveToolCards.removeAll()
+                workWatchUntil = nil
+            }
             return
         }
         connectionID = conn
@@ -4250,6 +4322,9 @@ final class SessionDetailViewModel {
         unsentResendTask = nil
         idleWatchTask?.cancel()
         idleWatchTask = nil
+        workWatchEndTask?.cancel()
+        workWatchEndTask = nil
+        workWatchUntil = nil
         presenceReporter.stop()
         reattachRetryTask?.cancel()
         reattachRetryTask = nil
@@ -4637,6 +4712,13 @@ final class SessionDetailViewModel {
         guard let id = conversationID, let summary else { return nil }
         return ForkTarget(conversationID: id, folderID: summary.folderId, agentType: summary.agentType,
                           sessionID: summary.externalId, workingDir: workingDir)
+    }
+
+    /// A Pi sub-agent's own session, read-only: what a run card's row opens
+    /// (`get_conversation` with the child's session id). Pi runs only have Pi
+    /// children.
+    func subagentSessionTurns(sessionID: String) async throws -> [MessageTurn] {
+        try await client.agentSessionTurns(agentType: .pi, sessionID: sessionID)
     }
 
     /// "Fork Session" in the ⋯ menu (see ``SessionForkRules/listAvailability``),

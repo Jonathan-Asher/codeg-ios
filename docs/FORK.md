@@ -2734,6 +2734,159 @@ The server side is codeg fork.230's `commands/lost_history.rs`.
   `history-unavailable-kept` (`-light`, `-dark`, `-zh-light`) in the
   `compose-screenshots` artifact.
 
+### Pi's sub-agents, background jobs and the runs Pi starts by itself (1.4.9)
+
+`Models/PiAgentCards.swift` (`SubagentRun`, `BackgroundJob`, `AgentWake`,
+`PiSystemNote`, `ToolCardMerge`, `ToolCardSnapshot`, `InFlightAnchor`,
+`JobPollReport` and `JobPolls`), `Features/SessionDetail/LiveToolCards.swift`,
+`Rendering/PiAgentCardViews.swift`, `SubagentSessionSheet.swift`,
+`Networking/CodegClient+AgentSession.swift`, and the Pi lines of `ToolCallVM`,
+`ContextCompaction`, `TimelineNode`, `TranscriptView`, `ToolCallCard` and
+`SessionDetailViewModel`. The server side is codeg fork.234
+(`acp/pi_meta.rs`, `parsers/pi/fold.rs` and `parsers/pi/live.rs`,
+`SessionState::tool_cards`, `pi_agent_turn_anchor` in
+`commands/conversations.rs`); codeg web's `agent-tool-call.tsx`,
+`subagent-run-children.tsx`, `background-job-chip.tsx`,
+`background-task-card.tsx`, `agent-wake-divider.tsx`,
+`model-notes-toggle.tsx`, `live-tool-cards-context.ts` and
+`src/lib/agent-run-meta.ts` are the reference.
+
+- **What the server sends.** Pi's extensions report on their work with
+  notices written for the model. codeg folds them into the call that
+  started the work, as a card in the call's `meta`: `codeg.subagentRun` on a
+  `subagent` launch (named `Agent` in history, `agent` live), with the run's
+  `status`, `mode`, `agent`, `durationMs`, `tokens`, `result`, `error`, one
+  row per child in `children` (`key`, `label`, `agent`, `status`, `task`,
+  `result`, `error`, `sessionId`, `tokens`, `turns`, `exchanges`,
+  `attention`, live `activity.currentTool`) and the raw notices in `notes`;
+  `codeg.backgroundJob` on a `bgj_run` (named `bash` in history, `bgj_run`
+  live): `state`, `exitCode`, `killedBy`, `duration`, `tail`, `notice`. A card
+  from the live channel has `live: true`. After the launch's turn the server
+  sends every change as the `tool_card` event (`tool_call_id`, `meta`, the
+  whole card) and keeps the latest per call for the attach snapshot's
+  `tool_cards`. A run Pi starts by itself (a notice woke it after its reply
+  ended) is a turn: `status_changed` prompting, then an `agent_wake` call
+  carrying `codeg.agentWake` (`triggers`, each a `kind` and the notice's
+  `text`, which can come on a later update), the run, `turn_complete`.
+  History draws the same marker on a System turn of its own. A displayed
+  notice no card claims comes live as a `pi_notice` call carrying
+  `codeg.systemNote` (`customType`, `text`), and in history as a System turn
+  with its text. While a woken run goes on, the detail's
+  `in_flight_user_turn_id` names its "woken by" System turn once Pi wrote the
+  run's first reply, else `pi-agent-turn-<ms>`, which no turn carries. Pi's
+  compactions are the versioned `contextCompaction` object (`trigger`,
+  `preTokens`, `durationMs`, `error`).
+- **Decoding.** `AcpEvent.toolCard(toolCallId:meta:)`; one without an id or
+  an object card is `.unknown`. `LiveSessionSnapshot.toolCards`, skipping an
+  entry that doesn't decode; empty from an older server. The card parsers
+  read as codeg web's do and return nil for anything they don't know: a
+  run's status and a job's state are their vocabularies, a row needs a
+  `key`, a question with no text is no exchange, counts are finite and not
+  negative (an exit code can be), and an unknown wake kind is an extension's.
+- **Which card a call draws.** `LiveToolCards` (one per session screen, in
+  the environment) keeps the newest card per call: a `tool_card` event
+  replaces it; a snapshot replaces the calls it lists and keeps the others,
+  one without cards changes nothing, and one from another connection (the
+  agent restarted) starts over. A gone connection (`connection_gone`, or none
+  found for a watch) drops them all. `ToolCardMerge.effective`, codeg web's
+  `useToolCardMeta`: the call's own card when it is the transcript's card of
+  a run or job that ended (`completed`, `failed`, `paused`, `stopped`; a job's
+  `completed`, `failed`, `killed`, `unknown`), otherwise the connection's
+  newest. The run card, a command's job chip and the run's gutter marker read
+  it at render time, so the transcript's memoized rows are untouched.
+- **The run card.** `SubagentRunToolCard` draws a `.task` call as
+  `SubagentRunCard` when a card resolves (the plain tool card otherwise):
+  the agent, or how it ran, and "· N sub-agents" for several; the duration
+  and a status capsule (Running, Completed, Failed, Paused, Stopped;
+  Starting for a run queued live, Result pending for one history saw no end
+  of); the task's first line; the rows; the run's error, first line in red
+  with More/Less; Result, opening the run's result as Markdown; and What the
+  model saw. A row: its status, label, agent (when the label isn't it), the
+  tool it is running, its turns and tokens (7.9K), the first line of its
+  error or result, its questions ("Asked:", "Answer:", or "no answer
+  recorded") and those still waiting. A row with a session opens
+  `SubagentSessionSheet`: `get_conversation {agentType: "pi", conversationId:
+  <sessionId>}`, the child's turns as a read-only Pi transcript, with
+  Refresh. The gutter marker follows the run (working, done, failed, or quiet
+  for a run paused, stopped or with no end recorded).
+- **Background jobs.** A job's launch stands alone (never in a "Ran N
+  commands" group) and live reads as the command it runs (`bgj_run` is a
+  shell tool). Its header has `BackgroundJobChip` in place of the call's
+  check mark (the launch returns at once): Running, Exit 0 · 25s, Failed ·
+  exit 1, Killed (bgj_kill), Ended, or No exit recorded; a job that ended
+  after its turn shows its Last output. Polls (`bgj_status`, `bgj_wait`,
+  `bgj_kill`) never join a generic group either; each run of them is one
+  `JobPollGroupCard`, a row per job (`JobPolls.rows`, codeg web's
+  `buildBackgroundTaskRows`): the command, ×N polls, the latest state as the
+  chip, opening to the freshest output. `JobPollReport` reads pi-bg-jobs'
+  lines as `parsePiJobEnvelope` does, old spellings and kills included.
+- **Following after the turn.** The idle watch (Talk's socket kept attached
+  while idle) also runs while `LiveToolCards.hasActiveWork` (a run running
+  or queued, a job running) and for `workWatchGrace` (20 s) after the last one
+  ends, so a chip turns from Running to its exit, and the run Pi starts on
+  that exit streams here: its `status_changed` asks for a snapshot, which
+  shows it prompting, and the screen takes it as a turn, as Talk's watch
+  takes a turn started elsewhere. Then the socket goes. Opening a session
+  whose run or job is still going keeps the reattach's socket the same way.
+- **Runs Pi started by itself.** Marks are not calls: `MessageRender.markPart`
+  turns `codeg.agentWake` into `AgentWakeDivider` ("Continued on its own ·
+  woken by a sub-agent finishing and 2 more notices", the notices behind
+  What the model saw), `codeg.systemNote` into `PiNoteView`, and a
+  compaction into its divider, live and in a reply folded in before
+  reconciling. History's wake System turn is the same divider; a Pi
+  session's other System turns are `PiNoteView` too (first line, the text
+  behind a tap). The run streams as any reattached turn, with Stop: `cancel()`
+  sends `acp_cancel` for the connection, which ends the run.
+- **Where the run in flight starts.** `InFlightAnchor.index` is the turn the
+  server names when it is a prompt or a "woken by" turn, the end of the
+  transcript for `pi-agent-turn-…`, and otherwise the last prompt, as before.
+  `TranscriptTimeline.inFlightPromptIndex` hides the persisted copy of the
+  run's replies after the "woken by" turn (the live copy shows them) and
+  nothing for the marker no turn carries: the last prompt stood in for it
+  before, and the reply that finished before Pi went on was hidden behind
+  the live copy. When the persisted "woken by" turn is in the window it
+  stands for the live one, which `buildLive(persistedWake:)` leaves out.
+  `SessionForkRules.latestFinishedReply` (Fork Session during a turn) asks for
+  the reply before that turn, or the transcript's last reply for the marker.
+- **Compaction.** `ContextCompaction.matches` takes the versioned object as
+  well as `true`, so Pi's compactions (and Claude Code's from 0.75) are the
+  divider, not a tool call; `CompactionMark` carries the counts
+  (`preTokens`/`postTokens`, or Grok's `tokensBefore`/`tokensAfter`), the
+  duration ("Context compacted · 0.9s") and a failure ("Context compaction
+  failed").
+- **Strings.** The cards', the chip's, the divider's, the sheet's and the
+  compaction failure's, in English and Simplified Chinese (codeg's
+  `Folder.chat.contentParts.agentRun` and `.backgroundJob`,
+  `Folder.chat.messageList.agentWake`), with "sub-agent" as 子智能体.
+- Tests: `PiAgentCardsTests` (each card from the server's own frames and
+  transcripts, odd shapes, which card wins, the connection's cards, a job's
+  poll lines and rows, where a woken run starts, the small print) and
+  `PiAgentSessionTests` (the event and the snapshot field; marks rendered as
+  marks, live and folded; history's cards, divider and notes; a job and its
+  polls apart from other commands; the dedup and the fork rule for a woken
+  run; opening a session while Pi works on its own run, with Stop; a job's
+  card followed past its turn into the run its exit starts, then the socket
+  let go; a session whose run still goes; an older server; a row's session).
+  `PiCapturedWire` holds what a fork.234 codeg-server sent for pi-acp
+  0.0.34-steering.6 traffic (Pi 1.5.2, pi-subagents 0.88, pi-bg-jobs)
+  replayed into it, frames and snapshots as they came, and the transcripts
+  it parsed from those sessions (the machine's user written `dev`).
+  Screenshots: `pi-subagent-history`, `pi-subagent-live`, `pi-subagent-open`,
+  `pi-subagent-session` and `pi-job` (`-light`, `-dark`, `-zh-light`) in the
+  `compose-screenshots` artifact.
+
+#### What the codeg server should change
+
+- **Forking during a run Pi started by itself.** `settle_mid_run_fork_point`
+  and `settle_latest_reply_fork_point` (`acp/fork.rs`) take the last user
+  turn as the running turn's start when no prompt is pending, which is the
+  case for such a run. A fork from the reply that finished before its "woken
+  by" turn is refused as still being written, and Fork Session without a
+  reply forks the reply before the last prompt. They should anchor where
+  `pi_agent_turn_anchor` does (the "woken by" turn, or the run's start), as
+  the phone now does; until then the phone's Fork Session during such a run
+  is refused with the server's reason.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one

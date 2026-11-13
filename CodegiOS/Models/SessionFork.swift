@@ -190,11 +190,14 @@ enum SessionForkRules {
     /// The last turn of the latest reply that finished before a running turn's
     /// prompt, as codeg's `settle_mid_run_fork_point` decides: the prompt is
     /// `inFlightPromptID` when the server matched it, otherwise the last user
-    /// turn of the transcript. nil when no reply comes before it.
+    /// turn of the transcript. A run Pi started by itself has no prompt: it
+    /// starts at its "woken by" System turn, which the server names instead,
+    /// so the reply that finished before it is the latest; and while none of
+    /// the run is in the transcript yet (the server's `pi-agent-turn-…`
+    /// marker), every reply there has finished (see ``InFlightAnchor``). nil
+    /// when no reply comes before it.
     static func latestFinishedReply(in turns: [MessageTurn], inFlightPromptID: String?) -> String? {
-        let promptIndex = inFlightPromptID.flatMap { id in turns.firstIndex { $0.id == id && $0.role == .user } }
-            ?? turns.lastIndex { $0.role == .user }
-        guard let promptIndex else { return nil }
+        guard let promptIndex = InFlightAnchor.index(in: turns, promptID: inFlightPromptID) else { return nil }
         return turns[..<promptIndex].last { $0.role == .assistant && $0.serverMillis != nil }?.id
     }
 

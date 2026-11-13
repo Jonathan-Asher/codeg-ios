@@ -41,7 +41,12 @@ struct NodeBody: View {
             case .askQuestion:
                 AskQuestionResultCard(vm: vm)
             case .none:
-                ToolCallCard(vm: vm)
+                if vm.bucket == .task {
+                    // A Pi sub-agent run's card, when it has one.
+                    SubagentRunToolCard(vm: vm)
+                } else {
+                    ToolCallCard(vm: vm)
+                }
             }
         case .toolGroup(let items, let streaming):
             ToolGroupCard(items: items, streaming: streaming)
@@ -55,8 +60,14 @@ struct NodeBody: View {
         case .media(let group):
             MediaGroupView(group: group)
                 .railHead(.top(14))
-        case .compaction(let before, let after, let running):
-            ContextCompactionDivider(before: before, after: after, running: running)
+        case .compaction(let mark):
+            ContextCompactionDivider(mark: mark)
+        case .agentWake(let wake):
+            AgentWakeDivider(wake: wake)
+        case .systemNote(let text):
+            PiNoteView(text: text)
+        case .jobPollGroup(let polls):
+            JobPollGroupCard(polls: polls)
         case .continuation(let divider):
             ContinuationDivider(divider: divider)
         case .footer(let turn, let questionID, let forkTurnID):
@@ -461,13 +472,12 @@ struct ThinkingShimmer: View {
 /// no border) — it marks "the conversation's context was compacted here", it is
 /// not something the agent *did*.
 ///
-/// Grok stamps the before/after token counts on its compaction; codex sends none,
-/// and a no-op delta (before == after) would read as a bug, so both fall back to
-/// the plain label.
+/// Grok and Claude Code give the before/after token counts; codex sends none, Pi
+/// only the count before, and a no-op delta (before == after) would read as a
+/// bug, so all of those fall back to the plain label. How long it took follows,
+/// when the agent says (codeg web's card).
 struct ContextCompactionDivider: View {
-    let before: Int?
-    let after: Int?
-    let running: Bool
+    let mark: CompactionMark
 
     private static let formatter: NumberFormatter = {
         let f = NumberFormatter()
@@ -480,11 +490,23 @@ struct ContextCompactionDivider: View {
     }
 
     private var label: Text {
-        if running { return Text("Compacting context…") }
-        if let before, let after, before != after {
-            return Text("Context compacted · \(format(before)) → \(format(after)) tokens")
+        if mark.running { return Text("Compacting context…") }
+        if mark.error != nil { return Text("Context compaction failed") }
+        let base: Text
+        if let before = mark.before, let after = mark.after, before != after {
+            base = Text("Context compacted · \(format(before)) → \(format(after)) tokens")
+        } else {
+            base = Text("Context compacted")
         }
-        return Text("Context compacted")
+        guard let duration = Self.duration(mark.durationMs) else { return base }
+        return base + Text(verbatim: " · \(duration)")
+    }
+
+    /// `durationMs` as codeg web spells it: `0.9s`, `45s`.
+    static func duration(_ ms: Int?) -> String? {
+        guard let ms, ms > 0 else { return nil }
+        let seconds = Double(ms) / 1000
+        return seconds >= 10 ? "\(Int(seconds.rounded()))s" : String(format: "%.1fs", seconds)
     }
 
     var body: some View {
@@ -496,8 +518,8 @@ struct ContextCompactionDivider: View {
                 label
                     .font(Theme.Typography.metaLabel)
             }
-            .foregroundStyle(Theme.textTertiary)
-            .opacity(running ? 0.65 : 1)
+            .foregroundStyle(mark.error != nil ? Theme.danger : Theme.textTertiary)
+            .opacity(mark.running ? 0.65 : 1)
             .fixedSize()
             hairline
         }

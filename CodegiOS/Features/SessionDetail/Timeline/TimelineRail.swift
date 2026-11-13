@@ -233,6 +233,10 @@ enum MarkerKind {
     /// A context-compaction boundary. Like `.footer` it is a *marker on* the
     /// spine, not an event hanging off it, so the rail runs straight through.
     case compaction
+    /// A Pi sub-agent run's call: tinted by the run, which outlives the call
+    /// that launched it (the live connection's card, when newer — see
+    /// ``LiveToolCards``), not by the call. `fallback` is the call's own state.
+    case subagentRun(toolCallID: String, own: AnyJSON?, fallback: ToolCallState)
 }
 
 /// The gutter marker. Centralizes state tinting, the running pulse, the
@@ -244,6 +248,7 @@ struct NodeMarker: View {
 
     @ScaledMetric(relativeTo: .body) private var scaledSize = TimelineMetrics.markerSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.liveToolCards) private var liveToolCards
 
     private var size: CGFloat { min(scaledSize, TimelineMetrics.markerSize * 1.5) }
 
@@ -304,6 +309,23 @@ struct NodeMarker: View {
             Circle()
                 .fill(Theme.rail)
                 .frame(width: size * 0.42, height: size * 0.42)
+        case .subagentRun(let id, let own, let fallback):
+            subagentRunMarker(id: id, own: own, fallback: fallback)
+        }
+    }
+
+    /// A sub-agent run's marker: working, done or failed as its run is, and
+    /// quiet grey for one paused, stopped or launched with no outcome
+    /// recorded.
+    @ViewBuilder
+    private func subagentRunMarker(id: String, own: AnyJSON?, fallback: ToolCallState) -> some View {
+        let meta = liveToolCards?.meta(for: id, own: own, key: .subagentRun) ?? own
+        switch SubagentRun.parse(meta)?.tone {
+        case .working?: toolMarker(icon: "person.2", state: .running)
+        case .done?: toolMarker(icon: "person.2", state: .done)
+        case .failed?: toolMarker(icon: "person.2", state: .error)
+        case .quiet?: chip(icon: "person.2", tint: Theme.textTertiary)
+        case nil: toolMarker(icon: "person.2", state: fallback)
         }
     }
 
