@@ -123,6 +123,13 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     /// process is gone), `session_archived` or `session_busy`. The
     /// connection's status goes to `error` next.
     case sessionLoadFailed(sessionId: String, message: String, code: String)
+    /// The newest card of a Pi sub-agent run or background job (fork.234,
+    /// `acp::pi_meta`): `meta` is the call's whole `meta` in the shape the
+    /// history parser writes (`codeg.subagentRun` / `codeg.backgroundJob`) and
+    /// replaces the previous one. The call may sit in an earlier turn or in
+    /// history, so it is looked up by id wherever it is drawn
+    /// (``LiveToolCards``).
+    case toolCard(toolCallId: String, meta: AnyJSON)
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -300,6 +307,14 @@ enum AcpEvent: Hashable, Sendable, Decodable {
                 message: ((try? c.decodeIfPresent(String.self, forKey: .message)) ?? nil) ?? "",
                 code: ((try? c.decodeIfPresent(String.self, forKey: .code)) ?? nil) ?? ""
             )
+        case "tool_card":
+            // A card this build can't read is no card, not a broken stream.
+            if let id = (try? c.decodeIfPresent(String.self, forKey: .toolCallId)) ?? nil, !id.isEmpty,
+               let meta = (try? c.decodeIfPresent(AnyJSON.self, forKey: .meta)) ?? nil, meta.object != nil {
+                self = .toolCard(toolCallId: id, meta: meta)
+            } else {
+                self = .unknown(type: type)
+            }
         default:
             self = .unknown(type: type)
         }
@@ -405,6 +420,11 @@ struct LiveSessionSnapshot: Sendable, Decodable {
     /// reason, `end_turn`, `max_tokens`, …). Set when a turn completes and
     /// cleared when the next prompt starts; nil from an older server.
     let lastStopReason: String?
+    /// The latest card of each Pi sub-agent run and background job, by the
+    /// call that started it (`tool_cards`, fork.234): drawn wherever the call
+    /// sits, live or in history (``LiveToolCards``). Empty from an older
+    /// server, and while nothing was launched.
+    let toolCards: [ToolCardSnapshot]
 
     private enum CodingKeys: String, CodingKey {
         case connectionId, conversationId, folderId, status, externalId, eventSeq
@@ -414,6 +434,7 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         case modes, currentMode, configOptions
         case forkSupported, forkWhileRunning
         case lastStopReason
+        case toolCards
     }
 
     private struct PendingUserMessageRef: Decodable {
@@ -445,6 +466,7 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         forkSupported = (try? c.decodeIfPresent(Bool.self, forKey: .forkSupported)) ?? nil
         forkWhileRunning = (try? c.decodeIfPresent(Bool.self, forKey: .forkWhileRunning)) ?? nil
         lastStopReason = (try? c.decodeIfPresent(String.self, forKey: .lastStopReason)) ?? nil
+        toolCards = ToolCardSnapshot.lenientList(c, forKey: .toolCards)
     }
 }
 

@@ -371,7 +371,8 @@ struct TranscriptView<Header: View>: View {
 
         var all = persisted
         if let liveTurn {
-            all.append(contentsOf: TranscriptTimeline.buildLive(liveTurn, agent: agent))
+            let persistedWake = TranscriptTimeline.inFlightWakeIsPersisted(in: turns, promptID: inFlightPromptID)
+            all.append(contentsOf: TranscriptTimeline.buildLive(liveTurn, agent: agent, persistedWake: persistedWake))
         }
         // After everything: the latest reply hit the model's output limit.
         if let outputLimitNotice {
@@ -446,7 +447,10 @@ struct TranscriptView<Header: View>: View {
             suppressInFlight: suppressInFlight, inFlightPromptID: inFlightPromptID, liveCoverage: coverage,
             media: mediaContext, presence: mediaContext == nil ? nil : mediaPresence
         ).count
-        if let liveTurn { count += TranscriptTimeline.buildLive(liveTurn, agent: agent).count }
+        if let liveTurn {
+            let persistedWake = TranscriptTimeline.inFlightWakeIsPersisted(in: turns, promptID: inFlightPromptID)
+            count += TranscriptTimeline.buildLive(liveTurn, agent: agent, persistedWake: persistedWake).count
+        }
         if outputLimitNotice != nil { count += 1 }
         return count
     }

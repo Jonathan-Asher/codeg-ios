@@ -89,7 +89,7 @@ extension TimelineNode {
         switch content {
         case .user(let turn), .insertedUser(let turn), .system(let turn):
             return SystemText.of(turn)
-        case .assistantText(let text):
+        case .assistantText(let text), .systemNote(let text):
             return text
         default:
             return nil

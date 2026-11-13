@@ -92,6 +92,48 @@ struct ToolCallVM: Identifiable {
     /// `enter_plan_mode`/`exit_plan_mode`, Cline's `switch_mode`). A mode signal,
     /// not a work tool, so it renders standalone instead of folding into a group.
     var isPlanMode: Bool { ToolDerive.isPlanModeName(rawName) }
+
+    /// A Pi `bgj_run`: the command that started a background job, whose card
+    /// says how the job went (`codeg.backgroundJob`). History names it `bash`
+    /// and carries the card; live it is `bgj_run` from the first frame. It
+    /// stands alone, so the job's state stays in sight.
+    var isJobLaunch: Bool {
+        meta?[PiMetaKey.backgroundJob]?.object != nil || ToolDerive.display(rawName).lowercased() == "bgj_run"
+    }
+
+    /// A Pi `bgj_status` / `bgj_wait` / `bgj_kill`: a look at a background
+    /// job. A run of them merges into one card, a row per job.
+    var isJobPoll: Bool { JobPolls.isPoll(ToolDerive.display(rawName)) }
+
+    /// The call as the job poll card reads it.
+    var jobPollCall: JobPollCall {
+        JobPollCall(callID: id, input: input, output: output, isError: isError,
+                    finished: state == .done || state == .error)
+    }
+}
+
+/// A context compaction's divider, as its `meta` tells it.
+struct CompactionMark: Hashable, Sendable {
+    var before: Int?
+    var after: Int?
+    var running: Bool
+    var durationMs: Int?
+    /// Why it failed; nil when it didn't.
+    var error: String?
+
+    init(before: Int? = nil, after: Int? = nil, running: Bool = false, durationMs: Int? = nil, error: String? = nil) {
+        self.before = before
+        self.after = after
+        self.running = running
+        self.durationMs = durationMs
+        self.error = error
+    }
+
+    init(meta: AnyJSON?, running: Bool) {
+        let counts = ContextCompaction.tokens(meta)
+        self.init(before: counts.before, after: counts.after, running: running,
+                  durationMs: ContextCompaction.durationMs(meta), error: ContextCompaction.error(meta))
+    }
 }
 
 /// One ordered piece of a rendered assistant turn. The persisted and live
@@ -111,9 +153,17 @@ enum RenderPart {
     case taskGroup([ToolCallVM])
     case image(ImageData, caption: String?)
     /// A context compaction (`_meta.contextCompaction`) — a conversation boundary
-    /// marker, not a tool call. Rendered as a chrome-less centered divider; the
-    /// token counts are Grok-only (codex sends none).
-    case compaction(before: Int?, after: Int?, running: Bool)
+    /// marker, not a tool call. Rendered as a chrome-less centered divider.
+    case compaction(CompactionMark)
+    /// Where Pi started a run by itself because a notice woke it
+    /// (`codeg.agentWake`): a divider, never a card. `id` is the marker call's.
+    case agentWake(AgentWake, id: String)
+    /// A notice Pi was given that no card claims, live (`codeg.systemNote`):
+    /// the small note history shows for it.
+    case systemNote(PiSystemNote, id: String)
+    /// A run of consecutive Pi background job polls (`bgj_status` /
+    /// `bgj_wait` / `bgj_kill`), merged into one card with a row per job.
+    case jobPollGroup([ToolCallVM])
     case unknown(type: String)
 }
 
@@ -152,13 +202,11 @@ enum MessageRender {
                     output = outPreview; isErr = e; resultImages = imgs; consumed.insert(r)
                 }
                 let state: ToolCallState = resultIdx == nil ? .running : (isErr ? .error : .done)
-                // A compaction is a boundary marker, not a call: it renders as a
-                // divider between turns, so it never becomes a `ToolCallVM` (and so
-                // can't be swept into a tool group).
-                if ContextCompaction.matches(meta) {
-                    let counts = ContextCompaction.tokens(meta)
-                    parts.append(.compaction(before: counts.before, after: counts.after,
-                                             running: state == .running))
+                // A compaction, Pi's "woken by" marker and its unclaimed notices
+                // are marks in the conversation, not calls: they never become a
+                // `ToolCallVM` (and so can't be swept into a tool group).
+                if let mark = markPart(id: toolID ?? "tool-\(idx)", meta: meta, running: state == .running) {
+                    parts.append(mark)
                     continue
                 }
                 parts.append(.tool(ToolCallVM(
@@ -211,13 +259,12 @@ enum MessageRender {
                 parts.append(.liveReasoning(run, streaming: isStreaming))
             case .tool(let call):
                 let state: ToolCallState = call.isFinished ? (call.isError ? .error : .done) : .running
-                // Same boundary-marker treatment as the persisted path: codex emits
-                // the `Context compacting` → `Context compacted` pair on one id, so
-                // the divider flips from running to settled in place.
-                if ContextCompaction.matches(call.meta) {
-                    let counts = ContextCompaction.tokens(call.meta)
-                    parts.append(.compaction(before: counts.before, after: counts.after,
-                                             running: state == .running))
+                // Same marker treatment as the persisted path: codex emits the
+                // `Context compacting` → `Context compacted` pair on one id (Pi
+                // its `in_progress` → `completed` card), so the divider flips
+                // from running to settled in place.
+                if let mark = markPart(id: call.id, meta: call.meta, running: state == .running) {
+                    parts.append(mark)
                     continue
                 }
                 var vm = ToolCallVM(
@@ -239,7 +286,17 @@ enum MessageRender {
     /// into one `delegationStatusGroup`, then merge consecutive task-management
     /// calls into one `taskGroup` checklist.
     static func group(_ parts: [RenderPart]) -> [RenderPart] {
-        groupConsecutiveTaskOps(groupConsecutiveDelegationStatus(groupConsecutiveTools(parts)))
+        groupConsecutiveJobPolls(groupConsecutiveTaskOps(groupConsecutiveDelegationStatus(groupConsecutiveTools(parts))))
+    }
+
+    /// The part a marker call stands for, or nil for a real call: a context
+    /// compaction's divider, the "woken by" divider of a run Pi started by
+    /// itself, or a notice no card claims.
+    static func markPart(id: String, meta: AnyJSON?, running: Bool) -> RenderPart? {
+        if let wake = AgentWake.parse(meta) { return .agentWake(wake, id: id) }
+        if let note = PiSystemNote.parse(meta) { return .systemNote(note, id: id) }
+        if ContextCompaction.matches(meta) { return .compaction(CompactionMark(meta: meta, running: running)) }
+        return nil
     }
 
     /// Collapse runs of 2+ consecutive tool calls into a `toolGroup`. Agent-like
@@ -261,10 +318,11 @@ enum MessageRender {
 
         for part in parts {
             // Agent-dispatch (`.task`), task-management (`.taskMgmt`), plan-mode
-            // transitions, and the codeg-mcp companion tools each render on their
-            // own, so they never fold into a generic tool run.
+            // transitions, the codeg-mcp companion tools, and Pi's background
+            // jobs and their polls each render on their own, so they never fold
+            // into a generic tool run.
             if case .tool(let vm) = part, vm.bucket != .task, vm.bucket != .taskMgmt,
-               !vm.isPlanMode, vm.companion == nil {
+               !vm.isPlanMode, vm.companion == nil, !vm.isJobLaunch, !vm.isJobPoll {
                 run.append(vm)
             } else {
                 flush()
@@ -328,6 +386,33 @@ enum MessageRender {
 
         for part in parts {
             if case .tool(let vm) = part, vm.bucket == .taskMgmt, vm.companion == nil, !vm.isError {
+                buffer.append(vm)
+            } else {
+                flush()
+                out.append(part)
+            }
+        }
+        flush()
+        return out
+    }
+
+    /// Wrap each run of consecutive Pi background job polls (`bgj_status` /
+    /// `bgj_wait` / `bgj_kill`, left standalone by `groupConsecutiveTools`) into
+    /// one `jobPollGroup`, so a dozen polls of the same job read as one row with
+    /// its latest state (codeg web's `BackgroundTaskCard`). Even a lone poll is
+    /// wrapped, so every poll renders through the one card.
+    static func groupConsecutiveJobPolls(_ parts: [RenderPart]) -> [RenderPart] {
+        var out: [RenderPart] = []
+        var buffer: [ToolCallVM] = []
+
+        func flush() {
+            guard !buffer.isEmpty else { return }
+            out.append(.jobPollGroup(buffer))
+            buffer = []
+        }
+
+        for part in parts {
+            if case .tool(let vm) = part, vm.isJobPoll {
                 buffer.append(vm)
             } else {
                 flush()
@@ -539,6 +624,9 @@ enum ToolDerive {
     private static let executeNames: Set<String> = [
         "bash", "shell", "sh", "exec", "exec_command", "execute", "execute_command",
         "run_command", "command", "run_terminal_cmd", "terminal", "write_stdin",
+        // Pi's background job launch: a command, as history (which names it
+        // `bash`) shows it.
+        "bgj_run",
     ]
     private static let webNames: Set<String> = [
         "webfetch", "web_fetch", "fetch", "websearch", "web_search", "browser", "browser_action",

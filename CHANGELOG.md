@@ -12,6 +12,38 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Pi's sub-agents, background jobs and the runs Pi starts by itself (1.4.9).
+  A Pi `subagent` call is one card: the agent (with how many sub-agents a
+  workflow ran), Running, Completed, Failed, Paused or Stopped and how long it
+  took, then a row per sub-agent (a workflow lane, a parallel task or a chain
+  step) with its status, the tool it is running while it works, its turns and
+  tokens, the first line of its result or error, and the questions it asked
+  with Pi's answers; then the run's own error (the rest under More), its
+  result under Result, and What the model saw, the notices Pi was given,
+  verbatim. A row with a session opens that sub-agent's own session,
+  read-only, as a Pi transcript, with Refresh while it still works. A
+  `bgj_run` command says how its background job is going instead of a check
+  mark: Running, then Exit 0 · 25s, Failed · exit 1, Killed (bgj_kill) or
+  Ended, or No exit recorded when the transcript never saw the end, with the
+  job's last output; a run of `bgj_status`, `bgj_wait` and `bgj_kill` calls is
+  one card with a row per job, its latest state, how many times it was
+  checked and its output. The cards keep up after the turn that launched
+  them: the server's newest card for a call (its `tool_card` events, and the
+  snapshot's `tool_cards` when the session opens) is drawn wherever the call
+  is, live or in history, until the transcript has the run's end, and the
+  session keeps listening while a run or job goes on, and for a little while
+  after the last one ends. When a notice wakes Pi after its reply ended (a
+  sub-agent finishing or asking, a job exiting), the run it starts streams as
+  a turn, with Stop, under a divider ("Continued on its own · woken by a
+  background job ending") with the notices behind What the model saw; history
+  draws the same divider, and a notice no card claims is a small note with
+  its text behind a tap. Opening a session while Pi works on such a run shows
+  its replies once and keeps the reply before it, and Fork Session during
+  such a run asks for the reply that finished before it rather than the one
+  before your last message (codeg fork.234 still refuses that fork until the
+  run ends). Pi's context compactions show as the compaction divider, with
+  how long they took, and so do Claude Code's (0.75 and later). Needs codeg
+  fork.234; with an older server nothing changes.
 - More notification sounds, one sound for all notifications, and a volume
   (1.4.8). Twelve new Codeg tones: Halo, Triangle and Sonar; Woodblock,
   Bubbles and Retro; Doorbell, Kalimba, Harp, Cascade, Steel Drum and Glow.

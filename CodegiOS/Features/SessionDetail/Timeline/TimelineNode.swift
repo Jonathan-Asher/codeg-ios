@@ -55,8 +55,18 @@ struct TimelineNode: Identifiable {
         /// inline, several folded into one row.
         case media(MediaGroup)
         /// A context-compaction boundary — rendered as a chrome-less divider, not
-        /// a card. Token counts are Grok-only (codex sends none).
-        case compaction(before: Int?, after: Int?, running: Bool)
+        /// a card.
+        case compaction(CompactionMark)
+        /// Where Pi started a run by itself because a notice woke it: a slim
+        /// divider ("Continued on its own · woken by …") with what the model
+        /// saw behind a toggle. History draws it on a System turn of its own;
+        /// live it opens the run.
+        case agentWake(AgentWake)
+        /// A notice Pi was given that no card claims: a small note, its text
+        /// behind a toggle.
+        case systemNote(String)
+        /// A run of Pi background job polls: one card, a row per job.
+        case jobPollGroup([ToolCallVM])
         /// A user turn that only says "keep going" (Continue, the resume after
         /// a restart, the continuation after a usage-limit reset), drawn as a
         /// slim divider instead of a message card. A resume carries the list of
@@ -83,6 +93,16 @@ struct TimelineNode: Identifiable {
         case .assistantText, .liveText: return .assistant(agent)
         case .reasoning, .liveReasoning: return .reasoning
         case .tool(let vm):
+            // A Pi sub-agent run's marker follows its run, which outlives the
+            // call that launched it (the live connection's card, when newer).
+            if vm.bucket == .task, SubagentRun.parse(vm.meta) != nil {
+                return .subagentRun(toolCallID: vm.id, own: vm.meta, fallback: vm.state)
+            }
+            // A Pi background job's launch returns at once: its marker
+            // follows the job, as its chip does.
+            if vm.isJobLaunch, !vm.isError, BackgroundJob.parse(vm.meta) != nil {
+                return .backgroundJob(toolCallID: vm.id, own: vm.meta, icon: vm.icon)
+            }
             // A question's marker follows its record, not the bare call: one
             // left without a result after its turn ended has expired and must
             // not pulse as if it still waited.
@@ -107,8 +127,14 @@ struct TimelineNode: Identifiable {
             let running = ops.contains { $0.state == .running || $0.state == .inputStreaming }
             let state: ToolCallState = running ? .running : (ops.contains(where: \.isError) ? .error : .done)
             return .tool(icon: "checklist", state: state)
+        case .jobPollGroup(let polls):
+            let rows = JobPolls.rows(polls.map(\.jobPollCall))
+            let state: ToolCallState = rows.contains { $0.outcome == .running }
+                ? .running : (rows.contains { $0.outcome == .failed } ? .error : .done)
+            return .tool(icon: "terminal", state: state)
         case .image, .media: return .image
-        case .compaction, .continuation: return .compaction
+        case .compaction, .continuation, .agentWake: return .compaction
+        case .systemNote: return .system
         case .footer: return .footer
         case .plan: return .plan
         case .thinking: return .thinking
@@ -200,10 +226,19 @@ enum TranscriptTimeline {
                 nodes.append(node)
                 i += 1
             case .system:
-                // Skip system turns with no renderable text so the rail doesn't
-                // show a lone marker against an empty row.
-                if !SystemText.of(turn).isEmpty {
-                    nodes.append(TimelineNode(id: turn.id, content: .system(turn), agent: agent, startsGroup: true,
+                if let wake = AgentWake.of(turn) {
+                    // Pi went on by itself: the divider, not its caption.
+                    nodes.append(TimelineNode(id: turn.id, content: .agentWake(wake), agent: agent,
+                                              startsGroup: true, turnID: turn.id))
+                } else if !SystemText.of(turn).isEmpty {
+                    // A Pi session's System turns are the notices no card
+                    // claims (and `/tree` summaries): a small note, as the
+                    // live one draws. Other agents' keep their caption.
+                    // Turns with no renderable text are skipped so the rail
+                    // doesn't show a lone marker against an empty row.
+                    let content: TimelineNode.Content = agent == .pi
+                        ? .systemNote(SystemText.of(turn)) : .system(turn)
+                    nodes.append(TimelineNode(id: turn.id, content: content, agent: agent, startsGroup: true,
                                               turnID: turn.id))
                 }
                 i += 1
@@ -266,12 +301,14 @@ enum TranscriptTimeline {
     /// last user turn. A message sent into the turn is a user turn of its own,
     /// in the middle of the reply, so the last user turn alone would leave the
     /// reply's first half shown twice beside the live copy (codeg web anchors
-    /// the same way).
+    /// the same way). A run Pi started by itself has no prompt: the server
+    /// names its "woken by" System turn instead, which anchors it the same
+    /// way, or, while none of the run is in the transcript yet, a marker no
+    /// turn carries, and then nothing here is the running reply (the previous
+    /// reply is not hidden behind the live copy). See ``InFlightAnchor``.
     static func inFlightPromptIndex(in turns: [MessageTurn], promptID: String?) -> Int? {
-        if let promptID, let index = turns.lastIndex(where: { $0.role == .user && $0.id == promptID }) {
-            return index
-        }
-        return turns.lastIndex(where: { $0.role == .user })
+        guard let index = InFlightAnchor.index(in: turns, promptID: promptID), index < turns.count else { return nil }
+        return index
     }
 
     /// Whether the live turn holds every tool call and image of the persisted
@@ -316,8 +353,26 @@ enum TranscriptTimeline {
     /// gutter markers, and plan statuses mutate their `LiveToolCall`/`LiveTurn` in
     /// place and render from a value snapshot with no observing leaf, so a stale
     /// live tier would freeze them at their first-rendered state.
-    static func buildLive(_ live: LiveTurn, agent: AgentType) -> [TimelineNode] {
-        liveNodes(live, agent: agent)
+    ///
+    /// - Parameter persistedWake: the transcript already holds the "woken by"
+    ///   divider of the run this live turn shows (the server named it as the
+    ///   turn in flight): it stands for the live one, which would otherwise
+    ///   draw the same divider twice (see ``inFlightWakeIsPersisted(in:promptID:)``).
+    static func buildLive(_ live: LiveTurn, agent: AgentType, persistedWake: Bool = false) -> [TimelineNode] {
+        let nodes = liveNodes(live, agent: agent)
+        guard persistedWake else { return nodes }
+        return nodes.filter {
+            if case .agentWake = $0.content { return false }
+            return true
+        }
+    }
+
+    /// Whether the turn in flight is a run Pi started by itself whose "woken
+    /// by" System turn is already in `turns` (the server names it once Pi has
+    /// written the run's first reply).
+    static func inFlightWakeIsPersisted(in turns: [MessageTurn], promptID: String?) -> Bool {
+        guard let promptID, let turn = turns.last(where: { $0.id == promptID }) else { return false }
+        return turn.role == .system && AgentWake.of(turn) != nil
     }
 
     /// The notice after the latest reply when the model's output limit cut it
@@ -439,10 +494,17 @@ enum TranscriptTimeline {
             return TimelineNode(id: gid, content: .taskGroup(ops), agent: agent)
         case .image(let img, let cap):
             return TimelineNode(id: base, content: .image(img, caption: cap), agent: agent)
-        case .compaction(let before, let after, let running):
-            return TimelineNode(id: base,
-                                content: .compaction(before: before, after: after, running: running),
-                                agent: agent)
+        case .compaction(let mark):
+            return TimelineNode(id: base, content: .compaction(mark), agent: agent)
+        case .agentWake(let wake, let id):
+            // Keyed by the marker call: the same row live and once the run is
+            // folded into the conversation.
+            return TimelineNode(id: "wake-\(id)", content: .agentWake(wake), agent: agent, startsGroup: true)
+        case .systemNote(let note, let id):
+            return TimelineNode(id: "note-\(id)", content: .systemNote(note.text), agent: agent)
+        case .jobPollGroup(let polls):
+            let gid = polls.first.map { "jobpolls-\($0.id)" } ?? base
+            return TimelineNode(id: gid, content: .jobPollGroup(polls), agent: agent)
         case .unknown(let type):
             return TimelineNode(id: base, content: .unsupported(type), agent: agent)
         }

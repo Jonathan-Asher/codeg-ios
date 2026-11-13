@@ -555,10 +555,19 @@ struct SessionDetailView: View {
         })
         .environment(\.replyFork, replyForkAction)
         .environment(\.messageEdit, messageEditAction)
+        // Pi's run and job cards follow the live connection, and a run's
+        // row opens the child's session.
+        .modifier(PiAgentCardsEnvironment(cards: model.liveToolCards, loadSession: subagentSessionLoader))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.snappy(duration: 0.28), value: model.pendingUserTurns)
         .animation(.snappy(duration: 0.28), value: model.liveTurn?.id)
         .safeAreaInset(edge: .bottom) { bottomBar }
+    }
+
+    /// Reads a Pi sub-agent's own session for the sheet a run card's row opens.
+    private var subagentSessionLoader: (String) async throws -> [MessageTurn] {
+        let model = self.model
+        return { try await model.subagentSessionTurns(sessionID: $0) }
     }
 
     /// The compose bar and what sits above it, or, for a session whose
