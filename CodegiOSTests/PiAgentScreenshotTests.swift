@@ -8,8 +8,8 @@ import XCTest
 /// (``PiCapturedWire``): in `$COMPOSE_SHOTS_DIR`, `pi-subagent-history-*.png`
 /// (a failed and a finished run, the divider of the run Pi started when the
 /// workflow finished), `pi-subagent-live-*.png` (a run going on after its
-/// turn, its rows at work), `pi-subagent-open-*.png` (a run's result and what
-/// the model saw, opened), `pi-job-*.png` (a job's chip, the run its exit
+/// turn, its rows at work), `pi-subagent-open-*.png` (what the model saw of a
+/// run, opened), `pi-job-*.png` (a job's chip, the run its exit
 /// started, a job's polls in one card and Pi's compaction divider) and
 /// `pi-subagent-session-*.png` (a lane's own session), in light and dark,
 /// and in Simplified Chinese.
@@ -83,6 +83,8 @@ final class PiAgentScreenshotTests: XCTestCase {
     }
 
     func testARunOpened() throws {
+        // What the model was told, opened: the launch receipt and each
+        // lane's notice, verbatim.
         let finished = try XCTUnwrap(SubagentRun.parse(try meta(PiCapturedWire.subagentFinished)))
         let vm = ToolCallVM(id: "chatcmpl-tool-e4ad7ff3e99647ceb7fa8b09991fdfb8", rawName: "agent", kind: "other",
                             state: .done, input: #"{"subagent_type":"scout"}"#, output: nil, content: nil,
@@ -91,7 +93,7 @@ final class PiAgentScreenshotTests: XCTestCase {
             ZStack(alignment: .top) {
                 CodegBackground()
                 ScrollView {
-                    SubagentRunCard(vm: vm, run: finished, resultOpen: true, notesOpen: true)
+                    SubagentRunCard(vm: vm, run: finished, notesOpen: true)
                         .padding(.horizontal, 16)
                         .padding(.top, 70)
                 }

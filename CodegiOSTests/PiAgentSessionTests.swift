@@ -199,7 +199,7 @@ final class PiAgentSessionTests: XCTestCase {
         guard case .system? = claudeNodes.first?.content else { return XCTFail("a caption") }
     }
 
-    func testAJobAndItsPollsStandApart() {
+    func testAJobAndItsPollsStandApart() throws {
         func call(_ id: String, _ name: String, _ input: String, _ output: String, meta: AnyJSON? = nil) -> [ContentBlock] {
             [.toolUse(id: id, name: name, inputPreview: input, meta: meta),
              .toolResult(id: id, outputPreview: output, isError: false)]
@@ -230,6 +230,13 @@ final class PiAgentSessionTests: XCTestCase {
             XCTAssertEqual(rows.first?.outcome, .completed)
             XCTAssertEqual(rows.first?.pollCount, 2)
         }
+        // The job's marker follows the job; a plain command's, the call.
+        let nodes = TranscriptTimeline.buildPersisted(turns: [turn], pending: [], agent: .pi, suppressInFlight: false)
+        let jobNode = try XCTUnwrap(nodes.first { $0.id == "tool-j1" })
+        guard case .backgroundJob(let id, _, _) = jobNode.marker else { return XCTFail("the job's own marker") }
+        XCTAssertEqual(id, "j1")
+        let command = try XCTUnwrap(nodes.first { $0.id == "tool-b1" })
+        guard case .tool(_, .done) = command.marker else { return XCTFail("the call's marker") }
         // Live, `bgj_run` reads as the command it runs.
         let live = ToolCallVM(id: "j2", rawName: "bgj_run", kind: "other", state: .done,
                               input: #"{"command":"sleep 6; echo bg-done"}"#, output: nil, content: nil, isError: false)

@@ -98,6 +98,11 @@ struct TimelineNode: Identifiable {
             if vm.bucket == .task, SubagentRun.parse(vm.meta) != nil {
                 return .subagentRun(toolCallID: vm.id, own: vm.meta, fallback: vm.state)
             }
+            // A Pi background job's launch returns at once: its marker
+            // follows the job, as its chip does.
+            if vm.isJobLaunch, !vm.isError, BackgroundJob.parse(vm.meta) != nil {
+                return .backgroundJob(toolCallID: vm.id, own: vm.meta, icon: vm.icon)
+            }
             // A question's marker follows its record, not the bare call: one
             // left without a result after its turn ended has expired and must
             // not pulse as if it still waited.

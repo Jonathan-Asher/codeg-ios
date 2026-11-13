@@ -237,6 +237,9 @@ enum MarkerKind {
     /// that launched it (the live connection's card, when newer — see
     /// ``LiveToolCards``), not by the call. `fallback` is the call's own state.
     case subagentRun(toolCallID: String, own: AnyJSON?, fallback: ToolCallState)
+    /// A Pi background job's launch: tinted by the job (the live connection's
+    /// card, when newer), not by the launch, which returns at once.
+    case backgroundJob(toolCallID: String, own: AnyJSON?, icon: String)
 }
 
 /// The gutter marker. Centralizes state tinting, the running pulse, the
@@ -311,6 +314,22 @@ struct NodeMarker: View {
                 .frame(width: size * 0.42, height: size * 0.42)
         case .subagentRun(let id, let own, let fallback):
             subagentRunMarker(id: id, own: own, fallback: fallback)
+        case .backgroundJob(let id, let own, let icon):
+            backgroundJobMarker(id: id, own: own, icon: icon)
+        }
+    }
+
+    /// A background job's marker: working while it runs, done or failed as it
+    /// exited, quiet grey when it was killed, ended with no code, or no exit
+    /// was recorded.
+    @ViewBuilder
+    private func backgroundJobMarker(id: String, own: AnyJSON?, icon: String) -> some View {
+        let meta = liveToolCards?.meta(for: id, own: own, key: .backgroundJob) ?? own
+        switch BackgroundJob.parse(meta)?.state {
+        case .running?: toolMarker(icon: icon, state: .running)
+        case .completed?: toolMarker(icon: icon, state: .done)
+        case .failed?: toolMarker(icon: icon, state: .error)
+        case .killed?, .unknown?, .pending?, nil: chip(icon: icon, tint: Theme.textTertiary)
         }
     }
 

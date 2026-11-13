@@ -2809,17 +2809,18 @@ The server side is codeg fork.230's `commands/lost_history.rs`.
   <sessionId>}`, the child's turns as a read-only Pi transcript, with
   Refresh. The gutter marker follows the run (working, done, failed, or quiet
   for a run paused, stopped or with no end recorded).
-- **Background jobs.** A job's launch stands alone (never in a "Ran N
-  commands" group) and live reads as the command it runs (`bgj_run` is a
-  shell tool). Its header has `BackgroundJobChip` in place of the call's
-  check mark (the launch returns at once): Running, Exit 0 · 25s, Failed ·
-  exit 1, Killed (bgj_kill), Ended, or No exit recorded; a job that ended
-  after its turn shows its Last output. Polls (`bgj_status`, `bgj_wait`,
-  `bgj_kill`) never join a generic group either; each run of them is one
-  `JobPollGroupCard`, a row per job (`JobPolls.rows`, codeg web's
-  `buildBackgroundTaskRows`): the command, ×N polls, the latest state as the
-  chip, opening to the freshest output. `JobPollReport` reads pi-bg-jobs'
-  lines as `parsePiJobEnvelope` does, old spellings and kills included.
+- **Background jobs.** A job's launch stands alone (never in a "Ran N commands"
+  group) and live reads as the command it runs (`bgj_run` is a shell tool). Its
+  header has `BackgroundJobChip` in place of the call's check mark (the launch
+  returns at once): Running, Exit 0 · 25s, Failed · exit 1, Killed (bgj_kill),
+  Ended, or No exit recorded, and its gutter marker follows the job the same way
+  (working, done, failed, or quiet grey); a job that ended after its turn shows
+  its Last output. Polls (`bgj_status`, `bgj_wait`, `bgj_kill`) never join a
+  generic group either; each run of them is one `JobPollGroupCard`, a row per
+  job (`JobPolls.rows`, codeg web's `buildBackgroundTaskRows`): the command, ×N
+  polls, the latest state as the chip, opening to the freshest output.
+  `JobPollReport` reads pi-bg-jobs' lines as `parsePiJobEnvelope` does, old
+  spellings and kills included.
 - **Following after the turn.** The idle watch (Talk's socket kept attached
   while idle) also runs while `LiveToolCards.hasActiveWork` (a run running
   or queued, a job running) and for `workWatchGrace` (20 s) after the last one
