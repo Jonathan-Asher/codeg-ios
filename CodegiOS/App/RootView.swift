@@ -5,8 +5,9 @@ import SwiftUI
 ///   Liquid Glass `TabView` — Chats · Folders · Activity · Search · Settings,
 ///   all in one glass capsule (Search is a plain tab, not a detached search
 ///   pill). Running tasks surface as a badge on the Activity tab. The current
-///   server is switched from the Chats title menu; opening a session pushes
-///   the detail (hiding the tab bar).
+///   server is switched from the Chats title menu, and from Activity's, which
+///   also offers All Servers; opening a session pushes the detail (hiding the
+///   tab bar).
 /// - **Split** (a regular-width iPad): a three-column `NavigationSplitView`
 ///   whose sidebar is the source list (Chats / Folders / Activity), with the
 ///   same server title menu and a gear that presents Settings as a sheet.
@@ -92,6 +93,13 @@ struct RootView: View {
             guard scenePhase == .active else { return }
             await model.activity.autoRefresh(client: model.selectedClient())
         }
+        // Activity's All Servers: a pulse for each other server, at the same
+        // cadence, only while it is chosen and the app is in front. The
+        // selected server's stays the one above.
+        .task(id: allServersPulseID) {
+            guard scenePhase == .active, model.activityShowsAllServers else { return }
+            await model.allServers.run(others: model.otherServerClients())
+        }
         // What waits on the user ("Waiting for you" and the icon badge):
         // loaded and followed while the app is in front. A session on screen
         // keeps event sockets of its own, which hand the events over;
@@ -164,6 +172,17 @@ struct RootView: View {
         "\(activityPulseID)|pending|\(PresenceTracker.shared.visible == nil)"
     }
 
+    /// Identity for the All Servers pulses' `.task`: the scene, the choice,
+    /// every other server's identity and endpoint, and any edit to the saved
+    /// servers or their tokens.
+    private var allServersPulseID: String {
+        let phase = String(describing: scenePhase)
+        guard model.activityShowsAllServers else { return "\(phase)|one" }
+        let others = model.serverStore.servers.filter { $0.id != model.selectedServerID }
+            .map { "\($0.id.uuidString)@\($0.urlString)" }
+        return "\(phase)|all|\(model.serversRevision)|\(others.joined(separator: ","))"
+    }
+
     /// Identity for the activity poller's `.task` — composes everything that
     /// should restart the loop.
     private var activityPulseID: String {
@@ -203,8 +222,9 @@ struct RootView: View {
             } label: {
                 linearTabLabel("Activity", "waveform")
             }
-            // Running-task count rides the Activity tab as a badge (0 auto-hides).
-            .badge(model.activity.running.count)
+            // Running-task count rides the Activity tab as a badge (0 auto-hides),
+            // every server's while All Servers is chosen.
+            .badge(model.activityBadgeCount)
             Tab(value: AppTab.search) {
                 searchTab
             } label: {
@@ -324,13 +344,16 @@ struct RootView: View {
     }
 
     private var activityTab: some View {
-        NavigationStack(path: navPath(.activity)) {
+        let client = model.selectedClient()
+        return NavigationStack(path: navPath(.activity)) {
             ActivityView(
                 activity: model.activity,
-                client: model.selectedClient(),
+                client: client,
                 markedConversationID: model.markedConversationID,
                 newestRequest: model.activityNewestRequest,
                 onAwayFromNewest: { model.activityFeedAwayFromNewest = $0 },
+                switcher: activitySwitcher(client: client),
+                allServers: allServersSource,
                 onOpen: { model.open(.conversation($0)) }
             )
             .navigationDestination(for: Route.self) { route in
@@ -423,10 +446,13 @@ struct RootView: View {
             )
             .id(model.selectedServerID)
         case .activity:
+            let client = model.selectedClient()
             ActivityView(
                 activity: model.activity,
-                client: model.selectedClient(),
+                client: client,
                 markedConversationID: model.markedConversationID,
+                switcher: activitySwitcher(client: client),
+                allServers: allServersSource,
                 onOpen: { model.open(.conversation($0)) }
             )
         case nil:
@@ -534,6 +560,33 @@ struct RootView: View {
         .id(request.id)
     }
 
+    // MARK: - Activity's servers
+
+    /// Activity's title menu (both shells): with two or more servers, or
+    /// when no server can be shown (to pick one, or manage them). One
+    /// working server keeps the plain title.
+    private func activitySwitcher(client: CodegClient?) -> ActivitySwitcher? {
+        let servers = model.serverStore.servers
+        guard servers.count > 1 || client == nil else { return nil }
+        return ActivitySwitcher(
+            servers: servers,
+            choice: $model.activityChoice,
+            onManage: { model.serversSheetPresented = true }
+        )
+    }
+
+    /// The All Servers feed's data and actions, while it is chosen.
+    private var allServersSource: AllServersSource? {
+        guard model.activityShowsAllServers else { return nil }
+        return AllServersSource(
+            model: model.allServers,
+            servers: model.serverStore.servers,
+            selectedServerID: model.selectedServerID,
+            onOpen: { model.openActivityRow($0) },
+            onRefresh: { await model.refreshAllServersActivity() }
+        )
+    }
+
     // MARK: - Server switcher
 
     /// Title menu shared by the compact Chats root and the iPad sidebar: pick
@@ -570,7 +623,7 @@ private struct SplitSidebar: View {
                 .tag(SidebarSection.projects)
             Label("Activity", systemImage: "waveform")
                 .tag(SidebarSection.activity)
-                .badge(model.activity.running.count)
+                .badge(model.activityBadgeCount)
         }
         .navigationTitle(model.selectedServer?.name ?? "Codeg")
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)

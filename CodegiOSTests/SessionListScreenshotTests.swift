@@ -184,6 +184,60 @@ final class SessionListScreenshotTests: XCTestCase {
         }
     }
 
+    /// All Servers: two servers in one feed, each row captioned with its
+    /// server (both have a session 101), and the laptop asleep: its last
+    /// rows stay, with a note saying it couldn't be reached.
+    func testRenderActivityAllServers() throws {
+        let laptop = ServerProfile(name: "MacBook Pro", urlString: "http://laptop.test")
+        let studio = ServerProfile(name: "Mac Studio", urlString: "http://studio.test")
+        let split = SampleSessions.activitySplit(sessions, now: now)
+        let studioSessions = [
+            SampleSessions.Spec(id: 101, folder: 1, title: "Index the meeting transcripts for search",
+                                status: "in_progress", minutesAgo: 3, turnState: "running"),
+            SampleSessions.Spec(id: 302, folder: 2, title: "Run the end-to-end suite against fork.236",
+                                agent: "codex", status: "in_progress", minutesAgo: 12, turnState: "running"),
+            SampleSessions.Spec(id: 303, folder: 1, title: "Speaker labels for the Hebrew recordings",
+                                status: "pending_review", minutesAgo: 35),
+            SampleSessions.Spec(id: 304, folder: 2, title: "Flaky upload test on the simulator",
+                                agent: "pi", minutesAgo: 95),
+        ].map { SampleSessions.decode($0, now: now) }
+        let studioSplit = SampleSessions.activitySplit(studioSessions, now: now)
+        let feed = AllServersFeed.merge([
+            ActivityServerPart(server: laptop, running: Array(split.running.prefix(2)),
+                               recent: Array(split.recent.prefix(3)), folderNames: SampleSessions.folders,
+                               attention: SampleSessions.needsYou, failingSince: now.addingTimeInterval(-60),
+                               lastRefreshed: now.addingTimeInterval(-18 * 60)),
+            ActivityServerPart(server: studio, isSelected: true, running: studioSplit.running,
+                               recent: studioSplit.recent, folderNames: [1: "stalkrr", 2: "codeg-e2e"],
+                               attention: [302: "question"], lastRefreshed: now.addingTimeInterval(-20)),
+        ])
+        let switcher = ActivitySwitcher(servers: [laptop, studio], choice: .constant(.allServers), onManage: {})
+        func screen(newestAtBottom: Bool) -> some View {
+            Shot.tabs(selected: 2) {
+                ZStack {
+                    CodegBackground()
+                    ActivityFeed(
+                        running: feed.running,
+                        recent: feed.recent,
+                        markedKey: ActivityRowKey(server: studio.id, conversationID: 303),
+                        lastRefreshed: feed.lastRefreshed,
+                        error: nil,
+                        notices: feed.notices,
+                        onOpenRow: { _ in },
+                        onRefresh: {},
+                        onDismissError: {},
+                        newestAtBottom: newestAtBottom
+                    )
+                }
+                .modifier(ActivityTitle(compact: true, switcher: switcher))
+            }
+        }
+        for style in Shot.styles {
+            try Shot.capture("activity-all-servers", style) { screen(newestAtBottom: true) }
+        }
+        try Shot.capture("activity-all-servers-newest-first", .light) { screen(newestAtBottom: false) }
+    }
+
     /// Sessions last touched two days to a month ago.
     private func olderSessions() throws -> [ConversationSummary] {
         let titles = ["Release notes for 1.3.0", "Benchmark whisper tiny vs base", "Fix the folder sort order",

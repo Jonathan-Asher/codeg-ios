@@ -2980,6 +2980,70 @@ unless the feed was left scrolled away from it less than a minute ago
 (`ActivityTabReturn`); then it is where it was left. Tests:
 `ActivityNewestEndTests` (with the anchoring checked on the simulator).
 
+### Activity: All Servers (1.4.10)
+
+With two or more servers saved, Activity's title is a menu like the Chats
+root's (`ActivityTitle` and `ActivityTitleMenu` in `ActivityView.swift`): All
+Servers, each saved server with a checkmark on the current choice, a divider,
+Manage Servers…. The title reads "Activity" with the choice after it. With one
+server the plain title stays, unless no server can be shown, when the menu
+is there to pick or manage one. On iPad the split view's Activity section has
+the same menu and feed.
+
+- **The choice.** `ActivityScope` (`all` or `server`, key
+  `codeg.activity.scope`) and `ActivityChoice`, through
+  `AppModel.activityChoice`. Picking a server sets `selectedServerID`, as the
+  Chats title does, so the whole app follows. With one server All Servers is
+  neither offered nor applied; with two or more and nothing chosen it is the
+  default.
+- **The other servers' pulses.** `model.activity` stays the selected
+  server's pulse, untouched: it feeds the Folders counts, Waiting for you,
+  the prefetcher and the connection capsule, and RootView keys its `.task` on
+  `activityPulseID` as before. `AllServersActivity` keeps an `ActivityModel`
+  per other server (same fetch, saved lists and failure debounce) with
+  `publishesAttention` off, so another server's attention never lands in the
+  app-wide `AttentionStore`, and no `linkStatus`. RootView runs them from a
+  second `.task(id: allServersPulseID)`, only while All Servers is chosen and
+  the app is in front, at the same 25 s cadence, each at its own pace in a
+  task group, so a server that times out holds no other back. Pull to
+  refresh asks every server at once.
+- **The feed.** `AllServersFeed.merge` combines each server's Running, Last
+  24 Hours and Earlier (`ActivityServerPart`, plain data) most recent first
+  (`recency`; ties by the saved servers' order, then id), into
+  `ActivityRow`s that carry the server's name for the caption under the row
+  (`SessionRow.serverName`), the row's own attention
+  (`SessionRowAttention.given`) and whether the long-press actions apply:
+  `SessionActions` act on the selected server, so another server's row offers
+  Open and Copy Title only. `ActivityFeed` takes the rows as data, so
+  screenshots and tests render sample sessions of two servers; its
+  one-server initializer is unchanged.
+- **Ids collide.** Two servers can both have a conversation 302. Rows,
+  `ForEach` identities, the rows' animation and the marked row are keyed by
+  `ActivityRowKey` (server, conversation id); the marked row is the session
+  opened last, which is always on the selected server.
+- **Opening a row.** `AppModel.openActivityRow`: a row on another server
+  selects that server first (the stacks start over, as for a notification
+  from another server, `openFromPush`), then opens the session like any
+  Activity row, so Back returns to the feed, still on All Servers. On iPad it
+  fills the detail column.
+- **A server down.** A server that fails keeps its last rows and the others'
+  show regardless. `ActivityModel.failingSince` is set by the same debounce
+  as the error banner (`failuresBeforeAlerting`, or at once with nothing
+  loaded), also while the capsule speaks for the selected server; the feed
+  then shows `ServerUnreachableNote` ("Couldn’t reach MacBook Pro", with the
+  time its rows are from), dismissible until that server answers and fails
+  again. Offline there are no notes: the capsule says it for all of them.
+- **The badge.** While All Servers is chosen, the Activity tab's badge and
+  the iPad sidebar's count the running sessions of every server
+  (`AllServersActivity.runningCount`).
+- **Tests.** `CodegiOSTests/AllServersActivityTests.swift`: merging and
+  sorting across servers, colliding ids, one server down (another, and the
+  selected one), the note's debounce and dismissal, the default with one and
+  with two servers, the remembered choice, and opening another server's row
+  on iPhone and iPad. Screenshots: `activity-all-servers` (`-light`, `-dark`)
+  and `activity-all-servers-newest-first-light` in the
+  `session-list-screenshots` artifact.
+
 ### Archived folders (1.3.8)
 
 codeg's desktop sidebar can archive a folder, or a whole folder group with
@@ -3016,8 +3080,8 @@ calls.
 ### Screenshots
 
 `CodegiOSTests/SessionListScreenshotTests.swift` renders the rows, the Chats
-cards, a folder's full list, Activity in both orders, a short Activity list and
-the Appearance settings with `CodegiOSTests/SampleSessions.swift`, in light
+cards, a folder's full list, Activity in both orders, a short Activity list,
+Activity on All Servers and the Appearance settings with `CodegiOSTests/SampleSessions.swift`, in light
 and dark. `CodegiOSTests/ComposeScreenshotTests.swift` renders the compose
 area (queued messages, Continue, a notice, the Camera Control pill and its
 folded badge, the dictation strip and the message bar) idle, recording from

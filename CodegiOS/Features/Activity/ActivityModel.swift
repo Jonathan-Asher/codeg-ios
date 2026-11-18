@@ -32,6 +32,20 @@ final class ActivityModel {
     private(set) var error: String?
     private(set) var isRefreshing = false
     private(set) var hasLoaded = false
+    /// What waits on the user, by conversation, as this server last sent it
+    /// (also handed to ``AttentionStore`` while `publishesAttention`).
+    private(set) var attention: [Int: String] = [:]
+    /// Since when the refreshes have kept failing: set by the same debounce
+    /// as the error banner (``failuresBeforeAlerting``, or at once with
+    /// nothing loaded yet), but also while the connection capsule speaks for
+    /// an unreachable server. Cleared by the next refresh that loads. All
+    /// Servers names the server from it.
+    private(set) var failingSince: Date?
+
+    /// The pulse of the selected server feeds the app-wide attention store;
+    /// another server's (All Servers) keeps its attention to itself, since
+    /// conversation ids are only unique on one server.
+    @ObservationIgnored var publishesAttention = true
 
     /// Monotonic token so a slow fetch can't clobber a newer one's results
     /// (also bumped by `reset()` to invalidate in-flight fetches).
@@ -198,6 +212,8 @@ final class ActivityModel {
         loadedEndpoint = nil
         consecutiveFailures = 0
         earlierShown = 0
+        attention = [:]
+        failingSince = nil
     }
 
     /// Clears a surfaced refresh-error banner (a failed refresh over a list that
@@ -251,7 +267,7 @@ final class ActivityModel {
         if let loaded = result.openFolders { openFolders = loaded; openFoldersLoaded = true }
         if let loaded = result.conversations { conversations = loaded }
         if let loaded = result.groups { groups = loaded }
-        AttentionStore.shared.update(result.attention)
+        takeAttention(result.attention)
 
         if result.anySucceeded {
             hasLoaded = true
@@ -259,6 +275,7 @@ final class ActivityModel {
             lastRefreshed = Date()
             savedCopyDate = nil
             consecutiveFailures = 0
+            failingSince = nil
             linkStatus?.pulseSucceeded()
             if result.conversations != nil {
                 saveLists(client: client, attention: result.attention)
@@ -272,10 +289,20 @@ final class ActivityModel {
             consecutiveFailures += 1
             linkStatus?.pulseFailed(unreachable: result.unreachable)
             let capsuleSaysIt = result.unreachable && linkStatus != nil
-            if !hasLoaded || (consecutiveFailures >= Self.failuresBeforeAlerting && !capsuleSaysIt) {
+            let persists = !hasLoaded || consecutiveFailures >= Self.failuresBeforeAlerting
+            if persists, failingSince == nil { failingSince = Date() }
+            if !hasLoaded || (persists && !capsuleSaysIt) {
                 error = result.message
             }
         }
+    }
+
+    /// Keep the attention snapshot a load brought (nil: the fetch failed,
+    /// the last one stays).
+    private func takeAttention(_ snapshot: [Int: String]?) {
+        guard let snapshot else { return }
+        if attention != snapshot { attention = snapshot }
+        if publishesAttention { AttentionStore.shared.update(snapshot) }
     }
 
     /// Nothing loaded yet: show the saved lists at once, with their date,
@@ -292,7 +319,7 @@ final class ActivityModel {
         }
         conversations = saved.conversations
         groups = saved.groups
-        AttentionStore.shared.update(saved.attention)
+        takeAttention(saved.attention)
         hasLoaded = true
         error = nil
         lastRefreshed = saved.savedAt

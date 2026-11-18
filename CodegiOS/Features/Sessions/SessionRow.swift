@@ -33,12 +33,24 @@ struct SessionRow: View {
     /// follows `conversation.isPinned`.
     var onTogglePin: (() -> Void)?
     var style: SessionRowStyle = .card
+    /// Activity's All Servers feed: the server the session is on, as a
+    /// caption under the details line. Nil in a list of one server.
+    var serverName: String?
+    /// Where the row reads what waits on the user.
+    var attention: SessionRowAttention = .shared
+    /// The long-press actions (Fork Session, Pin, Move, Archive…) work on
+    /// the selected server. A row of another server (All Servers) offers
+    /// Open and Copy Title only.
+    var offersSessionActions = true
 
     @ScaledMetric(relativeTo: .headline) private var avatarSize: CGFloat = 34
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// The app's session actions (Fork Session, Pin, Archive Folder); absent
     /// in previews and the screenshot tests.
-    @Environment(SessionActions.self) private var actions: SessionActions?
+    @Environment(SessionActions.self) private var environmentActions: SessionActions?
+
+    /// The session actions, when this row's server is the one they work on.
+    private var actions: SessionActions? { offersSessionActions ? environmentActions : nil }
 
     var body: some View {
         if let onTap {
@@ -147,6 +159,7 @@ struct SessionRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 titleLine
                 detailsLine
+                if let serverName { serverCaption(serverName) }
             }
         }
         .padding(.horizontal, style.contentInset)
@@ -226,6 +239,19 @@ struct SessionRow: View {
         }
     }
 
+    /// All Servers: which server the session is on.
+    private func serverCaption(_ name: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "desktopcomputer")
+                .font(.caption2)
+            Text(verbatim: name)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .foregroundStyle(Theme.textTertiary)
+    }
+
     /// Agent avatar with a status-tinted dot in the corner.
     private var avatar: some View {
         AgentAvatar(agent: conversation.agentType, size: avatarSize)
@@ -244,7 +270,12 @@ struct SessionRow: View {
     /// What the session is doing (fork `turn_state` / attention / limit pause),
     /// read from the shared attention snapshot so a row can say "Needs you".
     private var activity: SessionActivity {
-        SessionActivity.of(conversation, attention: AttentionStore.shared.kind(for: conversation.id))
+        let kind: String?
+        switch attention {
+        case .shared: kind = AttentionStore.shared.kind(for: conversation.id)
+        case .given(let given): kind = given
+        }
+        return SessionActivity.of(conversation, attention: kind)
     }
 
     /// The corner dot: the activity's colour when it says more than the review
@@ -317,11 +348,22 @@ struct SessionRow: View {
         parts.append(statusTag?.spoken ?? String(localized: "Idle"))
         parts.append(conversation.agentType.displayName)
         if let folderName { parts.append(String(localized: "folder \(folderName)")) }
+        if let serverName { parts.append(String(localized: "server \(serverName)")) }
         parts.append(RelativeTime.spoken(from: conversation.updatedAt))
         if conversation.isPinned { parts.append(String(localized: "pinned")) }
         if conversation.critical { parts.append(String(localized: "critical session")) }
         return parts.joined(separator: ", ")
     }
+}
+
+/// Where a ``SessionRow`` reads what waits on the user ("Needs you").
+enum SessionRowAttention: Equatable, Sendable {
+    /// The selected server's app-wide store (``AttentionStore``), which an
+    /// open session also updates.
+    case shared
+    /// The snapshot of the row's own server, for another server's row (All
+    /// Servers): conversation ids are only unique on one server.
+    case given(String?)
 }
 
 // MARK: - Style

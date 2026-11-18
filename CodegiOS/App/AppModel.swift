@@ -13,6 +13,8 @@ final class AppModel {
     /// App-wide pulse of the selected server (running sessions, recents,
     /// folders) — the poll-based stand-in for the future persistent event hub.
     let activity = ActivityModel()
+    /// The other saved servers' pulses, for Activity's All Servers feed.
+    let allServers = AllServersActivity()
     /// What waits on the user on the selected server ("Waiting for you").
     let pending = PendingItemsStore()
 
@@ -47,6 +49,87 @@ final class AppModel {
             resetServerScopedState()
             defaults.set(selectedServerID?.uuidString, forKey: Self.lastServerKey)
         }
+    }
+
+    // MARK: - Activity's servers
+
+    /// Activity's remembered choice (``ActivityScope``), nil until one is
+    /// made.
+    private(set) var activityScopeChoice: String?
+
+    /// What Activity shows: every server in one feed, or the selected one.
+    var activityScope: ActivityScope {
+        ActivityScope.resolve(saved: activityScopeChoice, serverCount: serverStore.servers.count)
+    }
+
+    var activityShowsAllServers: Bool { activityScope == .allServers }
+
+    /// Bumped by every change to the saved servers or their tokens, so the
+    /// All Servers pulses start over with fresh clients (a token edited in
+    /// place changes no server's URL).
+    private(set) var serversRevision = 0
+
+    /// The checked item of Activity's title menu. Setting it chooses All
+    /// Servers, or selects a server for the whole app, as the Chats title
+    /// does.
+    var activityChoice: ActivityChoice? {
+        get { ActivityChoice.current(scope: activityScope, selectedServerID: selectedServerID) }
+        set { if let newValue { chooseActivity(newValue) } }
+    }
+
+    func chooseActivity(_ choice: ActivityChoice) {
+        switch choice {
+        case .allServers:
+            rememberActivityScope(.allServers)
+        case .server(let id):
+            guard serverStore.servers.contains(where: { $0.id == id }) else { return }
+            rememberActivityScope(.selectedServer)
+            if selectedServerID != id { selectedServerID = id }
+        }
+    }
+
+    private func rememberActivityScope(_ scope: ActivityScope) {
+        activityScopeChoice = scope.rawValue
+        defaults.set(scope.rawValue, forKey: ActivityScope.defaultsKey)
+    }
+
+    /// The Activity tab's badge: the selected server's running sessions, or
+    /// every server's while All Servers is chosen.
+    var activityBadgeCount: Int {
+        guard activityShowsAllServers else { return activity.running.count }
+        return allServers.runningCount(servers: serverStore.servers, selectedID: selectedServerID,
+                                       selected: activity)
+    }
+
+    /// The saved servers besides the selected one, with their clients: what
+    /// All Servers polls besides the app-wide pulse. A server without its
+    /// token is left out.
+    func otherServerClients() -> [(id: UUID, client: CodegClient)] {
+        serverStore.servers.filter { $0.id != selectedServerID }.compactMap { server in
+            serverStore.client(for: server).map { (id: server.id, client: $0) }
+        }
+    }
+
+    /// All Servers' pull to refresh: every server at once.
+    func refreshAllServersActivity() async {
+        let client = selectedClient()
+        let others = otherServerClients()
+        async let selected: Void = activity.refresh(client: client)
+        async let rest: Void = allServers.refresh(others: others)
+        _ = await (selected, rest)
+    }
+
+    /// A row of the All Servers feed. On a server that isn't selected, that
+    /// server is selected first (the whole app follows, as from the Chats
+    /// title, and the stacks start over); then the session opens like any
+    /// Activity row, on top of the feed, so Back returns to it, still on All
+    /// Servers.
+    func openActivityRow(_ key: ActivityRowKey) {
+        if let server = key.server, server != selectedServerID {
+            guard serverStore.servers.contains(where: { $0.id == server }) else { return }
+            selectedServerID = server
+        }
+        open(.conversation(key.conversationID))
     }
 
     // MARK: - Regular-width (iPad) selection
@@ -159,6 +242,9 @@ final class AppModel {
         if let raw = defaults.string(forKey: Self.lastTabKey), let tab = AppTab(rawValue: raw) {
             self.selectedTab = tab
         }
+        self.activityScopeChoice = defaults.string(forKey: ActivityScope.defaultsKey)
+        allServers.snapshotCache = snapshotCache
+        allServers.connectivity = .shared
         actions.app = self
         // Talk asks what the session's sub-agents wait on from this list.
         TalkCenter.shared.pendingItems = pending
@@ -168,7 +254,10 @@ final class AppModel {
         activity.linkStatus = .shared
         sessionStore.summaryLookup = { id in activity.conversations.first { $0.id == id } }
         activity.onRefreshed = { [weak self] in self?.activityRefreshed() }
-        store.onChange = { [weak self] in self?.pruneTranscriptCache() }
+        store.onChange = { [weak self] in
+            self?.serversRevision &+= 1
+            self?.pruneTranscriptCache()
+        }
         pruneTranscriptCache()
     }
 

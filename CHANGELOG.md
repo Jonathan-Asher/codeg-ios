@@ -12,6 +12,30 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Activity for every server (1.4.10). With two or more servers saved, the
+  Activity title is a menu, as the Chats one is: All Servers, then each
+  server with a checkmark on the one shown, then Manage Servers…. Picking a
+  server selects it for the whole app, as from Chats. All Servers shows one
+  feed of every server's sessions, Running, Last 24 Hours and Earlier, most
+  recent first as before, with the server's name under each session. A tap
+  on a session of another server switches to that server and opens it; Back
+  returns to the feed, still on All Servers. When a server can't be reached,
+  say a laptop asleep on battery, the other servers' sessions still show,
+  its own stay as it last sent them, and a small note says "Couldn’t reach
+  MacBook Pro" with the time they are from; it can be dismissed until that
+  server answers and fails again. A single missed refresh stays silent.
+  While All Servers is chosen, the Activity tab's badge counts the running
+  sessions of every server. The choice is remembered; with two or more
+  servers and no choice made yet, Activity starts on All Servers. With one
+  server Activity looks as before. On iPad the Activity section of the split
+  view has the same menu and feed. The other servers are checked every 25
+  seconds, as the selected one is, only while All Servers is chosen and the
+  app is in front; the selected server's own check, which feeds the Folders
+  counts, Waiting for you and the rest, is unchanged. A session of another
+  server offers Open and Copy Title on a long press, since Fork, Pin, Move
+  and the rest act on the selected server. The No Server Selected screen now
+  points to the menu at the top instead of the Chats tab. Works with any
+  codeg server; nothing new is needed on it.
 - Pi's sub-agents, background jobs and the runs Pi starts by itself (1.4.9).
   A Pi `subagent` call is one card: the agent (with how many sub-agents a
   workflow ran), Running, Completed, Failed, Paused or Stopped and how long it

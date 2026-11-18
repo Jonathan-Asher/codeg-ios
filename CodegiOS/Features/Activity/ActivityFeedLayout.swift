@@ -17,22 +17,43 @@ enum ActivityFeedLayout {
         case earlier
     }
 
-    struct Section: Identifiable, Equatable {
+    /// One section's rows: sessions of one server, or ``ActivityRow``s,
+    /// which can come from several (All Servers).
+    struct Section<Row>: Identifiable {
         let kind: Kind
-        let rows: [ConversationSummary]
+        let rows: [Row]
         var id: Kind { kind }
     }
 
     /// `running`, `recent` and `earlier` arrive most recent first, as
     /// `ActivityModel` derives them; `earlier` holds only the rows asked for.
     /// Empty sections are dropped.
+    static func sections<Row>(
+        running: [Row],
+        recent: [Row],
+        earlier: [Row] = [],
+        newestAtBottom: Bool
+    ) -> [Section<Row>] {
+        layout(running: running, recent: recent, earlier: earlier, newestAtBottom: newestAtBottom)
+    }
+
+    /// One server's sessions (also lets `[]` stand for no rows).
     static func sections(
         running: [ConversationSummary],
         recent: [ConversationSummary],
         earlier: [ConversationSummary] = [],
         newestAtBottom: Bool
-    ) -> [Section] {
-        var sections: [Section] = []
+    ) -> [Section<ConversationSummary>] {
+        layout(running: running, recent: recent, earlier: earlier, newestAtBottom: newestAtBottom)
+    }
+
+    private static func layout<Row>(
+        running: [Row],
+        recent: [Row],
+        earlier: [Row],
+        newestAtBottom: Bool
+    ) -> [Section<Row>] {
+        var sections: [Section<Row>] = []
         if !running.isEmpty { sections.append(Section(kind: .running, rows: running)) }
         if !recent.isEmpty { sections.append(Section(kind: .recent, rows: recent)) }
         if !earlier.isEmpty { sections.append(Section(kind: .earlier, rows: earlier)) }
@@ -104,6 +125,8 @@ struct BottomPin: Equatable, Sendable {
         isPinned = true
     }
 }
+
+extension ActivityFeedLayout.Section: Equatable where Row: Equatable {}
 
 // MARK: - The newest end
 

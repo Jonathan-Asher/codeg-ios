@@ -9,6 +9,10 @@ import UIKit
 /// in between (Activity favors immediacy — it's backed by a periodic poll that
 /// keeps the list live). The list itself is ``ActivityFeed``, which takes plain
 /// data so it can also be rendered with sample sessions.
+///
+/// With two or more servers the title is a menu (``ActivitySwitcher``): All
+/// Servers, one feed of every server (``AllServersSource``), or one server,
+/// which selects it for the whole app as the Chats title does.
 struct ActivityView: View {
     let activity: ActivityModel
     let client: CodegClient?
@@ -19,6 +23,11 @@ struct ActivityView: View {
     var newestRequest = 0
     /// The feed left its newest end, or came back to it.
     var onAwayFromNewest: (Bool) -> Void = { _ in }
+    /// The title menu. Nil: the plain "Activity" title (one server).
+    var switcher: ActivitySwitcher? = nil
+    /// All Servers is chosen: every server's sessions in one feed. Nil: the
+    /// selected server's (`activity`).
+    var allServers: AllServersSource? = nil
     let onOpen: (Int) -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -27,10 +36,14 @@ struct ActivityView: View {
     var body: some View {
         ZStack {
             CodegBackground()
-            content
+            if let allServers {
+                allServersContent(allServers)
+            } else {
+                content
+            }
         }
         .connectionCapsule()
-        .screenTitle("Activity", compact: horizontalSizeClass == .compact)
+        .modifier(ActivityTitle(compact: horizontalSizeClass == .compact, switcher: switcher))
         // No explicit refresh button — pull-to-refresh and the background
         // activity pulse keep this current.
         .task {
@@ -42,13 +55,20 @@ struct ActivityView: View {
 
     // MARK: - Content states
 
+    /// With the title menu, the empty state offers Manage Servers too.
+    private var manageTitle: LocalizedStringKey? {
+        switcher == nil ? nil : "Manage Servers"
+    }
+
     private var content: some View {
         Group {
             if client == nil {
                 EmptyStateView(
                     icon: "server.rack",
                     title: "No Server Selected",
-                    message: "Pick a server in the Chats tab to see its activity."
+                    message: "Pick a server from the menu at the top to see its activity.",
+                    actionTitle: manageTitle,
+                    action: switcher?.onManage
                 )
             } else if !activity.hasLoaded, activity.isRefreshing {
                 LoadingView(label: "Checking activity…")
@@ -81,6 +101,197 @@ struct ActivityView: View {
         .transition(.opacity)
         .animation(Theme.Motion.content, value: activity.hasLoaded)
     }
+
+    /// All Servers: the feed shows once any server has given its lists; a
+    /// server that can't be reached gets a note instead of blanking it.
+    private func allServersContent(_ source: AllServersSource) -> some View {
+        let feed = source.model.feed(servers: source.servers, selectedID: source.selectedServerID,
+                                     selected: activity)
+        return Group {
+            if !feed.hasLoaded {
+                if let error = feed.firstError, !feed.isRefreshing {
+                    InlineErrorView(message: error) {
+                        Task { await source.onRefresh() }
+                    }
+                } else {
+                    LoadingView(label: "Checking activity…")
+                }
+            } else {
+                ActivityFeed(
+                    running: feed.running,
+                    recent: feed.recent,
+                    earlier: Array(feed.earlier.prefix(source.model.earlierShown)),
+                    earlierTotal: feed.earlier.count,
+                    // The session opened last is on the selected server.
+                    markedKey: markedConversationID.map {
+                        ActivityRowKey(server: source.selectedServerID, conversationID: $0)
+                    },
+                    lastRefreshed: feed.lastRefreshed,
+                    // Each server's failure is a note of its own.
+                    error: nil,
+                    notices: feed.notices,
+                    onOpenRow: { source.onOpen($0.id) },
+                    onRefresh: source.onRefresh,
+                    onDismissError: {},
+                    onDismissNotice: { source.model.dismiss($0) },
+                    onShowEarlier: { source.model.showMoreEarlier(total: feed.earlier.count) },
+                    newestAtBottom: appearance.newestAtBottom,
+                    newestRequest: newestRequest,
+                    onAwayFromNewest: onAwayFromNewest
+                )
+            }
+        }
+        .transition(.opacity)
+        .animation(Theme.Motion.content, value: feed.hasLoaded)
+    }
+}
+
+/// Activity's title menu: All Servers (with two or more servers), each
+/// saved server with a checkmark on the current choice, then Manage
+/// Servers….
+struct ActivitySwitcher {
+    let servers: [ServerProfile]
+    /// The checked item; setting it chooses All Servers or selects a server.
+    let choice: Binding<ActivityChoice?>
+    let onManage: () -> Void
+
+    /// What the title says after "Activity": All Servers or the server.
+    var choiceName: String? {
+        switch choice.wrappedValue {
+        case .allServers: return String(localized: "All Servers")
+        case .server(let id): return servers.first { $0.id == id }.map { Self.short($0.name) }
+        case nil: return nil
+        }
+    }
+
+    /// A long server name, cut short for the title bar.
+    static func short(_ name: String, limit: Int = 24) -> String {
+        name.count > limit ? String(name.prefix(limit - 1)) + "…" : name
+    }
+}
+
+/// The All Servers feed's data and actions.
+struct AllServersSource {
+    let model: AllServersActivity
+    let servers: [ServerProfile]
+    let selectedServerID: UUID?
+    /// A row was tapped: its server is selected first when it isn't.
+    let onOpen: (ActivityRowKey) -> Void
+    /// Every server at once (pull to refresh, Try Again).
+    let onRefresh: () async -> Void
+}
+
+/// "Activity" as the screen title, or, with the switcher, the leading title
+/// menu (as on the Chats root): the menu draws the title, so the system one
+/// is left empty.
+struct ActivityTitle: ViewModifier {
+    let compact: Bool
+    let switcher: ActivitySwitcher?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let switcher {
+            let noTitle = ""
+            content
+                .navigationTitle(noTitle)
+                .toolbarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        ActivityTitleMenu(switcher: switcher)
+                    }
+                }
+        } else {
+            content.screenTitle("Activity", compact: compact)
+        }
+    }
+}
+
+struct ActivityTitleMenu: View {
+    let switcher: ActivitySwitcher
+
+    var body: some View {
+        Menu {
+            Picker("Server", selection: switcher.choice) {
+                ForEach(ActivityChoice.options(serverIDs: switcher.servers.map(\.id)), id: \.self) { choice in
+                    item(choice).tag(Optional(choice))
+                }
+            }
+            .pickerStyle(.inline)
+            Divider()
+            // Plain text (no icon), as on the Chats title: a menu draws a
+            // button's icon on the trailing edge, opposite the checkmarks.
+            Button("Manage Servers…", action: switcher.onManage)
+        } label: {
+            HStack(spacing: 6) {
+                Text("Activity")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(Theme.textPrimary)
+                if let name = switcher.choiceName {
+                    Text(verbatim: name)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(1)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .fixedSize()
+        }
+        .accessibilityLabel(Text("Activity: \(switcher.choiceName ?? "")"))
+        .accessibilityHint("Switch server")
+    }
+
+    @ViewBuilder
+    private func item(_ choice: ActivityChoice) -> some View {
+        switch choice {
+        case .allServers:
+            Text("All Servers")
+        case .server(let id):
+            Text(verbatim: switcher.servers.first { $0.id == id }?.name ?? "")
+        }
+    }
+}
+
+/// "Couldn't reach MacBook" over the All Servers feed: one server timed out
+/// (a laptop asleep on battery, say) while the others' rows show. Its own
+/// rows stay as it last gave them, with their time. Dismissed, it stays
+/// away until that server answers and fails again.
+struct ServerUnreachableNote: View {
+    let notice: ActivityServerNotice
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.caption)
+                .foregroundStyle(Theme.warning)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Couldn’t reach \(notice.serverName)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                if let date = notice.lastRefreshed {
+                    Text("Showing its sessions from \(LastUpdatedLine.text(for: date))")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .padding(4)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Theme.bgElevated, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+        .hairlineBorder(Theme.Radius.md)
+    }
 }
 
 /// The Activity list: directly-tappable session cards under tinted "Running" /
@@ -94,31 +305,107 @@ struct ActivityView: View {
 /// banner moves to the bottom with the newest rows and "Updated …" to the top.
 struct ActivityFeed: View {
     /// Running sessions, most recently updated first.
-    let running: [ConversationSummary]
+    let running: [ActivityRow]
     /// Sessions touched in the last 24 hours, most recently updated first.
-    let recent: [ConversationSummary]
+    let recent: [ActivityRow]
     /// Older sessions listed so far ("Earlier"), most recent first.
-    var earlier: [ConversationSummary] = []
+    let earlier: [ActivityRow]
     /// How many older sessions there are in all.
-    var earlierTotal: Int = 0
-    let folderNames: [Int: String]
+    let earlierTotal: Int
     /// The session that is open (iPad) or was opened last (iPhone); its row is
     /// marked.
-    var markedID: Int? = nil
+    let markedKey: ActivityRowKey?
     let lastRefreshed: Date?
     /// A failed refresh over a list that still has rows.
     let error: String?
-    let onOpen: (Int) -> Void
+    /// All Servers: the servers that couldn't be reached.
+    let notices: [ActivityServerNotice]
+    let onOpenRow: (ActivityRow) -> Void
     let onRefresh: () async -> Void
     let onDismissError: () -> Void
+    let onDismissNotice: (ActivityServerNotice) -> Void
     /// Lists the next page of older sessions.
-    var onShowEarlier: () -> Void = {}
+    let onShowEarlier: () -> Void
     /// Oldest at the top, the most recent session at the bottom.
-    var newestAtBottom: Bool = false
+    let newestAtBottom: Bool
     /// Bumped to bring the feed to its newest end.
-    var newestRequest = 0
+    let newestRequest: Int
     /// The feed left its newest end, or came back to it.
-    var onAwayFromNewest: (Bool) -> Void = { _ in }
+    let onAwayFromNewest: (Bool) -> Void
+
+    /// Rows of any number of servers, keyed by server and conversation
+    /// (All Servers).
+    init(
+        running: [ActivityRow],
+        recent: [ActivityRow],
+        earlier: [ActivityRow] = [],
+        earlierTotal: Int = 0,
+        markedKey: ActivityRowKey? = nil,
+        lastRefreshed: Date?,
+        error: String?,
+        notices: [ActivityServerNotice] = [],
+        onOpenRow: @escaping (ActivityRow) -> Void,
+        onRefresh: @escaping () async -> Void,
+        onDismissError: @escaping () -> Void,
+        onDismissNotice: @escaping (ActivityServerNotice) -> Void = { _ in },
+        onShowEarlier: @escaping () -> Void = {},
+        newestAtBottom: Bool = false,
+        newestRequest: Int = 0,
+        onAwayFromNewest: @escaping (Bool) -> Void = { _ in }
+    ) {
+        self.running = running
+        self.recent = recent
+        self.earlier = earlier
+        self.earlierTotal = earlierTotal
+        self.markedKey = markedKey
+        self.lastRefreshed = lastRefreshed
+        self.error = error
+        self.notices = notices
+        self.onOpenRow = onOpenRow
+        self.onRefresh = onRefresh
+        self.onDismissError = onDismissError
+        self.onDismissNotice = onDismissNotice
+        self.onShowEarlier = onShowEarlier
+        self.newestAtBottom = newestAtBottom
+        self.newestRequest = newestRequest
+        self.onAwayFromNewest = onAwayFromNewest
+    }
+
+    /// One server's sessions.
+    init(
+        running: [ConversationSummary],
+        recent: [ConversationSummary],
+        earlier: [ConversationSummary] = [],
+        earlierTotal: Int = 0,
+        folderNames: [Int: String],
+        markedID: Int? = nil,
+        lastRefreshed: Date?,
+        error: String?,
+        onOpen: @escaping (Int) -> Void,
+        onRefresh: @escaping () async -> Void,
+        onDismissError: @escaping () -> Void,
+        onShowEarlier: @escaping () -> Void = {},
+        newestAtBottom: Bool = false,
+        newestRequest: Int = 0,
+        onAwayFromNewest: @escaping (Bool) -> Void = { _ in }
+    ) {
+        self.init(
+            running: ActivityRow.rows(running, folderNames: folderNames),
+            recent: ActivityRow.rows(recent, folderNames: folderNames),
+            earlier: ActivityRow.rows(earlier, folderNames: folderNames),
+            earlierTotal: earlierTotal,
+            markedKey: markedID.map { ActivityRowKey(server: nil, conversationID: $0) },
+            lastRefreshed: lastRefreshed,
+            error: error,
+            onOpenRow: { onOpen($0.conversation.id) },
+            onRefresh: onRefresh,
+            onDismissError: onDismissError,
+            onShowEarlier: onShowEarlier,
+            newestAtBottom: newestAtBottom,
+            newestRequest: newestRequest,
+            onAwayFromNewest: onAwayFromNewest
+        )
+    }
 
     /// Bumped only when a user pull-to-refresh completes, so the soft landing
     /// haptic fires on the pull — not on the initial programmatic load.
@@ -138,7 +425,7 @@ struct ActivityFeed: View {
     private static let topID = "activity-top"
     private static let bottomID = "activity-bottom"
 
-    private var sections: [ActivityFeedLayout.Section] {
+    private var sections: [ActivityFeedLayout.Section<ActivityRow>] {
         ActivityFeedLayout.sections(running: running, recent: recent, earlier: earlier,
                                     newestAtBottom: newestAtBottom)
     }
@@ -148,7 +435,7 @@ struct ActivityFeed: View {
     }
 
     /// Changes whenever a row is added, removed or moved.
-    private var rowIDs: [Int] { sections.flatMap { $0.rows.map(\.id) } }
+    private var rowIDs: [ActivityRowKey] { sections.flatMap { $0.rows.map(\.id) } }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -265,6 +552,9 @@ struct ActivityFeed: View {
                 dismiss: onDismissError
             )
         }
+        ForEach(notices) { notice in
+            ServerUnreachableNote(notice: notice, dismiss: { onDismissNotice(notice) })
+        }
     }
 
     @ViewBuilder
@@ -280,12 +570,15 @@ struct ActivityFeed: View {
 
     /// One directly-tappable session card (opens in a single tap), as in
     /// ``SearchView``'s result list and ``SessionSectionFullScreen``.
-    private func row(_ conversation: ConversationSummary) -> some View {
+    private func row(_ row: ActivityRow) -> some View {
         SessionRow(
-            conversation: conversation,
-            isSelected: conversation.id == markedID,
-            folderName: folderNames[conversation.folderId],
-            onTap: { onOpen(conversation.id) }
+            conversation: row.conversation,
+            isSelected: row.id == markedKey,
+            folderName: row.folderName,
+            onTap: { onOpenRow(row) },
+            serverName: row.serverName,
+            attention: row.attention,
+            offersSessionActions: row.offersSessionActions
         )
     }
 
@@ -359,7 +652,7 @@ struct ActivityFeed: View {
 
     /// A group header above its cards: a tinted circular badge + the section
     /// name + a count pill.
-    private func sectionHeader(_ section: ActivityFeedLayout.Section) -> some View {
+    private func sectionHeader(_ section: ActivityFeedLayout.Section<ActivityRow>) -> some View {
         let (title, icon, tint): (LocalizedStringKey, String, Color) = switch section.kind {
         case .running: ("Running", "waveform", Theme.accent)
         case .recent: ("Last 24 Hours", "clock.arrow.circlepath", Theme.textSecondary)
