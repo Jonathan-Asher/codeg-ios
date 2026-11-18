@@ -288,7 +288,7 @@ enum Fixtures {
                              nativeSteering: Bool = false, backgroundOutstanding: Int = 0,
                              pendingUserMessageID: String? = nil,
                              feedback: [(id: String, text: String)] = [],
-                             lastStopReason: String? = nil) -> String {
+                             lastStopReason: String? = nil, sideQuestion: Bool = false) -> String {
         var fields = [
             #""connection_id": "conn-1""#,
             #""conversation_id": 7"#,
@@ -313,6 +313,8 @@ enum Fixtures {
         if let lastStopReason {
             fields.append("\"last_stop_reason\": \(quoted(lastStopReason))")
         }
+        // The server leaves it out when false.
+        if sideQuestion { fields.append(#""side_question_supported": true"#) }
         return "{" + fields.joined(separator: ", ") + "}"
     }
 
@@ -320,11 +322,11 @@ enum Fixtures {
                          nativeSteering: Bool = false, backgroundOutstanding: Int = 0,
                          pendingUserMessageID: String? = nil,
                          feedback: [(id: String, text: String)] = [],
-                         lastStopReason: String? = nil) -> LiveSessionSnapshot {
+                         lastStopReason: String? = nil, sideQuestion: Bool = false) -> LiveSessionSnapshot {
         let json = snapshotJSON(status: status, liveText: liveText, awaitingBackground: awaitingBackground,
                                 nativeSteering: nativeSteering, backgroundOutstanding: backgroundOutstanding,
                                 pendingUserMessageID: pendingUserMessageID, feedback: feedback,
-                                lastStopReason: lastStopReason)
+                                lastStopReason: lastStopReason, sideQuestion: sideQuestion)
         return try! CodegJSON.decoder.decode(LiveSessionSnapshot.self, from: Data(json.utf8))
     }
 

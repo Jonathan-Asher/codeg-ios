@@ -56,6 +56,10 @@ final class SessionDetailViewModel {
     /// slash commands). Pure-text inserts — no live connection required.
     let insertModel: ComposeInsertModel
 
+    /// The session's side questions (`/btw`): asked from the message bar,
+    /// shown above it or in a sheet, never part of the conversation.
+    let sideQuestions: SideQuestionModel
+
     // MARK: - Observable state
 
     private(set) var phase: LoadPhase = .loading
@@ -384,6 +388,10 @@ final class SessionDetailViewModel {
     /// the native `_session/steering` channel (snapshot
     /// `native_steering_available`, or an `awaiting_background` event).
     private(set) var nativeSteeringAvailable = false
+    /// The live connection's adapter answers side questions, as its snapshot
+    /// (`side_question_supported`) or `codeg_extensions` said; nil until a
+    /// live connection that has started up said.
+    @ObservationIgnored private var sideQuestionLive: Bool?
     /// The prompting turn is held open only for background work: the agent
     /// answered and is idle, and a message is delivered at once.
     private(set) var awaitingBackground = false {
@@ -675,6 +683,7 @@ final class SessionDetailViewModel {
         // is initialized.
         self.agentOptions = AgentOptionsModel(client: client)
         self.insertModel = ComposeInsertModel(client: client)
+        self.sideQuestions = SideQuestionModel(client: client)
         self.presenceReporter = SessionPresenceReporter(baseURL: client.baseURL, token: client.token)
         // Apply actions resolve (and cache) the same chat connection the send
         // flow uses, so a mode/config change targets the agent the next prompt
@@ -722,6 +731,10 @@ final class SessionDetailViewModel {
             guard let self, let id = self.conversationID else { return [] }
             return try await self.client.sessionSnapshot(conversationId: id)?.availableCommands ?? []
         }
+        sideQuestions.target = { [weak self] in
+            SideQuestionModel.Target(connectionId: self?.connectionID, conversationId: self?.conversationID)
+        }
+        sideQuestions.onUnsupported = { [weak self] question in self?.sideQuestionRefused(question) }
         connectivityObservation = self.connectivity.observe { [weak self] event in
             self?.connectivityChanged(event)
         }
@@ -1637,7 +1650,7 @@ final class SessionDetailViewModel {
     func send(overrideText: String? = nil) {
         if let overrideText {
             startSend(text: overrideText, attachments: [], fromComposer: false)
-        } else {
+        } else if !takeSideQuestion() {
             startSend(text: draft, attachments: attachments, fromComposer: true)
         }
     }
@@ -2850,6 +2863,9 @@ final class SessionDetailViewModel {
             ForkCapabilities.shared.note(agent: agentTypeForUI, forks: supported, whileRunning: whileRunning,
                                          client: client)
 
+        case .codegExtensions(let sideQuestion, _):
+            noteSideQuestionSupport(sideQuestion, settled: true)
+
         case .sessionLoadFailed(_, _, let code):
             sessionLoadFailed(code: code, live: live)
 
@@ -2917,6 +2933,8 @@ final class SessionDetailViewModel {
         if snap.nativeSteeringAvailable { nativeSteeringAvailable = true }
         ForkCapabilities.shared.note(agent: agentTypeForUI, forks: snap.forkSupported,
                                      whileRunning: snap.forkWhileRunning, client: client)
+        noteSideQuestionSupport(snap.sideQuestionSupported,
+                                settled: snap.status == .connected || snap.status == .prompting)
         awaitingBackground = snap.awaitingBackground && snap.status == .prompting
         backgroundOutstanding = snap.backgroundOutstanding
         if awaitingBackground { drainIntoHeldTurnIfPossible() }
@@ -3624,11 +3642,82 @@ final class SessionDetailViewModel {
     /// held turn, or the queue while the agent is really replying.
     func sendFromComposer() {
         guard historyUnavailable == nil else { return }
+        if takeSideQuestion() { return }
         switch composerSendRoute {
         case .send: send()
         case .deliver: insertIntoTurn()
         case .enqueue: queueDraft()
         }
+    }
+
+    // MARK: - Side questions
+
+    /// What this session does with `/btw` (see ``SideQuestionSupport``).
+    var sideQuestionSupport: SideQuestionSupport {
+        SideQuestionSupport.resolve(
+            live: sideQuestionLive,
+            remembered: SideQuestionCapabilities.shared.answers(agentTypeForUI, client: client),
+            agent: agentTypeForUI)
+    }
+
+    /// Said when `/btw` stays in the message bar because the session can't
+    /// answer side questions.
+    static var sideQuestionUnsupportedNotice: String {
+        String(localized: "This agent can’t answer /btw side questions.")
+    }
+
+    /// Said when `/btw` is typed in a new session before its first message.
+    static var sideQuestionNotStartedNotice: String {
+        String(localized: "Side questions work once the session has started.")
+    }
+
+    /// `/btw …` in the message bar is a side question, never a message: it
+    /// goes to the side question panel whatever the session is doing, never
+    /// to the agent as a prompt, into the queue or into the running turn,
+    /// whichever way the message bar sends. Asked, its text leaves the
+    /// message bar; attachments stay, they were put there for a message.
+    /// Where the session can't answer one, the text stays and a notice says
+    /// so. True when the draft was a side question.
+    private func takeSideQuestion() -> Bool {
+        guard let command = SideQuestionCommand.parse(draft) else { return false }
+        guard conversationID != nil || connectionID != nil else {
+            notice = Self.sideQuestionNotStartedNotice
+            return true
+        }
+        guard sideQuestionSupport == .supported else {
+            notice = Self.sideQuestionUnsupportedNotice
+            return true
+        }
+        if notice == Self.sideQuestionUnsupportedNotice || notice == Self.sideQuestionNotStartedNotice {
+            notice = nil
+        }
+        draft = ""
+        if command.question.isEmpty {
+            sideQuestions.reopen()
+        } else {
+            sideQuestions.ask(command.question)
+        }
+        return true
+    }
+
+    /// The server can't answer side questions for this session after all (an
+    /// older codeg, or an adapter that doesn't offer them): remembered, the
+    /// question back in the message bar if nothing was typed since, and the
+    /// notice.
+    private func sideQuestionRefused(_ question: String) {
+        sideQuestionLive = false
+        SideQuestionCapabilities.shared.note(agent: agentTypeForUI, answers: false, client: client)
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft = "/btw " + question }
+        notice = Self.sideQuestionUnsupportedNotice
+    }
+
+    /// What a live connection says about side questions. A `false` counts
+    /// only once its adapter has started (`settled`): before that the server
+    /// hasn't heard the adapter's capabilities yet.
+    private func noteSideQuestionSupport(_ supported: Bool, settled: Bool) {
+        guard supported || settled else { return }
+        sideQuestionLive = supported
+        SideQuestionCapabilities.shared.note(agent: agentTypeForUI, answers: supported, client: client)
     }
 
     /// Send what the person said in Talk: a prompt when the session is idle,
@@ -3673,6 +3762,7 @@ final class SessionDetailViewModel {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let sending = attachments
         guard !text.isEmpty || !sending.isEmpty, historyUnavailable == nil else { return }
+        if takeSideQuestion() { return }
         if let waiting = attachmentsNotReadyNotice {
             notice = waiting
             return
@@ -3696,6 +3786,7 @@ final class SessionDetailViewModel {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let sending = attachments
         guard !text.isEmpty || !sending.isEmpty, historyUnavailable == nil else { return }
+        if takeSideQuestion() { return }
         if let waiting = attachmentsNotReadyNotice {
             notice = waiting
             return
@@ -4145,6 +4236,8 @@ final class SessionDetailViewModel {
         case .forkSupported(let supported, let whileRunning):
             ForkCapabilities.shared.note(agent: agentTypeForUI, forks: supported, whileRunning: whileRunning,
                                          client: client)
+        case .codegExtensions(let sideQuestion, _):
+            noteSideQuestionSupport(sideQuestion, settled: true)
         default:
             // Out-of-turn text and the like: the turns above carry it.
             break
@@ -4334,6 +4427,7 @@ final class SessionDetailViewModel {
         consumerTask = nil
         agentOptions.teardown()
         insertModel.teardown()
+        sideQuestions.teardown()
         closeStream()
     }
 

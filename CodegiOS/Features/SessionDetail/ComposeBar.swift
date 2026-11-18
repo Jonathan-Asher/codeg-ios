@@ -128,6 +128,11 @@ struct ComposeBar: View {
     private var hasDraftWhileBusy: Bool {
         (hasText || !attachments.isEmpty) && isInFlight
     }
+    /// The draft is a `/btw` side question: one send whatever the turn is
+    /// doing, since it never goes into the turn or the queue.
+    private var isSideQuestion: Bool {
+        SideQuestionCommand.parse(text) != nil
+    }
     private var remainingSlots: Int {
         max(0, AttachmentPrep.maxCount - attachments.count)
     }
@@ -398,7 +403,21 @@ struct ComposeBar: View {
     /// current turn or queue for its end. Otherwise: queue.
     @ViewBuilder
     private var busySendButton: some View {
-        if steering.deliverNow {
+        if isSideQuestion {
+            Button {
+                sendHaptic &+= 1
+                onSend()
+            } label: {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 16, weight: .bold))
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.glassProminent)
+            .tint(Theme.accent)
+            .clipShape(Circle())
+            .transition(.scale.combined(with: .opacity))
+            .accessibilityLabel("Ask a side question")
+        } else if steering.deliverNow {
             Button {
                 sendHaptic &+= 1
                 onInsert()

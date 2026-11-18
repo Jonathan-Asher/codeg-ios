@@ -13583,6 +13583,149 @@
           }
         }
       }
+    },
+    "Side question" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "旁支问题"
+          }
+        }
+      }
+    },
+    "Not added to the conversation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不会加入对话"
+          }
+        }
+      }
+    },
+    "Earlier side question" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上一个旁支问题"
+          }
+        }
+      }
+    },
+    "Later side question" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下一个旁支问题"
+          }
+        }
+      }
+    },
+    "Copy answer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制回答"
+          }
+        }
+      }
+    },
+    "Answer copied" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已复制回答"
+          }
+        }
+      }
+    },
+    "No side questions yet. Type /btw and a question." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有旁支问题。输入 /btw 和问题。"
+          }
+        }
+      }
+    },
+    "Notice from the agent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "来自智能体的提示"
+          }
+        }
+      }
+    },
+    "The agent gave no answer." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "智能体没有给出回答。"
+          }
+        }
+      }
+    },
+    "The side question couldn’t be answered." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法回答这个旁支问题。"
+          }
+        }
+      }
+    },
+    "This agent can’t answer /btw side questions." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此智能体无法回答 /btw 旁支问题。"
+          }
+        }
+      }
+    },
+    "Side questions work once the session has started." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话开始后才能提问旁支问题。"
+          }
+        }
+      }
+    },
+    "Ask a side question" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提问旁支问题"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

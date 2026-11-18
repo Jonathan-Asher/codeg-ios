@@ -130,6 +130,10 @@ enum AcpEvent: Hashable, Sendable, Decodable {
     /// history, so it is looked up by id wherever it is drawn
     /// (``LiveToolCards``).
     case toolCard(toolCallId: String, meta: AnyJSON)
+    /// The codeg extensions the agent's adapter offers, once at initialize
+    /// and only from an adapter that offers one: `/btw` side questions
+    /// (``SideQuestionModel``) and prompt suggestions.
+    case codegExtensions(sideQuestion: Bool, promptSuggestions: Bool)
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -144,6 +148,7 @@ enum AcpEvent: Hashable, Sendable, Decodable {
         case modeId, modes, configOptions, configId, optionName, requested, actual, actualValue
         case supported, whileRunning
         case parentToolUseId, turns
+        case sideQuestion, promptSuggestions
     }
 
     init(from decoder: Decoder) throws {
@@ -307,6 +312,11 @@ enum AcpEvent: Hashable, Sendable, Decodable {
                 message: ((try? c.decodeIfPresent(String.self, forKey: .message)) ?? nil) ?? "",
                 code: ((try? c.decodeIfPresent(String.self, forKey: .code)) ?? nil) ?? ""
             )
+        case "codeg_extensions":
+            self = .codegExtensions(
+                sideQuestion: (try? c.decodeIfPresent(Bool.self, forKey: .sideQuestion)) ?? false,
+                promptSuggestions: (try? c.decodeIfPresent(Bool.self, forKey: .promptSuggestions)) ?? false
+            )
         case "tool_card":
             // A card this build can't read is no card, not a broken stream.
             if let id = (try? c.decodeIfPresent(String.self, forKey: .toolCallId)) ?? nil, !id.isEmpty,
@@ -425,6 +435,10 @@ struct LiveSessionSnapshot: Sendable, Decodable {
     /// sits, live or in history (``LiveToolCards``). Empty from an older
     /// server, and while nothing was launched.
     let toolCards: [ToolCardSnapshot]
+    /// The agent's adapter answers `/btw` side questions
+    /// (`side_question_supported`, from its `codeg_extensions`). The server
+    /// leaves it out when false, and an older server never sends it.
+    let sideQuestionSupported: Bool
 
     private enum CodingKeys: String, CodingKey {
         case connectionId, conversationId, folderId, status, externalId, eventSeq
@@ -435,6 +449,7 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         case forkSupported, forkWhileRunning
         case lastStopReason
         case toolCards
+        case sideQuestionSupported
     }
 
     private struct PendingUserMessageRef: Decodable {
@@ -467,6 +482,7 @@ struct LiveSessionSnapshot: Sendable, Decodable {
         forkWhileRunning = (try? c.decodeIfPresent(Bool.self, forKey: .forkWhileRunning)) ?? nil
         lastStopReason = (try? c.decodeIfPresent(String.self, forKey: .lastStopReason)) ?? nil
         toolCards = ToolCardSnapshot.lenientList(c, forKey: .toolCards)
+        sideQuestionSupported = (try? c.decodeIfPresent(Bool.self, forKey: .sideQuestionSupported)) ?? false
     }
 }
 

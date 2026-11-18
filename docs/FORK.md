@@ -2888,6 +2888,88 @@ The server side is codeg fork.230's `commands/lost_history.rs`.
   the phone now does; until then the phone's Fork Session during such a run
   is refused with the server's reason.
 
+### Side questions with /btw (1.4.11)
+
+`Models/SideQuestion.swift` (`SideQuestionCommand`, `SideQuestionRecord`,
+`SideQuestionSupport`), `Networking/CodegClient+SideQuestion.swift`,
+`Features/SessionDetail/SideQuestionModel.swift`, `SideQuestionPanel.swift`,
+and the side question lines of `SessionDetailViewModel` and `ComposeBar`.
+codeg's desktop is the reference: `src/lib/side-question.ts`,
+`src/hooks/use-side-question.ts`, `src/stores/side-question-store.ts`,
+`src/components/chat/side-question-panel.tsx` and the composer's
+`takeSideQuestion` in `message-input.tsx`; the server side is
+`acp/side_question.rs` and `web/handlers/side_question.rs`, the same in
+fork.243 and the upstream 0.45 merge.
+
+- **What counts.** A leading `/btw`, in any case, alone or followed by
+  whitespace. `/btwx`, `/btw?` and a `/btw` after other text are ordinary
+  messages. The desktop matches only lowercase; the phone takes any case.
+- **Never a message.** Send, Insert into current turn, Send when this turn
+  ends and a dictation's send all go through `takeSideQuestion()` first
+  (`send()`, `sendFromComposer()`, `insertIntoTurn()`, `queueDraft()`). A
+  side question leaves the message bar and goes to the panel; it never
+  becomes a prompt, a queued message or a message into the running turn, so
+  it is never in the transcript. Attachments stay in the bar. While a turn
+  runs, a `/btw` draft gets a plain send button ("Ask a side question")
+  instead of the insert/queue menu or the queue button.
+- **The endpoints.** `POST /api/acp_side_question {connectionId?,
+  conversationId?, question}` answers with the stored exchange,
+  `SideQuestionRecord` in camelCase: `id`, `conversationId`, `question`,
+  `answer` (null when the agent said nothing), `synthetic` (a notice from the
+  agent, not the model's words), `fallbackNotice`, `createdAt`. The server
+  runs it on the named connection when it is live and serves the
+  conversation, else on the conversation's live connection, else it reopens
+  the conversation's session; it sends the newest 20 stored exchanges along
+  as history, waits up to three minutes, then cancels the question on the
+  wire. The phone waits up to 8½ minutes, as the desktop does
+  (`CodegClient.sideQuestionSession`). `POST /api/acp_list_side_questions
+  {conversationId}` lists the stored exchanges, oldest first (newest 200).
+  There is no cancel endpoint: Cancel stops the phone waiting, and the
+  server may still finish and keep the answer in the history.
+  `acp_clear_side_questions` exists but the phone doesn't offer Clear.
+- **Who can answer.** The live snapshot's `side_question_supported` (left
+  out when false) and the `codeg_extensions` event (`side_question`,
+  `prompt_suggestions`), which the server sends once at initialize from an
+  adapter whose `agentCapabilities._meta.codeg.sideQuestion` is 1 or more:
+  codeg's Claude Code adapter (claude-agent-acp 0.102.0-codeg.3) and its Pi
+  adapter from the release after fork.243. A snapshot's `false` counts only
+  once the connection is `connected` or `prompting`, after the adapter
+  started. Without a live connection the phone goes by what a session of the
+  same agent on this server said (`SideQuestionCapabilities`), else it asks
+  for Claude Code and Pi and lets the server decide. Other agents get the
+  notice without a request.
+- **When it can't.** The text stays in the message bar and the notice says
+  "This agent can’t answer /btw side questions." A refusal from the server
+  (400 `invalid_input` "this agent cannot answer side questions", or 501
+  `not_implemented` from a server without the endpoint) takes the question
+  out of the panel, puts `/btw <question>` back in the bar when nothing was
+  typed since, shows the notice and is remembered for that agent on that
+  server. A new session before its first message says "Side questions work
+  once the session has started."
+- **The panel.** `SideQuestionHost` sits in the compose area just above the
+  message bar and carries its own sheet and animation, so the session
+  screen's modifier chain is unchanged. In a regular width (iPad) the panel
+  is a card above the bar, its body scrolling past 300 pt; in a compact
+  width (iPhone, a narrow iPad window) it is a sheet with medium and large
+  detents. Header: Side question, "Not added to the conversation", an
+  earlier/later pager with "2 / 3" when there are several, Copy for an
+  answered one (a check for a moment, and a VoiceOver announcement), Close.
+  Body: the question, then Thinking… with Cancel, the server's error with
+  Try Again, or the answer as Markdown (`MarkdownContent`) with "Notice from
+  the agent" over a synthetic one and the fallback note under it. `/btw`
+  alone opens it on the newest exchange, loading the conversation's stored
+  ones once. Closing it (or swiping the sheet down) leaves a question on its
+  way running; `/btw` shows it again.
+- **Tests.** `SideQuestionTests`: parsing (case, `/btwx`, mid-text, a later
+  line, bare `/btw`), the record, history, snapshot, event and refusal
+  payloads copied from the server code, support resolution, a mid-turn
+  `/btw` through Send, Send when this turn ends and Insert into current turn
+  with nothing queued, prompted or inserted, between turns with no
+  connection or turn started, `/btw` alone with the history, the notice for
+  a connection without side questions, for another agent and after a
+  server's refusal (kept text, typed-over text, remembered), Cancel, a
+  timeout with Try Again, and an answer the history already had.
+
 ## Session lists
 
 The Chats folder cards, a folder's full list, Activity and Search share one

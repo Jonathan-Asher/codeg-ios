@@ -12,6 +12,21 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- Side questions with `/btw` (1.4.11, 2026-11-18). Type `/btw` and a
+  question in a session's message bar to ask the agent something about the
+  session without adding to it: the answer comes from what the session
+  already knows, without tools, while the agent works or between turns. A
+  side question is never sent as a message, never waits in the queue, never
+  goes into the running turn and never shows in the conversation. On iPad
+  the answer shows as Markdown in a panel above the message bar; on iPhone
+  in a sheet. While it is on its way there is Cancel, and an answer has Copy.
+  `/btw` alone opens the earlier answers of the session, one step at a time.
+  A question that failed, say it got no answer in time, says why and has Try
+  Again. `/btwx` and a `/btw` after other text are ordinary messages. Works
+  with sessions whose agent answers side questions on the codeg server:
+  codeg's Claude Code today, and Pi from the next codeg release. Elsewhere
+  (other agents, an older server) the text stays in the message bar and a
+  note says the agent can't answer `/btw` side questions.
 - Activity for every server (1.4.10). With two or more servers saved, the
   Activity title is a menu, as the Chats one is: All Servers, then each
   server with a checkmark on the one shown, then Manage Servers…. Picking a

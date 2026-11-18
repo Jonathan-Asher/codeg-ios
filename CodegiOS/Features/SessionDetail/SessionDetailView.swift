@@ -709,6 +709,10 @@ struct SessionDetailView: View {
                     .transition(.opacity)
                     .zIndex(1)
             }
+            // `/btw` answers: a panel right above the bar on iPad, a sheet on
+            // iPhone. Never part of the conversation.
+            SideQuestionHost(model: model.sideQuestions,
+                             sideMargin: ComposeBar.sideMargin(focused: composeFocused))
             ComposeBar(
                 text: $model.draft,
                 isInFlight: model.isInFlight,
