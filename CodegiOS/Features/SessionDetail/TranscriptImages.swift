@@ -69,6 +69,12 @@ enum TranscriptImages {
     static func aspect(of image: ImageData) -> CGFloat? {
         let key = key(for: image)
         if let known = aspect(key) { return known }
+        // A preview says how large its full picture is.
+        if let info = image.fullImage, let width = info.width, let height = info.height, width > 0, height > 0 {
+            let ratio = CGFloat(width) / CGFloat(height)
+            noteAspect(ratio, key: key)
+            return ratio
+        }
         guard image.dataRef == nil, let size = ImageDimensions.size(ofBase64: image.data),
               size.width > 0, size.height > 0 else { return nil }
         let ratio = size.width / size.height
@@ -80,6 +86,15 @@ enum TranscriptImages {
     static func decode(base64: String, maxPixelSize: Int = maxPixelSize) async -> UIImage? {
         await Task.detached(priority: .userInitiated) {
             guard let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) else { return nil }
+            return downsample(data, maxPixelSize: maxPixelSize)
+        }.value
+    }
+
+    /// An image file to a decoded, downscaled picture, read and decoded on a
+    /// background thread.
+    static func decode(file: URL, maxPixelSize: Int = maxPixelSize) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return nil }
             return downsample(data, maxPixelSize: maxPixelSize)
         }.value
     }

@@ -35,6 +35,12 @@ To rename the app (for example, if App Store Connect rejects "Codeg Plus"),
 change `CODEG_DISPLAY_NAME` and run `xcodegen generate`. The App Store name
 itself is set on the App Store Connect app record.
 
+The app also registers `codeg`, the scheme of codeg's own session links
+(`codeg://session/<id>?server=<server>`, see
+[codeg:// session links](#codeg-session-links-1412)). Installed beside the
+upstream app, which registers `codeg` as well, iOS picks one of the two for
+those links.
+
 `Info.plist` also declares `ITSAppUsesNonExemptEncryption = NO`, because the app
 only uses the system's HTTPS/TLS. That skips the export-compliance question on
 every upload.
@@ -2969,6 +2975,94 @@ fork.243 and the upstream 0.45 merge.
   a connection without side questions, for another agent and after a
   server's refusal (kept text, typed-over text, remembered), Cancel, a
   timeout with Try Again, and an answer the history already had.
+
+### History pictures as previews (1.4.12)
+
+`Models/Message.swift` (`ImageData.fullImage`, `FullImageInfo`),
+`Networking/CodegClient+HistoryLoad.swift` (`conversationDetailTimed`,
+`fullImageData`, `HistoryLoadTiming`), `Features/SessionDetail/FullImages.swift`,
+the preview lines of `InlineImageView` (`ContentBlockView.swift`),
+`TranscriptSync` (`previewServers`, `overlap(_:upgradingImagesIn:…)`) and
+`SessionDetailViewModel` (`noteHistoryLoad`, `saveEdit`). The server side is
+codeg's `web/image_previews.rs` (branch `feat/image-previews`).
+
+- **Why.** Opening a session draws the saved copy, then reads the last 40
+  turns again. Screenshots in tool results travel inline as base64: one
+  session's last 20 turns were 1.8 MB, 97% of it three screenshots, all of it
+  over mobile data before the new messages showed, and written to the saved
+  copy again on every save (iOS flagged the app for excessive disk writes).
+- **Asking.** `get_folder_conversation` and `get_folder_conversation_turns`
+  send `imagePreviews: true`, always: a server without previews ignores the
+  key and sends the pictures whole, as before. `/api/health` says
+  `imagePreviews: 1` on a server that has them (kept per server in
+  `ServerIdentityStore`).
+- **The preview.** A picture over 32 KB of base64 comes as a JPEG of at most
+  512 pixels on its long side, aimed at 16 KB, with `full_image`: `ref` (the
+  path that serves the picture to an authenticated GET,
+  `/api/conversation_image/<conversation>/<id>`), `id` (a content hash, the
+  same on every read), `mime_type`, `bytes`, `width`, `height`, and
+  `placeholder: true` when the server couldn't decode it (then `data` is a
+  picture glyph and the transcript shows a "Picture · HEIC · 2 MB" row
+  instead). Smaller pictures come as they are.
+- **Opening it.** A tap opens the full-screen viewer on the full picture,
+  fetched once and kept in `Caches/HistoryImages` (192 MB, least recently
+  used out first, complete file protection like the transcripts). A preview
+  whose full picture is on the disk shows the full one inline.
+- **The saved copy** holds what the server sent: previews and their
+  references. A copy saved before the server had previews is read again
+  from its first turn holding a large picture whole, the first time it is
+  opened this launch on a server with previews (at most 400 turns), so it
+  shrinks.
+- **Edits.** An edited message's pictures are sent again whole: each
+  preview's full picture is fetched first (`FullImages.whole`), and
+  `Attachment(image:)` refuses a preview, so one is never sent as if it were
+  the picture.
+- **What a read cost.** Session Details shows "Last load": the body bytes
+  that crossed the network (task metrics, compressed), the time from sending
+  to the decoded answer, and, from a server that sends `Server-Timing:
+  app;dur=…` (with previews), the server's share and the rest (network and
+  decoding).
+- **Tests.** `ImagePreviewTests`: the wire shapes (a malformed reference
+  costs the link, not the picture), the opt-in on every history read, the
+  saved copy, the full picture fetched once then read from the disk, a
+  missing one, an edit's pictures sent whole, the one-time read of an old
+  copy, and `Server-Timing`.
+
+### codeg:// session links (1.4.12)
+
+`App/SessionLinks.swift` (`SessionLink`, `SessionLinkMatch`,
+`ServerIdentityStore`, `CodegClient.resolveSessionLink`) and
+`App/AppModel+SessionLinks.swift`. codeg's desktop is the reference:
+`docs/url-scheme.md`, `deep_link.rs` (`parse_deep_link`, `match_server`) and
+`instance_identity.rs`.
+
+- **The links.** `codeg://session/<id>?server=<server>` (codeg's id, or the
+  agent's own session id) and `codeg://workspace?conversationId=<id>&server=…`
+  (with an optional `folderId` and `agent` the session must have). Agents on
+  a codeg server write them into notes; the same link opens on the Mac and on
+  the phone. Read exactly as the desktop reads them: `server` as
+  `URLSearchParams` reads it (the first one, `+` a space, decoded, trimmed),
+  and a `server` over 255 characters or with a control character, a ref with
+  a slash, `codeg://open` and Harness links open nothing. The app's own
+  `codegplus://conversation/<id>` is unchanged.
+- **Which server.** Without `server`, the server shown. Otherwise, as the
+  desktop matches it, the first saved server whose instance id (from its
+  `/api/health`, learned each time the app comes to the front for the server
+  shown, and kept per server with the address it came from) is the value,
+  then whose saved name is (any case), then whose host is (alone, with its
+  port, or as a URL), then whose own instance name is. When none matches,
+  every saved server is asked who it is (six seconds at most) and matched
+  once more; still none is an "Unknown Server" alert.
+- **Which session.** `POST /api/resolve_session_link {sessionRef, folderId?,
+  agent?}` on that server: the session opens on it (the server is switched
+  as a notification does, and the session goes on top of the screen you
+  were on). `null` is a "Session Not Found" alert. A server from before
+  session links (501) opens codeg's own id directly; so does one that can't
+  be reached.
+- **Tests.** `SessionLinkTests`: the desktop's parse and match cases, what a
+  server said kept per address, and the whole path on two mock servers (an
+  instance id learned by asking, a link without `server`, a missing session,
+  an unknown server, an old server, and a link handed to the app).
 
 ## Session lists
 

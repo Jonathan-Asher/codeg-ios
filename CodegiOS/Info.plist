@@ -31,6 +31,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>$(CODEG_URL_SCHEME)</string>
+				<string>codeg</string>
 			</array>
 		</dict>
 	</array>

@@ -112,9 +112,12 @@ struct RootView: View {
         // Which fork endpoints the server has, and whether it moves sessions,
         // checked once per server, so a fork the server can't take is greyed
         // out, and Move to Project… hidden, before either is tapped.
+        // Also who the server is (for `codeg://` links naming it) and whether
+        // it sends history pictures as previews.
         .task(id: "\(activityPulseID)|fork") {
             guard scenePhase == .active, let client = model.selectedClient() else { return }
             await model.actions.probeServerCapabilities(client: client)
+            await model.learnSelectedServerIdentity()
         }
         .sheet(isPresented: $model.serversSheetPresented) {
             ManageServersSheet(store: model.serverStore, selectedServerID: $model.selectedServerID)

@@ -13726,6 +13726,149 @@
           }
         }
       }
+    },
+    "%@ in %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%2$@ 内载入 %1$@"
+          }
+        }
+      }
+    },
+    "%@ · server %@, network %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · 服务器 %2$@，网络 %3$@"
+          }
+        }
+      }
+    },
+    "Picture · %@ · %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图片 · %@ · %@"
+          }
+        }
+      }
+    },
+    "Last load" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上次载入"
+          }
+        }
+      }
+    },
+    "a picture of the message couldn’t be loaded" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "消息中的一张图片无法载入"
+          }
+        }
+      }
+    },
+    "Can’t Open the Session" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法打开会话"
+          }
+        }
+      }
+    },
+    "“%@” has no address or token saved." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“%@”没有保存地址或令牌。"
+          }
+        }
+      }
+    },
+    "“%@” couldn’t be reached." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法连接“%@”。"
+          }
+        }
+      }
+    },
+    "Add a server first, then open the link again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先添加服务器，然后再次打开此链接。"
+          }
+        }
+      }
+    },
+    "Unknown Server" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未知服务器"
+          }
+        }
+      }
+    },
+    "No saved server matches “%@”. Add it in Manage Servers, then open the link again." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有已保存的服务器与“%@”匹配。请在“管理服务器”中添加它，然后再次打开此链接。"
+          }
+        }
+      }
+    },
+    "Session Not Found" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未找到会话"
+          }
+        }
+      }
+    },
+    "The session this link names isn’t on “%@”. It may have been deleted." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此链接指向的会话不在“%@”上，可能已被删除。"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

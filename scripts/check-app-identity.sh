@@ -33,6 +33,8 @@ check() {
 check CFBundleIdentifier io.ashurov.codeg
 check CFBundleDisplayName "Codeg Plus"
 check CFBundleURLTypes:0:CFBundleURLSchemes:0 codegplus
+# codeg's session links (`codeg://session/<id>?server=…`).
+check CFBundleURLTypes:0:CFBundleURLSchemes:1 codeg
 check CodegURLScheme codegplus
 check ITSAppUsesNonExemptEncryption false
 

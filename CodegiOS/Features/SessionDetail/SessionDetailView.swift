@@ -208,6 +208,7 @@ struct SessionDetailView: View {
             if let summary = model.summary {
                 SessionDetailsSheet(summary: summary, stats: model.sessionStats, folder: model.folder,
                                     activity: model.activity, agentName: model.agentTypeForUI.displayName,
+                                    historyLoad: model.lastHistoryLoad,
                                     critical: model.criticalAction == nil ? nil : CriticalControls(
                                         isOn: model.summary?.critical == true,
                                         stall: model.summary?.criticalStall != false,
@@ -921,6 +922,8 @@ private struct SessionDetailsSheet: View {
     let folder: FolderDetail?
     let activity: SessionActivity
     let agentName: String
+    /// What the last history read cost, once there was one.
+    var historyLoad: HistoryLoadTiming?
     /// The "Critical session" switches, nil where not offered.
     var critical: CriticalControls?
     @Environment(\.dismiss) private var dismiss
@@ -996,6 +999,11 @@ private struct SessionDetailsSheet: View {
             DetailRow(label: "Created", value: Text(verbatim: summary.createdAt.formatted(date: .abbreviated, time: .shortened)))
             Divider().overlay(Theme.hairline)
             DetailRow(label: "Updated", value: Text(verbatim: summary.updatedAt.formatted(date: .abbreviated, time: .shortened)))
+            // Small print: what opening the session last cost.
+            if let historyLoad {
+                Divider().overlay(Theme.hairline)
+                DetailRow(label: "Last load", value: Text(verbatim: historyLoad.summary))
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 4)

@@ -108,6 +108,9 @@ final class SessionDetailViewModel {
     /// saved copy, or the one a kept screen held, while the server's is read
     /// (`syncExisting`), and why it couldn't be (``TranscriptFreshness``).
     private(set) var freshness: TranscriptFreshness = .current
+    /// What the last history read cost (bytes, time, the server's share),
+    /// for the session's details.
+    private(set) var lastHistoryLoad: HistoryLoadTiming?
     /// Reads of the detail by `syncExisting` on their way: the last one to
     /// fail is the one that says so.
     @ObservationIgnored private var freshnessReads = 0
@@ -923,7 +926,12 @@ final class SessionDetailViewModel {
             // The folder list comes on its own: the transcript is shown as
             // soon as it is in, not after a slower list.
             async let foldersReq = client.listFolders()
-            let outcome = try await TranscriptSync.fetch(client: client, id: id, held: held, overlap: overlap)
+            // Pictures a copy saved before the server had previews holds
+            // whole come again as previews, once.
+            let readOverlap = TranscriptSync.overlap(overlap, upgradingImagesIn: held, serverKey: cacheServerKey,
+                                                     conversationID: id)
+            let outcome = try await TranscriptSync.fetch(client: client, id: id, held: held, overlap: readOverlap)
+            noteHistoryLoad(outcome)
             let detail = outcome.detail
 
             summary = detail.summary
@@ -1116,7 +1124,17 @@ final class SessionDetailViewModel {
     /// Fetch what changed since the held window (`TranscriptSync`).
     private func fetchTranscript(id: Int, overlap: Int) async throws -> TranscriptSync.Outcome {
         let held: TranscriptWindow? = turns.isEmpty && turnsOffset == 0 ? nil : heldWindow
-        return try await TranscriptSync.fetch(client: client, id: id, held: held, overlap: overlap)
+        let outcome = try await TranscriptSync.fetch(client: client, id: id, held: held, overlap: overlap)
+        noteHistoryLoad(outcome)
+        return outcome
+    }
+
+    /// Keep what a history read cost, and that the server sends previews
+    /// when it sent one.
+    private func noteHistoryLoad(_ outcome: TranscriptSync.Outcome) {
+        guard let timing = outcome.timing else { return }
+        lastHistoryLoad = timing
+        if timing.previews > 0 { TranscriptSync.notePreviews(serverKey: cacheServerKey) }
     }
 
     /// Save the transcript for the next opening, shortly after the last change.
@@ -4915,14 +4933,23 @@ final class SessionDetailViewModel {
               let target = MessageEditRules.target(for: turnID, in: turns, hasOlderTurns: hasOlderTurns)
         else { throw MessageEditError.replyNotFound }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let images = MessageEditRules.images(message)
-        guard !trimmed.isEmpty || !images.isEmpty else {
+        let held = MessageEditRules.images(message)
+        guard !trimmed.isEmpty || !held.isEmpty else {
             throw MessageEditError.failed(String(localized: "there is nothing to send"))
         }
         // Checked again here, not left to the greyed-out item: both can change
         // while the editor is open.
         guard !editInFlight, !editTurnRunning, !editAwaitingPersist else { throw MessageEditError.busy }
         guard queuedMessages.isEmpty else { throw MessageEditError.queued }
+        // A picture the history holds as a preview goes again whole.
+        var images: [ImageData] = []
+        for image in held {
+            do {
+                images.append(try await FullImages.whole(image, client: client))
+            } catch {
+                throw MessageEditError.failed(String(localized: "a picture of the message couldn’t be loaded"))
+            }
+        }
 
         guard case .fork(let forkPoint, _) = target else {
             return .newConversation(NewSessionRequest(

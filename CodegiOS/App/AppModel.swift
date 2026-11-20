@@ -29,6 +29,10 @@ final class AppModel {
     /// environment.
     let actions: SessionActions
 
+    /// Who each saved server said it is (`/api/health`), for the `server=`
+    /// of `codeg://` session links.
+    @ObservationIgnored let serverIdentities: ServerIdentityStore
+
     /// Where the reader was in each session (pruned with the transcript cache).
     @ObservationIgnored private let readingPositions: ReadingPositionStore?
 
@@ -233,6 +237,7 @@ final class AppModel {
         self.sessions = sessionStore
         self.prefetcher = TranscriptPrefetcher(cache: transcriptCache)
         self.actions = SessionActions()
+        self.serverIdentities = ServerIdentityStore(defaults: defaults)
         self.snapshotCache = transcriptCache == nil ? nil : .shared
         // Restore the last-used server, falling back to the first. With servers
         // demoted out of the tab bar there is no "pick a server" landing screen
@@ -257,6 +262,7 @@ final class AppModel {
         store.onChange = { [weak self] in
             self?.serversRevision &+= 1
             self?.pruneTranscriptCache()
+            if let self { self.serverIdentities.prune(keeping: Set(self.serverStore.servers.map(\.id))) }
         }
         pruneTranscriptCache()
     }
@@ -383,6 +389,13 @@ final class AppModel {
     /// tab with a fresh, predictable stack (so Back always returns to that
     /// tab's root, not to wherever the user happened to be).
     func handle(url: URL) {
+        // A codeg session link (`codeg://session/<id>?server=…`), as the
+        // desktop app and the agents write them: that session, on the
+        // server it names.
+        if url.scheme?.lowercased() == SessionLink.scheme, SessionLink.parse(url.absoluteString) != nil {
+            Task { await openSessionLink(url) }
+            return
+        }
         guard AppIdentity.owns(url) else { return }
         if url.host?.lowercased() == "tab",
            url.pathComponents.count > 1,

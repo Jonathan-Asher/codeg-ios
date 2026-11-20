@@ -169,7 +169,11 @@ struct InlineImageView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let decoded {
+            if let info = image.fullImage, info.placeholder {
+                // No preview could be made of it (a format the server can't
+                // decode): what it is, and the full picture on a tap.
+                placeholderCard(info)
+            } else if let decoded {
                 Button(action: openFullScreen) {
                     Image(uiImage: decoded)
                         .resizable()
@@ -198,9 +202,13 @@ struct InlineImageView: View {
         .task(id: cacheKey) { await decode() }
     }
 
-    /// The picture full screen: zoom, share, save to Photos.
+    /// The picture full screen: zoom, share, save to Photos. A history
+    /// preview opens its full picture (from the disk cache, or the server).
     private func openFullScreen() {
-        if let ref = image.dataRef, let request = source?.request(for: ref) {
+        if let info = image.fullImage, let source {
+            let client = CodegClient(baseURL: source.baseURL, token: source.token)
+            MediaPresenter.shared.showImage(.fullImage(info, client: client))
+        } else if let ref = image.dataRef, let request = source?.request(for: ref) {
             MediaPresenter.shared.showImage(.reference(request, mimeType: image.mimeType))
         } else {
             MediaPresenter.shared.showImage(.inline(image))
@@ -224,6 +232,33 @@ struct InlineImageView: View {
         } else {
             estimatePlaceholder
         }
+    }
+
+    /// A picture the server sent no preview of: its type and size, opening
+    /// the full picture.
+    private func placeholderCard(_ info: FullImageInfo) -> some View {
+        let kind = MediaImageItem.fileExtension(forMIME: info.mimeType).uppercased()
+        let size = ByteCountFormatter.string(fromByteCount: Int64(info.bytes), countStyle: .file)
+        return Button(action: openFullScreen) {
+            HStack(spacing: 8) {
+                Image(systemName: "photo")
+                    .accessibilityHidden(true)
+                Text("Picture · \(kind) · \(size)")
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text("Open")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Theme.accent)
+            }
+            .font(.caption)
+            .foregroundStyle(Theme.textSecondary)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+            .background(Theme.surfaceNested, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+            .hairlineBorder(Theme.Radius.md, color: Theme.hairline)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens the picture full screen")
     }
 
     private var estimatePlaceholder: some View {
@@ -256,6 +291,16 @@ struct InlineImageView: View {
                 failed = false
                 return
             }
+        }
+        // A preview whose full picture was opened before: the full one, from
+        // the disk, is sharper.
+        if let info = image.fullImage, let source,
+           let file = FullImages.cachedFile(for: info, baseURL: source.baseURL),
+           let img = await TranscriptImages.decode(file: file) {
+            TranscriptImages.store(img, key: key)
+            decoded = img
+            failed = false
+            return
         }
         // Base64 decode, then a downscaled decode of the pixels, both off the
         // main thread. A by-reference picture's `data` is only a placeholder,

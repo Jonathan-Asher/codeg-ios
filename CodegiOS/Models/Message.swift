@@ -31,6 +31,81 @@ struct ImageData: Codable, Hashable, Sendable {
     /// it inline (`/api/live_image/<key>`, relative to the server). `data` is
     /// then a small placeholder picture.
     var dataRef: String? = nil
+    /// The picture this is a preview of, when the history read asked for
+    /// previews (`imagePreviews`): `data` is then a small JPEG (or, with
+    /// `placeholder`, a picture glyph), and the full picture is fetched from
+    /// `ref` when it is opened. Nil for a picture sent whole.
+    var fullImage: FullImageInfo? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case data, mimeType, uri, dataRef, fullImage
+    }
+}
+
+extension ImageData {
+    /// As synthesized, except that a malformed `fullImage` costs the
+    /// preview its link rather than the picture.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        data = try c.decode(String.self, forKey: .data)
+        mimeType = try c.decode(String.self, forKey: .mimeType)
+        uri = try c.decodeIfPresent(String.self, forKey: .uri)
+        dataRef = try c.decodeIfPresent(String.self, forKey: .dataRef)
+        fullImage = (try? c.decodeIfPresent(FullImageInfo.self, forKey: .fullImage)) ?? nil
+    }
+}
+
+/// The full picture behind a history preview (the server's `full_image`).
+struct FullImageInfo: Codable, Hashable, Sendable {
+    /// Path, relative to the server, that serves the picture to an
+    /// authenticated GET (`/api/conversation_image/<conversation>/<id>`).
+    let ref: String
+    /// A content hash: the same picture has the same id on every read.
+    let id: String
+    let mimeType: String
+    /// The picture's size in bytes.
+    let bytes: Int
+    let width: Int?
+    let height: Int?
+    /// `true` when the server could not make a preview: `data` is a glyph.
+    let placeholder: Bool
+
+    init(ref: String, id: String, mimeType: String, bytes: Int, width: Int? = nil, height: Int? = nil,
+         placeholder: Bool = false) {
+        self.ref = ref
+        self.id = id
+        self.mimeType = mimeType
+        self.bytes = bytes
+        self.width = width
+        self.height = height
+        self.placeholder = placeholder
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case ref, id, mimeType, bytes, width, height, placeholder
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ref = try c.decode(String.self, forKey: .ref)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ref
+        mimeType = try c.decodeIfPresent(String.self, forKey: .mimeType) ?? "image/png"
+        bytes = try c.decodeIfPresent(Int.self, forKey: .bytes) ?? 0
+        width = try c.decodeIfPresent(Int.self, forKey: .width)
+        height = try c.decodeIfPresent(Int.self, forKey: .height)
+        placeholder = try c.decodeIfPresent(Bool.self, forKey: .placeholder) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(ref, forKey: .ref)
+        try c.encode(id, forKey: .id)
+        try c.encode(mimeType, forKey: .mimeType)
+        try c.encode(bytes, forKey: .bytes)
+        try c.encodeIfPresent(width, forKey: .width)
+        try c.encodeIfPresent(height, forKey: .height)
+        if placeholder { try c.encode(true, forKey: .placeholder) }
+    }
 }
 
 extension ImageData {
@@ -77,7 +152,7 @@ enum ContentBlock: Hashable, Sendable, Codable {
     private enum CodingKeys: String, CodingKey {
         // NOTE: the decoder uses `.convertFromSnakeCase`, so wire keys arrive
         // here already camelCased — match them in camelCase.
-        case type, text, data, mimeType, uri, dataRef, revisedPrompt, image
+        case type, text, data, mimeType, uri, dataRef, fullImage, revisedPrompt, image
         case toolUseId, toolName, inputPreview, meta
         case outputPreview, isError, images
     }
@@ -95,7 +170,9 @@ enum ContentBlock: Hashable, Sendable, Codable {
                 data: try c.decodeIfPresent(String.self, forKey: .data) ?? "",
                 mimeType: try c.decodeIfPresent(String.self, forKey: .mimeType) ?? "image/png",
                 uri: try c.decodeIfPresent(String.self, forKey: .uri),
-                dataRef: try c.decodeIfPresent(String.self, forKey: .dataRef)
+                dataRef: try c.decodeIfPresent(String.self, forKey: .dataRef),
+                // A malformed one costs the preview its link, not the block.
+                fullImage: (try? c.decodeIfPresent(FullImageInfo.self, forKey: .fullImage)) ?? nil
             ))
         case "image_generation":
             self = .imageGeneration(
@@ -141,6 +218,7 @@ enum ContentBlock: Hashable, Sendable, Codable {
             try c.encode(image.mimeType, forKey: .mimeType)
             try c.encodeIfPresent(image.uri, forKey: .uri)
             try c.encodeIfPresent(image.dataRef, forKey: .dataRef)
+            try c.encodeIfPresent(image.fullImage, forKey: .fullImage)
         case .imageGeneration(let revisedPrompt, let image):
             try c.encode("image_generation", forKey: .type)
             try c.encodeIfPresent(revisedPrompt, forKey: .revisedPrompt)

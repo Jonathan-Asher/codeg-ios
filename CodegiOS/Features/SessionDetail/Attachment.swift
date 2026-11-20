@@ -172,9 +172,10 @@ private extension Data {
 extension Attachment {
     /// A picture a sent message carried, attached again to its edit: the
     /// same bytes, in the same format. Nil for a picture held only by
-    /// reference or one whose data doesn't decode.
+    /// reference, a history preview (``FullImages/whole(_:client:cache:)``
+    /// fetches the picture itself first), or one whose data doesn't decode.
     init?(image: ImageData, index: Int) {
-        guard image.dataRef == nil,
+        guard image.dataRef == nil, image.fullImage == nil,
               let data = Data(base64Encoded: image.data, options: .ignoreUnknownCharacters), !data.isEmpty
         else { return nil }
         let ext = image.mimeType.split(separator: "/").last.map(String.init) ?? "png"

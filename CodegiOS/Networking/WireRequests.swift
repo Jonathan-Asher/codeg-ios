@@ -56,18 +56,24 @@ struct ConversationIdBody: Encodable, Sendable {
 /// Body for `get_folder_conversation` with a turn window: at most one of
 /// `tailTurns` (the last N turns, from a user turn) and `fromIndex` (every
 /// turn from that global index). Absent keys are left out of the JSON.
+///
+/// `imagePreviews` asks for large inline pictures as small previews with a
+/// reference to the full one (``FullImageInfo``). A server without previews
+/// ignores the key and sends the pictures whole, as before.
 struct ConversationWindowBody: Encodable, Sendable {
     let conversationId: Int
     var tailTurns: Int?
     var fromIndex: Int?
+    var imagePreviews: Bool? = true
 }
 
 /// Body for `get_folder_conversation_turns`: up to `limit` turns ending just
-/// before `beforeIndex`.
+/// before `beforeIndex`, with pictures as previews where the server can.
 struct ConversationTurnsPageBody: Encodable, Sendable {
     let conversationId: Int
     let beforeIndex: Int
     let limit: Int
+    var imagePreviews: Bool? = true
 }
 
 /// Body for `create_conversation` — creates a server-side conversation row in

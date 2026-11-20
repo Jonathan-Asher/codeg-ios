@@ -623,8 +623,19 @@ struct ConversationConnectionInfo: Codable, Sendable {
     let eventSeq: UInt64
 }
 
-/// `health` endpoint response — used to validate a server profile.
+/// `health` endpoint response — used to validate a server profile, and to
+/// learn who the server is and what it offers (each field absent from a
+/// server that predates it).
 struct HealthResponse: Codable, Sendable {
     let status: String
     let version: String
+    /// The instance's stable id: what a `codeg://session/<id>?server=` link
+    /// it writes names it by.
+    var instanceId: String? = nil
+    /// The name the instance gives itself (`CODEG_INSTANCE_NAME`, or the
+    /// computer's name).
+    var instanceName: String? = nil
+    /// History reads take `imagePreviews` (its version), and the server
+    /// serves the full pictures behind them.
+    var imagePreviews: Int? = nil
 }

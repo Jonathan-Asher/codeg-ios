@@ -92,6 +92,39 @@ enum TranscriptSync {
         windowedServers.insert(serverKey)
     }
 
+    /// Servers (`TranscriptCache.serverKey`) known to send history pictures
+    /// as previews: their health says so, or a read brought a preview.
+    @MainActor private(set) static var previewServers: Set<String> = []
+
+    @MainActor static func notePreviews(serverKey: String) {
+        previewServers.insert(serverKey)
+    }
+
+    /// Conversations (`serverKey|id`) whose held pictures were already read
+    /// again as previews this launch.
+    @MainActor private static var previewUpgrades: Set<String> = []
+
+    /// The overlap a refresh on open uses: `overlap`, or, the first time
+    /// this launch on a server with previews, back to the first held turn
+    /// that still carries a large picture whole (a copy saved before the
+    /// server had previews), so those turns come again as previews and the
+    /// saved copy shrinks. Bounded, so a picture the server keeps whole
+    /// (its preview would be no smaller) costs one larger read, not one
+    /// per open.
+    @MainActor static func overlap(_ overlap: Int, upgradingImagesIn held: TranscriptWindow?,
+                                   serverKey: String, conversationID: Int) -> Int {
+        guard let held, previewServers.contains(serverKey) else { return overlap }
+        let key = "\(serverKey)|\(conversationID)"
+        guard !previewUpgrades.contains(key) else { return overlap }
+        previewUpgrades.insert(key)
+        guard let start = FullImages.firstWholeLargeImage(in: held) else { return overlap }
+        let serverEnd = held.offset + held.serverTurns.count
+        return max(overlap, min(serverEnd - start, maxUpgradeTurns))
+    }
+
+    /// The most turns an upgrade reads again.
+    static let maxUpgradeTurns = 400
+
     /// Turns asked for when nothing is held yet (the web client's default).
     static let tailTurns = 120
     /// Held turns fetched again when a session is opened from the cache or the
@@ -138,6 +171,9 @@ enum TranscriptSync {
         /// history before it); `false` for a fresh window or a whole
         /// transcript, which replace what was held.
         var continuesHeld: Bool
+        /// What the read cost (the last one, when a delta didn't join and a
+        /// fresh tail followed).
+        var timing: HistoryLoadTiming? = nil
     }
 
     /// Joins `response` (the answer to `request`) to `held`. `nil` when it
@@ -170,11 +206,16 @@ enum TranscriptSync {
     /// fresh tail window.
     static func fetch(client: CodegClient, id: Int, held: TranscriptWindow?, overlap: Int) async throws -> Outcome {
         let request = request(for: held, overlap: overlap)
-        let response = try await client.conversationDetail(id: id, window: request)
-        if let outcome = merge(held: held, request: request, response: response) { return outcome }
-        let fresh = try await client.conversationDetail(id: id, window: .tail(tailTurns))
+        let response = try await client.conversationDetailTimed(id: id, window: request)
+        if var outcome = merge(held: held, request: request, response: response.detail) {
+            outcome.timing = response.timing
+            return outcome
+        }
+        let fresh = try await client.conversationDetailTimed(id: id, window: .tail(tailTurns))
         // A tail request never fails to "join".
-        return merge(held: nil, request: .tail(tailTurns), response: fresh)!
+        var outcome = merge(held: nil, request: .tail(tailTurns), response: fresh.detail)!
+        outcome.timing = fresh.timing
+        return outcome
     }
 
     /// The page before `held` joined in front of it, or `nil` when it doesn't

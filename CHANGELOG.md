@@ -12,6 +12,19 @@ the text as the git tag message and the GitHub Release notes.
 
 ### Added
 
+- History pictures as previews, and codeg's session links (1.4.12,
+  2026-11-20). With a codeg server that has them, a session's screenshots
+  and other large pictures come as small previews: opening a session reads
+  a few KB where it read megabytes, and the copy saved on the iPhone stays
+  small. Tap a preview for the full picture, fetched once and kept on the
+  iPhone. Copies saved before are made small the next time they open. An
+  edited message still sends its pictures whole. Session Details shows what
+  the last load cost, and on such a server how much of the time was the
+  server's. `codeg://session/<id>?server=<server>` links, which agents write
+  into notes and the Mac app opens, now open on the iPhone too: on the saved
+  server they name (by the server's id, the name it is saved under, or its
+  address), switching to it. A link to a server that isn't saved, or to a
+  session that isn't there, says so.
 - Side questions with `/btw` (1.4.11, 2026-11-18). Type `/btw` and a
   question in a session's message bar to ask the agent something about the
   session without adding to it: the answer comes from what the session

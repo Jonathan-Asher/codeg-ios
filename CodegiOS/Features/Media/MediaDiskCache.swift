@@ -12,11 +12,15 @@ final class MediaDiskCache: @unchecked Sendable {
 
     let directory: URL
     let limit: Int64
+    /// How ``store(_:key:ext:)`` writes (the history's full pictures are
+    /// written with complete file protection, as the transcripts are).
+    let writeOptions: Data.WritingOptions
     private let lock = NSLock()
 
-    init(directory: URL, limit: Int64 = 256 * 1024 * 1024) {
+    init(directory: URL, limit: Int64 = 256 * 1024 * 1024, writeOptions: Data.WritingOptions = .atomic) {
         self.directory = directory
         self.limit = limit
+        self.writeOptions = writeOptions
     }
 
     /// A short, file-name-safe name for `key`, keeping `ext` so Quick Look and
@@ -56,7 +60,7 @@ final class MediaDiskCache: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try data.write(to: url, options: .atomic)
+        try data.write(to: url, options: writeOptions)
         trimLocked()
         return url
     }

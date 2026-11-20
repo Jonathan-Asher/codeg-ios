@@ -143,18 +143,15 @@ struct CodegClient: Sendable {
 
     /// Full session detail incl. message history.
     func conversationDetail(id: Int) async throws -> ConversationDetail {
-        try await decodeDetail(send("get_folder_conversation", body: ConversationIdBody(conversationId: id)))
+        try await decodeConversationDetail(send("get_folder_conversation", body: ConversationIdBody(conversationId: id)))
     }
 
     /// Session detail with a turn window (see `TranscriptSync`). A server
     /// without the window protocol ignores the window and sends everything.
+    /// Large pictures come as previews where the server can
+    /// (``conversationDetailTimed(id:window:)``).
     func conversationDetail(id: Int, window: TranscriptSync.Request) async throws -> ConversationDetail {
-        var body = ConversationWindowBody(conversationId: id)
-        switch window {
-        case .tail(let count): body.tailTurns = count
-        case .from(let index, _): body.fromIndex = index
-        }
-        return try await decodeDetail(send("get_folder_conversation", body: body))
+        try await conversationDetailTimed(id: id, window: window).detail
     }
 
     /// Older history: up to `limit` turns ending just before `beforeIndex`.
@@ -163,7 +160,7 @@ struct CodegClient: Sendable {
                            ConversationTurnsPageBody(conversationId: id, beforeIndex: beforeIndex, limit: limit))
     }
 
-    private func decodeDetail(_ data: Data) throws -> ConversationDetail {
+    func decodeConversationDetail(_ data: Data) throws -> ConversationDetail {
         var detail: ConversationDetail
         do { detail = try CodegJSON.decoder.decode(ConversationDetail.self, from: data) }
         catch { throw APIError.decoding(String(describing: error)) }
