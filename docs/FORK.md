@@ -2997,7 +2997,7 @@ codeg's `web/image_previews.rs` (branch `feat/image-previews`).
   `imagePreviews: 1` on a server that has them (kept per server in
   `ServerIdentityStore`).
 - **The preview.** A picture over 32 KB of base64 comes as a JPEG of at most
-  512 pixels on its long side, aimed at 16 KB, with `full_image`: `ref` (the
+  512 pixels on its long side, aimed at 20 KB, with `full_image`: `ref` (the
   path that serves the picture to an authenticated GET,
   `/api/conversation_image/<conversation>/<id>`), `id` (a content hash, the
   same on every read), `mime_type`, `bytes`, `width`, `height`, and
