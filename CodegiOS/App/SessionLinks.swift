@@ -117,7 +117,7 @@ enum SessionLink: Equatable, Sendable {
             let value = formDecoded(parts.count > 1 ? String(parts[1]) : "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if value.isEmpty { return .valid(nil) }
-            if value.count > maxServerCharacters
+            if value.unicodeScalars.count > maxServerCharacters
                 || value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
                 return .invalid
             }
@@ -126,8 +126,33 @@ enum SessionLink: Equatable, Sendable {
         return .valid(nil)
     }
 
+    /// `%XX` escapes decoded to bytes, read as UTF-8 (an invalid sequence
+    /// becomes U+FFFD); a `%` without two hex digits stays as it is.
     private static func percentDecoded(_ raw: String) -> String {
-        raw.removingPercentEncoding ?? raw
+        let input = Array(raw.utf8)
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(input.count)
+        var i = 0
+        while i < input.count {
+            if input[i] == UInt8(ascii: "%"), i + 2 < input.count,
+               let high = hexValue(input[i + 1]), let low = hexValue(input[i + 2]) {
+                bytes.append(high << 4 | low)
+                i += 3
+            } else {
+                bytes.append(input[i])
+                i += 1
+            }
+        }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    private static func hexValue(_ byte: UInt8) -> UInt8? {
+        switch byte {
+        case UInt8(ascii: "0")...UInt8(ascii: "9"): return byte - UInt8(ascii: "0")
+        case UInt8(ascii: "a")...UInt8(ascii: "f"): return byte - UInt8(ascii: "a") + 10
+        case UInt8(ascii: "A")...UInt8(ascii: "F"): return byte - UInt8(ascii: "A") + 10
+        default: return nil
+        }
     }
 
     private static func formDecoded(_ raw: String) -> String {

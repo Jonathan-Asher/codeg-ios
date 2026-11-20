@@ -152,11 +152,17 @@ final class ImagePreviewTests: XCTestCase {
     // MARK: Copies saved before previews
 
     private func window(images: [Int: ImageData], count: Int = 10, offset: Int = 100) -> TranscriptWindow {
-        let turns = (0..<count).map { index in
-            MessageTurn(id: "turn-\(offset + index)", role: index % 2 == 0 ? .user : .assistant,
-                        blocks: images[index].map { [.toolResult(id: "t", outputPreview: nil, isError: false, images: [$0])] }
-                            ?? [.text("turn \(index)")],
-                        timestamp: Date(), serverMillis: 1_791_129_600_000 + Int64(index) * 1000)
+        let turns = (0..<count).map { index -> MessageTurn in
+            let blocks: [ContentBlock]
+            if let image = images[index] {
+                blocks = [.toolResult(id: "t", outputPreview: nil, isError: false, images: [image])]
+            } else {
+                blocks = [.text("turn \(index)")]
+            }
+            let role: TurnRole = index % 2 == 0 ? .user : .assistant
+            let millis: Int64 = 1_791_129_600_000 + Int64(index) * 1000
+            return MessageTurn(id: "turn-\(offset + index)", role: role, blocks: blocks, timestamp: Date(),
+                               serverMillis: millis)
         }
         return TranscriptWindow(offset: offset, prefixHash: "0123456789abcdef", total: offset + count, turns: turns)
     }
