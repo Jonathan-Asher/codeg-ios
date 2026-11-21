@@ -40,10 +40,13 @@ let package = Package(
         // bindings, vendored unchanged from microsoft/onnxruntime v1.30.0 (MIT).
         // The official SPM repo stops at 1.24.2, whose int8 kernels flip three
         // RenikudPlus near-ties relative to the 1.30.0 reference; see README.
+        // download.onnxruntime.ai stopped serving the archive on 2026-11-20, so
+        // it comes from this repository's release onnxruntime-c-1.30.0: the same
+        // contents (from the original, sha256 e6f1670c…a2ea), repacked.
         .binaryTarget(
             name: "onnxruntime",
-            url: "https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.30.0.zip",
-            checksum: "e6f1670c14406fd9f082bb400ab197a9b0a9646058ca6366e440642e2b54a2ea"
+            url: "https://github.com/Jonathan-Asher/codeg-ios/releases/download/onnxruntime-c-1.30.0/onnxruntime-c-1.30.0-xcframework.zip",
+            checksum: "3a28547032843838807cf2aba617579ac4a12e77215f5f1baf86a0271953f1c0"
         ),
         .target(
             name: "OnnxRuntimeBindings",

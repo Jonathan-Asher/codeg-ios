@@ -47,10 +47,12 @@ SHERPA_COMMIT="af2d8d81dbfa61c4cea4c568da78f3982edca005"
 SHERPA_REPO="https://github.com/k2-fsa/sherpa-onnx.git"
 
 ORT_VERSION="1.30.0"
-ORT_URL="https://download.onnxruntime.ai/pod-archive-onnxruntime-c-${ORT_VERSION}.zip"
+# This repository's mirror of the official pod archive, which
+# download.onnxruntime.ai stopped serving on 2026-11-20 (release onnxruntime-c-1.30.0).
+ORT_URL="https://github.com/Jonathan-Asher/codeg-ios/releases/download/onnxruntime-c-${ORT_VERSION}/onnxruntime-c-${ORT_VERSION}-xcframework.zip"
 # The same archive and checksum as the `onnxruntime` binary target in
 # Packages/BlueTTSKit/Package.swift. Keep the two in step.
-ORT_SHA256="e6f1670c14406fd9f082bb400ab197a9b0a9646058ca6366e440642e2b54a2ea"
+ORT_SHA256="3a28547032843838807cf2aba617579ac4a12e77215f5f1baf86a0271953f1c0"
 
 IOS_DEPLOYMENT_TARGET="16.0"
 MACOS_DEPLOYMENT_TARGET="13.0"
